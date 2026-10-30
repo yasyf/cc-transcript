@@ -71,7 +71,8 @@ fn public_review_entry_attempt(headroom: usize, verify_recovery: bool) -> bool {
     let reached_install = {
         let cell = slot.cell.lock().unwrap();
         let CatalogCell::Idle(catalog) = &*cell else { panic!("catalog did not restore after request"); };
-        catalog.directories.values().all(|node| node.pending_name.is_none())
+        let reached = catalog.directories.values().all(|node| node.pending_name.is_none());
+        reached
     };
     assert!(matches!(response["status"].as_str(),Some("ok"|"retained_limit")),"{response:?}");
     store.assert_conserved();
