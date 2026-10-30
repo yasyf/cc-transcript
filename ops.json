@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"ops":[{"kind":"set_criterion_status","id":"d5b437778a469a0f3a40d142f672e055","status":"met","note":"One annotated v14.45.17 object980e3043 points to accepted merge817a9b68/treefbca; official normal allfive release40996239414SUCCESS"}]}
+{"v":1,"lamport":5,"ops":[{"kind":"set_criterion_status","id":"58065cff42b98b862ebadde22322b6c3","status":"met","note":"All5 public filenames exactsizes andSHA256 match PyPI GitHub canonicalSimple.136519351B actual total versus163217192B acceptedfree. Receipt sdk17-official-release/public-receipt.json"}]}
