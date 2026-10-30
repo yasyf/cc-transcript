@@ -10391,6 +10391,7 @@ impl NativeStore {
         self.extend_projection_reservation(&mut reservation, context, LOCATE_PATH_SLOTS)?;
         let mut scope = Vec::with_capacity(roots.len());
         for root in roots.iter() {
+            cancel.check(bound.deadline_unix_ms)?;
             let path = PathBuf::from(root.as_str().ok_or_else(|| invalid("invalid root"))?);
             let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
@@ -10428,6 +10429,7 @@ impl NativeStore {
         let mut pending = VecDeque::new();
         let mut refreshed = Vec::new();
         for (id, path) in cached {
+            cancel.check(bound.deadline_unix_ms)?;
             if let Some(stamp) = self.location_candidate(&path, &scope, context)? {
                 #[cfg(test)]
                 self.after_location_metadata("cached");
@@ -10457,6 +10459,7 @@ impl NativeStore {
                 );
             }
         }
+        cancel.check(bound.deadline_unix_ms)?;
         self.remember_locations(&refreshed, context);
         drop(refreshed);
         let token = self.token("location");
@@ -10499,7 +10502,9 @@ impl NativeStore {
             .min(cursor.limits.max_discovery_entries);
         let mut updates = Vec::new();
         loop {
+            cancel.check(cursor.limits.deadline_unix_ms)?;
             while let Some(mut item) = cursor.pending.pop_front() {
+                cancel.check(cursor.limits.deadline_unix_ms)?;
                 if item["status"].as_str() == Some("ok") {
                     let Some(stamp) = self.location_candidate(
                         Path::new(str_field(&item, "path")?),
@@ -10666,8 +10671,10 @@ impl NativeStore {
             };
             self.queue_unfound_locations(&mut cursor, reservation, status)?;
         }
+        cancel.check(cursor.limits.deadline_unix_ms)?;
         self.remember_locations(&updates, &cursor.context);
         drop(updates);
+        cancel.check(cursor.limits.deadline_unix_ms)?;
         let complete = cursor.finished && cursor.pending.is_empty();
         let data = json!({"kind":"located","sessions":output});
         if complete {
@@ -10680,6 +10687,7 @@ impl NativeStore {
             ));
         }
         let mut state = self.lock_state();
+        cancel.check(cursor.limits.deadline_unix_ms)?;
         Self::prune(&mut state);
         if state.locates.len() >= self.lease_cap(&cursor.context)? {
             return Err(SnapshotError::new(
