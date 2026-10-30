@@ -103,6 +103,34 @@ fn public_observation_foreign_prefetch_spends_the_remaining_private_name_budget(
 }
 
 #[test]
+fn public_observation_warm_negative_at_initial_zero_discovery_is_still_incomplete() {
+    let source = Source::new("");
+    let store = store();
+    let owner = context("public-observation-zero-negative");
+    let mut request = public_catalog_request(&source, &["absent"]);
+    let (cold, cold_entries) = public_catalog_finish(&store, &request, &owner);
+    assert_eq!(cold[0]["status"].as_str(), Some("missing"));
+    assert_eq!(cold_entries, 1);
+    let (warm, warm_entries) = public_catalog_finish(&store, &request, &owner);
+    assert_eq!(warm[0]["status"].as_str(), Some("missing"));
+    assert_eq!(warm_entries, 0);
+    request["limits"].insert("max_discovery_entries", json!(0));
+    let response = store.request(&request, &owner, &Cancellation::default());
+    assert_eq!(response["status"].as_str(), Some("incomplete"), "{response:?}");
+    assert_eq!(response["reason"].as_str(), Some("bounded location incomplete"));
+    assert!(response["cursor"].is_null());
+    assert_eq!(response["data"]["kind"].as_str(), Some("located"));
+    assert_eq!(response["usage"]["discovery_entries_examined"].as_u64(), Some(0));
+    let rows = response["data"]["sessions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["session_id"].as_str(), Some("absent"));
+    assert_eq!(rows[0]["status"].as_str(), Some("incomplete"));
+    assert!(rows[0]["path"].is_null());
+    assert!(rows[0]["revision"].is_null());
+    store.assert_conserved();
+}
+
+#[test]
 fn public_observation_old_alias_names_use_current_logical_child_metadata_after_foreign_rebuild() {
     let source = Source::new("");
     let old = source.directory.join("old");
