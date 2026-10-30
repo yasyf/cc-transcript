@@ -342,3 +342,132 @@ fn public_catalog_observation_queued_rows_keep_current_path_and_authority_guards
         store.assert_conserved();
     }
 }
+
+#[test]
+fn public_catalog_observation_prior_open_error_recovers_without_a_directory_stamp_change() {
+    let source = Source::new("");
+    let aliases = Source::new("");
+    std::fs::remove_file(&source.path).unwrap();
+    let wanted = source.directory.join("wanted-a.jsonl");
+    std::fs::write(&wanted, "").unwrap();
+    let alias = aliases.directory.join("alias");
+    std::os::unix::fs::symlink(&source.directory, &alias).unwrap();
+    let before = SourceStamp::of(&std::fs::metadata(&source.directory).unwrap());
+    let store = public_observation_store();
+    let changed_alias = alias.clone();
+    let called = Arc::new(AtomicUsize::new(0));
+    let called_hook = Arc::clone(&called);
+    *store.location_metadata_hook.lock().unwrap() = Some(("directory_open", Arc::new(move || {
+        called_hook.fetch_add(1, Ordering::Relaxed);
+        std::fs::remove_file(&changed_alias).unwrap();
+        std::os::unix::fs::symlink("missing-open-target", &changed_alias).unwrap();
+    })));
+    let owner = context("public-observation-open-error-a");
+    let foreign = context("public-observation-open-error-b");
+    let mut request = public_catalog_request(&source, &["wanted-a"]);
+    request.insert("roots", json!([source.directory, alias]));
+    let failed = store.request(&request, &owner, &Cancellation::default());
+    assert_eq!(called.load(Ordering::Relaxed), 1);
+    assert_eq!(failed["status"].as_str(), Some("missing"), "{failed:?}");
+    assert!(failed["data"].is_null());
+    assert!(failed["cursor"].is_null());
+    assert_eq!(failed["usage"]["discovery_entries_examined"].as_u64(), Some(0));
+    let slot = store.lock_state().catalogs.values().next().cloned().unwrap();
+    let failed_generation = {
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("open error must restore the catalog"); };
+        let node = catalog.directories.get(&before.identity).unwrap();
+        assert!(matches!(node.scan, CatalogScan::Issue { status:Status::Missing, .. }));
+        node.generation
+    };
+    std::fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink(&source.directory, &alias).unwrap();
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&source.directory).unwrap()), before);
+    let (last, rows, entries) = public_observation_collect(&store, store.request(&request, &foreign, &Cancellation::default()), &foreign);
+    assert_eq!(last["status"].as_str(), Some("ok"), "{last:?}");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["status"].as_str(), Some("ok"));
+    assert_eq!(Path::new(rows[0]["path"].as_str().unwrap()), alias.join("wanted-a.jsonl"));
+    assert_eq!(entries, 1);
+    {
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("recovered catalog"); };
+        assert_ne!(catalog.directories.get(&before.identity).unwrap().generation, failed_generation);
+    }
+    store.assert_conserved();
+}
+
+#[test]
+fn public_catalog_observation_opened_stream_identity_quarantines_a_raw_alias_aba() {
+    let source = Source::new("");
+    let other = Source::new("");
+    let aliases = Source::new("");
+    std::fs::remove_file(&source.path).unwrap();
+    std::fs::remove_file(&other.path).unwrap();
+    std::fs::write(source.directory.join("wanted-a.jsonl"), "").unwrap();
+    std::fs::write(other.directory.join("only-b.jsonl"), "").unwrap();
+    let alias = aliases.directory.join("alias");
+    std::os::unix::fs::symlink(&source.directory, &alias).unwrap();
+    let a_stamp = SourceStamp::of(&std::fs::metadata(&source.directory).unwrap());
+    let b_identity = SourceStamp::of(&std::fs::metadata(&other.directory).unwrap()).identity;
+    let store = Arc::new(public_observation_store());
+    let called = Arc::new(AtomicUsize::new(0));
+    let called_opened = Arc::clone(&called);
+    let restored_alias = alias.clone();
+    let restored_target = source.directory.clone();
+    let after_open: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        called_opened.fetch_add(1, Ordering::Relaxed);
+        std::fs::remove_file(&restored_alias).unwrap();
+        std::os::unix::fs::symlink(&restored_target, &restored_alias).unwrap();
+    });
+    let called_open = Arc::clone(&called);
+    let changed_alias = alias.clone();
+    let opened_target = other.directory.clone();
+    let weak_store = Arc::downgrade(&store);
+    *store.location_metadata_hook.lock().unwrap() = Some(("directory_open", Arc::new(move || {
+        called_open.fetch_add(1, Ordering::Relaxed);
+        std::fs::remove_file(&changed_alias).unwrap();
+        std::os::unix::fs::symlink(&opened_target, &changed_alias).unwrap();
+        let store = weak_store.upgrade().unwrap();
+        *store.location_metadata_hook.lock().unwrap() = Some(("directory_opened", Arc::clone(&after_open)));
+    })));
+    let owner = context("public-observation-open-aba-a");
+    let foreign = context("public-observation-open-aba-b");
+    let mut request = public_catalog_request(&source, &["wanted-a"]);
+    request.insert("roots", json!([source.directory, alias]));
+    let (first, rows, entries) = public_observation_collect(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    assert_eq!(called.load(Ordering::Relaxed), 2);
+    assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["status"].as_str(), Some("missing"));
+    assert_eq!(entries, 1, "the first private view keeps metadata-A visitation and the opened-B name stream");
+    let slot = store.lock_state().catalogs.values().next().cloned().unwrap();
+    let mixed_generation = {
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("private ABA result must settle"); };
+        let node = catalog.directories.get(&a_stamp.identity).unwrap();
+        assert_eq!(node.observed.stamp.unwrap().identity, a_stamp.identity);
+        assert_eq!(node.stream_identity, Some(b_identity));
+        assert!(!node.physical_complete);
+        node.generation
+    };
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&source.directory).unwrap()), a_stamp);
+    request.insert("session_ids", json!(["wanted-a", "only-b"]));
+    let (last, rows, entries) = public_observation_collect(&store, store.request(&request, &foreign, &Cancellation::default()), &foreign);
+    assert_eq!(last["status"].as_str(), Some("ok"), "{last:?}");
+    assert_eq!(rows.len(), 2);
+    let found = rows.iter().find(|row| row["session_id"].as_str() == Some("wanted-a")).unwrap();
+    assert_eq!(found["status"].as_str(), Some("ok"));
+    assert_eq!(Path::new(found["path"].as_str().unwrap()), alias.join("wanted-a.jsonl"));
+    let absent = rows.iter().find(|row| row["session_id"].as_str() == Some("only-b")).unwrap();
+    assert_eq!(absent["status"].as_str(), Some("missing"));
+    assert_eq!(entries, 1, "a foreign view must read A names rather than reusing the opened-B stream");
+    {
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("foreign ABA recovery must settle"); };
+        let node = catalog.directories.get(&a_stamp.identity).unwrap();
+        assert_ne!(node.generation, mixed_generation);
+        assert_eq!(node.stream_identity, Some(a_stamp.identity));
+    }
+    store.assert_conserved();
+}

@@ -275,3 +275,73 @@ fn location_observation_raw_name_commit_refusal_preserves_owned_progress_at_exac
     assert!(!public_observation_raw_name_admission_attempt(exact - 1, true));
     assert!(public_observation_raw_name_admission_attempt(exact, true));
 }
+
+#[test]
+fn location_observation_idle_last_pin_retirement_is_immediate_for_every_cursor_exit() {
+    for action in ["release", "cancel", "expiry", "positive"] {
+        let source = LedgerSource::new("");
+        std::fs::remove_file(&source.path).unwrap();
+        for index in 0..4 { source.file(&format!("item-{index}.jsonl"), ""); }
+        let names: Vec<_> = std::fs::read_dir(&source.directory).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        let wanted = Path::new(&names[1]).file_stem().unwrap().to_str().unwrap();
+        let store = public_review_store(1);
+        let owner = context_for("public-observation-immediate-a", false);
+        let foreign = context_for("public-observation-immediate-b", false);
+        let request = public_review_request(&source, &[if action == "positive" { wanted } else { "absent" }]);
+        let first = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(first["usage"]["discovery_entries_examined"].as_u64(), Some(1));
+        assert!(first["data"]["sessions"].as_array().unwrap().is_empty());
+        let cursor = first["cursor"].as_str().expect("original generation query").to_owned();
+        let slot = public_observation_ledger_slot(&store);
+        let (generation, token) = {
+            let cell = slot.cell.lock().unwrap();
+            let CatalogCell::Idle(catalog) = &*cell else { panic!("original owner must be Idle"); };
+            let node = catalog.directories.values().next().unwrap();
+            (node.generation, Arc::downgrade(&node.lease))
+        };
+        source.file("new-name.txt", "");
+        let missing = public_review_request(&source, &["absent"]);
+        public_review_finish(&store, &missing, &foreign);
+        {
+            let cell = slot.cell.lock().unwrap();
+            let CatalogCell::Idle(catalog) = &*cell else { panic!("foreign owner must be Idle"); };
+            assert!(catalog.retired_generations.get(&generation).is_some());
+            assert_eq!(catalog.retired_generations.len(), 1);
+        }
+        match action {
+            "release" => {
+                let response = store.request(&json!({"schema":SCHEMA,"id":"release-final-idle-pin","operation":"release","kind":"cursor","owner_epoch":null,"token":cursor}), &owner, &Cancellation::default());
+                assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            }
+            "cancel" => {
+                let cancel = Cancellation::default();
+                cancel.cancel();
+                let response = store.request(&json!({"schema":SCHEMA,"id":"cancel-final-idle-pin","operation":"resume","cursor":cursor}), &owner, &cancel);
+                assert_eq!(response["status"].as_str(), Some("cancelled"), "{response:?}");
+            }
+            "expiry" => {
+                let mut state = store.state.lock().unwrap();
+                let expires = state.locates.get(&cursor).unwrap().expires;
+                NativeStore::prune_at(&mut state, expires);
+            }
+            "positive" => {
+                let response = store.request(&json!({"schema":SCHEMA,"id":"complete-final-idle-pin","operation":"resume","cursor":cursor}), &owner, &Cancellation::default());
+                assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+                assert!(response["cursor"].is_null());
+                assert_eq!(response["data"]["sessions"][0]["session_id"].as_str(), Some(wanted));
+                assert_eq!(response["data"]["sessions"][0]["status"].as_str(), Some("ok"));
+                assert_eq!(response["usage"]["discovery_entries_examined"].as_u64(), Some(1));
+            }
+            _ => unreachable!(),
+        }
+        assert!(token.upgrade().is_none(), "{action} must reclaim the last retired generation before any follow-up request or ledger drain");
+        {
+            let cell = slot.cell.lock().unwrap();
+            let CatalogCell::Idle(catalog) = &*cell else { panic!("{action} must leave the owner Idle"); };
+            assert!(catalog.retired_generations.is_empty(), "{action}");
+            assert!(catalog.retirement_queue.is_empty(), "{action}");
+            assert_eq!(catalog.retired_bytes, 0, "{action}");
+        }
+        public_observation_ledger_audit(&store);
+    }
+}
