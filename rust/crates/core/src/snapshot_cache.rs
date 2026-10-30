@@ -49,14 +49,19 @@ impl StoreState {
 
     fn retire_incompatible_source_views(&mut self, snapshot: &Arc<TranscriptSnapshot>) {
         let physical = snapshot.stamp.identity.file();
+        let mut after = None;
         loop {
-            let stale = self.source_spines.get(&physical).and_then(|views| views.iter().find_map(|view| {
-                self.ledger.shared.work().tick(1);
-                let cached = self.generations.get(&view.generation).expect("source generation").cached.as_ref().expect("cached source");
-                (!NativeStore::matches_prefix(snapshot.stamp, cached.snapshot.stamp)).then_some(view.generation)
-            }));
-            let Some(key) = stale else { break };
-            let cached = self.generations.get(&key).expect("source generation").cached.as_ref().expect("cached source");
+            let next = self.source_spines.get(&physical).and_then(|views| match after {
+                Some(previous) => views.range((std::ops::Bound::Excluded(previous), std::ops::Bound::Unbounded)).next().copied(),
+                None => views.first().copied(),
+            });
+            let Some(view) = next else { break };
+            after = Some(view);
+            self.source_view_checks.tick(1);
+            let cached = self.generations.get(&view.generation).expect("source generation").cached.as_ref().expect("cached source");
+            if NativeStore::matches_prefix(snapshot.stamp, cached.snapshot.stamp) {
+                continue;
+            }
             let source = Arc::clone(&cached.snapshot);
             if let Some(identity) = cached.latest {
                 drop(self.remove_latest(&identity));
@@ -208,7 +213,8 @@ impl StoreState {
     fn attach_carried_owner(&mut self, lineage: &(SourceIdentity, String), carried: &Arc<CarriedClassification>) {
         let key = Arc::as_ptr(carried) as usize;
         let touched = self.next_cache_touch();
-        if let Some(mut owner) = self.carried_owners.get_mut(&key) {
+        if self.carried_owners.contains_key(&key) {
+            let mut owner = self.carried_owners.get_mut(&key).expect("carried owner");
             assert!(self.cache_order.remove(&(owner.touched, CacheOwner::Carried(key))));
             owner.lineages.push(lineage.clone());
             owner.touched = touched;

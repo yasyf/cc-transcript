@@ -87,3 +87,42 @@ fn source_cache_truncation_retires_stale_coverage_before_reusing_its_new_full_vi
     drop(pinned);
     store.assert_conserved();
 }
+
+#[test]
+fn source_cache_retirement_checks_each_mixed_coverage_candidate_once() {
+    for count in [4, 16, 32] {
+        let source = Source::new(&users(0..200));
+        let store = windowed_store();
+        let owner = context("source-view-retirement-work");
+        let mut next = 200;
+        for _ in 0..count {
+            source.append(&users(next..next + 4));
+            next += 4;
+            let response = windowed(&store, &source.path, 1024, &owner);
+            release_lease(&store, handle(&response), &owner);
+        }
+        source.append(&users(next..1000));
+        next = 1000;
+        for _ in 0..count {
+            source.append(&users(next..next + 4));
+            next += 4;
+            let response = windowed(&store, &source.path, 1024, &owner);
+            release_lease(&store, handle(&response), &owner);
+        }
+        std::fs::write(&source.path, users(0..600)).unwrap();
+        let reference = windowed_store();
+        let current = windowed(&reference, &source.path, 1024, &owner);
+        let snapshot = reference.pin(handle(&current), &owner).unwrap();
+        {
+            let mut state = store.lock_state();
+            assert_eq!(state.source_view_nodes, 2 * count);
+            let checks = state.source_view_checks.counter();
+            let before = checks.load(Ordering::Relaxed);
+            state.retire_incompatible_source_views(&snapshot);
+            assert_eq!(checks.load(Ordering::Relaxed) - before, 2 * count);
+            assert_eq!(state.source_view_nodes, count);
+        }
+        store.assert_conserved();
+        reference.assert_conserved();
+    }
+}
