@@ -1135,27 +1135,26 @@ impl SourceCatalog {
         deadline: u64, bound: Option<&Vec<usize>>, query: &mut CatalogLocateQuery,
         budget: &mut CatalogBudget<'_, '_>) -> Result<bool,SnapshotError> {
         budget.scratch(LOCATE_USER_PATH_SLOTS)?;
-        self.public_authority_view(query,bound,cancel,deadline,budget)?;
         loop {
             cancel.check(deadline)?;
             let lower = query.validated_after.as_ref().map_or(std::ops::Bound::Unbounded,std::ops::Bound::Excluded);
             let upper = bound.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Included);
             let next = self.checks.range::<Vec<usize>,_>((lower,upper)).next();
-            let authority_after = query.validated_after.as_ref().into_iter().chain(query.floor.as_ref()).max();
-            let lower = authority_after.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Excluded);
-            let upper = bound.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Included);
-            if let Some((order,path)) = query.authority_checks.range::<Vec<usize>,_>((lower,upper)).next() {
-                if next.is_none_or(|(next,_)| order < next) {
-                    match CatalogBinding::canonical_path(store,path) {
-                        Ok(canonical) => store.authority(context,Some(&canonical))?,
-                        Err(error) if error.status == Status::Missing => {},
-                        Err(error) => return Err(error),
-                    }
-                    budget.scratch(order.len() * size_of::<usize>())?;
-                    let order = order.clone();
-                    query.validation_position(&order,budget)?;
-                    continue;
+            let authority_bound = next.map(|(order,_)| order).or(bound);
+            if let Some(candidate) = self.public_authority_candidate(query,authority_bound,cancel,deadline)? {
+                let route = self.route_index.get(&candidate.directory).expect("catalog authority route");
+                let edge = &self.directories.get(&candidate.directory).expect("catalog authority directory").edges[candidate.edge];
+                budget.scratch(LOCATE_USER_PATH_SLOTS + route.path.as_os_str().len() + 1 + edge.name.len())?;
+                let path = catalog_child_path(&route.path,&edge.name);
+                #[cfg(test)]
+                store.authority_paths_materialized.fetch_add(1,Ordering::Relaxed);
+                match CatalogBinding::canonical_path(store,&path) {
+                    Ok(canonical) => store.authority(context,Some(&canonical))?,
+                    Err(error) if error.status == Status::Missing => {},
+                    Err(error) => return Err(error),
                 }
+                query.validation_position(&route.order,Some(candidate.edge),budget)?;
+                continue;
             }
             let Some((order,check)) = next else { return Ok(true); };
             let check = *check;
@@ -1174,7 +1173,7 @@ impl SourceCatalog {
                 }
                 unreachable!("catalog issue check without issue");
             }
-            query.validation_position(order,budget)?;
+            query.validation_position(order,None,budget)?;
             let order = query.validated_after.as_ref().expect("catalog validation position");
             let path = match check.kind {
                 CatalogCheckKind::Root(index) => self.roots[index].path.clone(),

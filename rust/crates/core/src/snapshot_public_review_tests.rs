@@ -403,8 +403,7 @@ fn public_catalog_review_narrowed_resume_checks_an_unconsumed_shared_regular_ent
     let source = LedgerSource::new("");
     let allowed = LedgerSource::new("");
     std::fs::remove_file(&source.path).unwrap();
-    source.file("first.txt", "");
-    source.file("second.txt", "");
+    for index in 0..128 { source.file(&format!("ordinary-{index:03}.txt"), ""); }
     let store = public_review_store(1);
     let owner = context_for("public-review-shared-regular", false);
     let request = public_review_request(&source, &["missing"]);
@@ -415,8 +414,10 @@ fn public_catalog_review_narrowed_resume_checks_an_unconsumed_shared_regular_ent
     assert_eq!(rows[0]["status"].as_str(), Some("missing"));
     let mut narrowed = owner.clone();
     narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[allowed.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let materialized = store.authority_paths_materialized.load(Ordering::Relaxed);
     let response = store.request(&json!({"schema":SCHEMA,"id":"shared-regular-narrowed-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
     assert_eq!(response["status"].as_str(), Some("permission_denied"), "{response:?}");
+    assert_eq!(store.authority_paths_materialized.load(Ordering::Relaxed) - materialized, 1);
     assert!(response["data"].is_null());
     assert!(response["cursor"].is_null());
     store.assert_conserved();

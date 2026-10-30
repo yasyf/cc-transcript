@@ -5933,8 +5933,6 @@ impl NativeStore {
                         + order.capacity() * size_of::<usize>()
                 })
                 .sum::<usize>()
-            + query.authority_checks.iter().map(|(order,path)| size_of::<(Vec<usize>,PathBuf)>() + order.capacity() * size_of::<usize>() + path.capacity()).sum::<usize>()
-            + query.authority_through.as_ref().map_or(0, |order| order.capacity() * size_of::<usize>())
     }
 
     fn fixed_metadata_bytes(state: &StoreState) -> usize {
@@ -10992,11 +10990,6 @@ impl NativeStore {
                 validated_after: None,
                 final_hold: false,
                 authority_epoch: 0,
-                authority_checks: BTreeMap::new(),
-                authority_check_bytes: 0,
-                authority_view: None,
-                authority_through: None,
-                authority_complete: false,
                 capabilities: BTreeMap::new(),
                 capability_bytes: 0,
                 generation_seen: None,

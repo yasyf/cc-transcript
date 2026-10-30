@@ -19,11 +19,6 @@ struct CatalogLocateQuery {
     validated_after: Option<Vec<usize>>,
     final_hold: bool,
     authority_epoch: u64,
-    authority_checks: BTreeMap<Vec<usize>, PathBuf>,
-    authority_check_bytes: usize,
-    authority_view: Option<(u64, u64)>,
-    authority_through: Option<Vec<usize>>,
-    authority_complete: bool,
     capabilities: BTreeMap<Vec<usize>,CatalogCapability>,
     capability_bytes: usize,
     generation_seen: Option<u64>,
@@ -74,8 +69,7 @@ impl CatalogLocateQuery {
             + self.choices.capacity() * size_of::<Reverse<CatalogChoice>>() + self.choice_bytes
             + self.floor.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
             + self.validated_after.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
-            + self.capability_bytes + self.authority_check_bytes
-            + self.authority_through.as_ref().map_or(0, |order| order.capacity() * size_of::<usize>())
+            + self.capability_bytes
     }
 
     fn push_choice(&mut self, choice: CatalogChoice, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
@@ -96,11 +90,13 @@ impl CatalogLocateQuery {
         Some(choice)
     }
 
-    fn validation_position(&mut self, order: &[usize], budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+    fn validation_position(&mut self, order: &[usize], edge: Option<usize>, budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        let length = order.len() + usize::from(edge.is_some());
         let previous = self.validated_after.as_ref().map_or(0,Vec::capacity);
-        budget.reserve(order.len().saturating_sub(previous) * size_of::<usize>())?;
+        budget.reserve(length.saturating_sub(previous) * size_of::<usize>())?;
         let held = self.validated_after.get_or_insert_with(Vec::new);
-        held.clear(); held.reserve_exact(order.len()); held.extend_from_slice(order);
+        held.clear(); held.reserve_exact(length); held.extend_from_slice(order);
+        if let Some(edge) = edge { held.push(edge); }
         Ok(())
     }
 
@@ -162,7 +158,6 @@ impl CatalogLocateQuery {
             Some(order.clone())
         } else { None };
         self.rewind_generation();
-        self.authority_view = None;
         if let Some(previous) = previous { self.position(&previous,None,budget)?; }
         Ok(())
     }
@@ -315,22 +310,15 @@ impl SourceCatalog {
         }
     }
 
-    fn public_authority_view(&self, query: &mut CatalogLocateQuery, bound: Option<&Vec<usize>>,
-        cancel: &Cancellation, deadline: u64, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
-        if query.authority_epoch == 0 { return Ok(()); }
-        let version = (query.authority_epoch, self.candidate_version);
-        if query.authority_view != Some(version) {
-            query.authority_checks.clear();
-            query.authority_check_bytes = 0;
-            query.authority_through = None;
-            query.authority_complete = false;
-            query.authority_view = Some(version);
-        }
-        if query.authority_complete || bound.is_some_and(|bound|
-            query.authority_through.as_ref().is_some_and(|through| through >= bound)) { return Ok(()); }
-        let upper = bound.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Included);
-        for (order, check) in self.checks.range::<Vec<usize>,_>((std::ops::Bound::Unbounded,upper)) {
+    fn public_authority_candidate(&self, query: &CatalogLocateQuery, bound: Option<&Vec<usize>>,
+        cancel: &Cancellation, deadline: u64) -> Result<Option<CatalogCandidate>, SnapshotError> {
+        if query.authority_epoch == 0 { return Ok(None); }
+        let Some(after) = query.floor.as_ref().into_iter().chain(query.validated_after.as_ref()).max() else { return Ok(None); };
+        if bound.is_some_and(|bound| after >= bound) { return Ok(None); }
+        let mut best: Option<CatalogCandidate> = None;
+        for length in (1..=after.len()).rev() {
             cancel.check(deadline)?;
+            let Some(check) = self.checks.get(&after[..length]) else { continue; };
             let identity = match check.kind {
                 CatalogCheckKind::Root(index) if self.roots[index].binding.directory =>
                     self.roots[index].binding.stamp.expect("catalog authority root stamp").identity,
@@ -343,43 +331,29 @@ impl SourceCatalog {
                 _ => continue,
             };
             let route = self.route_index.get(&identity).expect("catalog authority route");
-            if route.order != *order { continue; }
+            if route.order != after[..length] { continue; }
             let node = self.directories.get(&identity).expect("catalog authority directory");
-            let mut start = 0;
-            for after in query.floor.as_ref().into_iter().chain(query.authority_through.as_ref()) {
-                if after.starts_with(&route.order) {
-                    if let Some(index) = after.get(route.order.len()) { start = start.max(index + 1); }
-                } else if *after > route.order { start = node.edges.len(); }
-            }
+            let start = after.get(length).map_or(0, |index| index + 1);
             let end = bound.filter(|bound| bound.starts_with(&route.order))
-                .map_or(node.edges.len(), |bound| bound.get(route.order.len()).map_or(0, |index| index + 1))
+                .map_or(node.edges.len(), |bound| bound.get(length).map_or(0, |index| index + 1))
                 .min(node.edges.len());
-            for (index, edge) in node.edges.iter().enumerate().take(end).skip(start) {
+            for index in start..end {
                 cancel.check(deadline)?;
-                if edge.binding.directory || node.symlinks.binary_search(&index).is_ok() || edge.binding.issue.is_some() {
-                    continue;
+                let edge = &node.edges[index];
+                if edge.binding.directory || node.symlinks.binary_search(&index).is_ok() || edge.binding.issue.is_some() { continue; }
+                let candidate = CatalogCandidate { directory:identity, edge:index };
+                if best.is_none_or(|best| self.public_authority_order(candidate).cmp(self.public_authority_order(best)).is_lt()) {
+                    best = Some(candidate);
                 }
-                let order = Self::query_order(route, index, budget)?;
-                if bound.is_some_and(|bound| order > *bound) { break; }
-                if query.floor.as_ref().is_some_and(|floor| order <= *floor)
-                    || query.authority_through.as_ref().is_some_and(|through| order <= *through) { continue; }
-                let path_bytes = route.path.as_os_str().len() + 1 + edge.name.len();
-                budget.reserve(size_of::<(Vec<usize>, PathBuf)>() + path_bytes)?;
-                let path = catalog_child_path(&route.path, &edge.name);
-                #[cfg(test)]
-                budget.store.authority_paths_materialized.fetch_add(1, Ordering::Relaxed);
-                query.authority_check_bytes += size_of::<(Vec<usize>, PathBuf)>()
-                    + order.capacity() * size_of::<usize>() + path.capacity();
-                query.authority_checks.insert(order, path);
+                break;
             }
         }
-        if let Some(bound) = bound {
-            let old = query.authority_through.as_ref().map_or(0, Vec::capacity);
-            budget.reserve(bound.len().saturating_sub(old) * size_of::<usize>())?;
-            let through = query.authority_through.get_or_insert_with(Vec::new);
-            through.clear(); through.reserve_exact(bound.len()); through.extend_from_slice(bound);
-        } else { query.authority_complete = true; }
-        Ok(())
+        Ok(best)
+    }
+
+    fn public_authority_order(&self, candidate: CatalogCandidate) -> impl Iterator<Item=usize> + '_ {
+        self.route_index.get(&candidate.directory).expect("catalog authority order").order.iter().copied()
+            .chain(std::iter::once(candidate.edge))
     }
 
     fn locate_page(&mut self, store: &NativeStore, _ids: &[Value], context: &Value,
@@ -393,7 +367,6 @@ impl SourceCatalog {
             } else {
                 query.rewind_generation();
             }
-            query.authority_view = None;
         }
         query.generation_seen = Some(self.generation_version);
         let mut updates = Vec::new();
@@ -462,9 +435,6 @@ impl SourceCatalog {
             remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
             query.choice_version = self.candidate_version;
             query.generation_seen = Some(self.generation_version);
-            if query.authority_epoch != 0 {
-                query.authority_view = Some((query.authority_epoch, self.candidate_version));
-            }
             if let Some(choice) = choice { query.push_choice(choice,budget)?; }
         }
         cancel.check(remaining.deadline_unix_ms)?;
