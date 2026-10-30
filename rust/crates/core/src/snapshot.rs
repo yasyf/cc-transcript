@@ -2854,6 +2854,8 @@ pub struct NativeStore {
     #[cfg(test)]
     location_metadata_hook: Mutex<Option<(&'static str, Arc<dyn Fn() + Send + Sync>)>>,
     #[cfg(test)]
+    location_entry_canonicalizations: AtomicUsize,
+    #[cfg(test)]
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
     resolve_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
@@ -3340,6 +3342,8 @@ impl NativeStore {
             locate_hook: Mutex::new(None),
             #[cfg(test)]
             location_metadata_hook: Mutex::new(None),
+            #[cfg(test)]
+            location_entry_canonicalizations: AtomicUsize::new(0),
             #[cfg(test)]
             release_hook: Mutex::new(None),
             #[cfg(test)]
@@ -10567,7 +10571,29 @@ impl NativeStore {
                         Some(Ok(entry)) => {
                             cursor.examined += 1;
                             usage[17] += 1;
-                            entry.path()
+                            let path = entry.path();
+                            #[cfg(test)]
+                            self.after_location_metadata("entry");
+                            if cursor.context["authority"]["kind"].as_str() == Some("user") {
+                                if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+                                    #[cfg(test)]
+                                    self.after_location_metadata("prefilter");
+                                    if metadata.is_file()
+                                        && (path.extension().is_none_or(|ext| ext != "jsonl")
+                                            || Self::requested_location(
+                                                &path
+                                                    .file_stem()
+                                                    .expect("source filename")
+                                                    .to_string_lossy(),
+                                                &cursor.wanted,
+                                            )
+                                            .is_none())
+                                    {
+                                        continue;
+                                    }
+                                }
+                            }
+                            path
                         }
                         Some(Err(error)) => return Err(io_error(error)),
                         None => {
@@ -10583,6 +10609,11 @@ impl NativeStore {
                     continue;
                 };
                 let metadata = {
+                    #[cfg(test)]
+                    if !cursor.directories.is_empty() {
+                        self.location_entry_canonicalizations
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     let canonical = match std::fs::canonicalize(&path) {
                         Ok(path) => path,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -11515,6 +11546,326 @@ mod tests {
             response["data"]["sessions"][0]["status"].as_str(),
             Some("incomplete")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn location_preserves_reachable_alias_canonicalization_errors() {
+        let source = Source::new("");
+        let mut root = source.directory.clone();
+        let expanded = std::fs::canonicalize(&root).unwrap();
+        let target_bytes = libc::PATH_MAX as usize - 8;
+        let mut remaining = target_bytes - expanded.as_os_str().len() - 4;
+        for depth in 0..4 {
+            let width = remaining / (4 - depth);
+            assert!((1..=255).contains(&width));
+            remaining -= width;
+            let name = "d".repeat(width);
+            std::fs::create_dir(root.join(&name)).unwrap();
+            std::os::unix::fs::symlink(&name, root.join("a")).unwrap();
+            root.push("a");
+        }
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        assert_eq!(canonical_root.as_os_str().len(), target_bytes);
+        let entry = root.join("unrelated.txt");
+        std::fs::write(&entry, b"").unwrap();
+        assert!(std::fs::symlink_metadata(&entry).unwrap().is_file());
+        let error = std::fs::canonicalize(&entry).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENAMETOOLONG));
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate-pathmax","operation":"locate","session_ids":["wanted"],"roots":[root],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(
+            response["status"].as_str(),
+            Some("changed"),
+            "raw_entry={entry:?}, canonical_root={canonical_root:?}, canonical_error={error:?}, response={response:?}"
+        );
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn location_nonmatching_regular_files_skip_canonicalization() {
+        let source = Source::new("");
+        std::fs::remove_file(&source.path).unwrap();
+        for index in 0..20 {
+            std::fs::write(
+                source.directory.join(format!("unrelated-{index}.jsonl")),
+                b"",
+            )
+            .unwrap();
+        }
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["absent"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
+        assert_eq!(store.lock_state().counters[17], 20);
+        assert_eq!(
+            store
+                .location_entry_canonicalizations
+                .load(Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn location_prefilter_preserves_filename_matches_and_nonmatching_directories() {
+        for (filename, id, found) in [
+            ("wanted.jsonl", "wanted", true),
+            ("rollout-prefix-wanted.jsonl", "wanted", true),
+            ("rollout-prefix-left-right.jsonl", "left-right", true),
+            ("wanted.JSONL", "wanted", false),
+            ("wanted.txt", "wanted", false),
+        ] {
+            let source = Source::new("");
+            std::fs::remove_file(&source.path).unwrap();
+            let nested = source.directory.join("unrelated");
+            std::fs::create_dir(&nested).unwrap();
+            let path = nested.join(filename);
+            std::fs::write(&path, b"").unwrap();
+            let store = store();
+            let owner = context("a");
+            let template = acquire(&source.path);
+            let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":[id],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let response = finish(
+                &store,
+                store.request(&request, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            let item = &response["data"]["sessions"][0];
+            assert_eq!(item["status"], json!(if found { "ok" } else { "missing" }));
+            if found {
+                assert_eq!(item["path"], json!(path));
+                assert_eq!(
+                    item["revision"],
+                    json!(SourceStamp::of(&std::fs::metadata(&path).unwrap()).revision())
+                );
+            }
+            store.assert_conserved();
+        }
+    }
+
+    #[test]
+    fn location_prefilter_preserves_symlink_aliases_and_ordered_root_winners() {
+        let source = Source::new("");
+        let outside = Source::new("");
+        let physical = outside.directory.join("physical.txt");
+        std::fs::write(&physical, b"").unwrap();
+        let alias = source.directory.join("arbitrary-prefix-wanted.jsonl");
+        std::os::unix::fs::symlink(&physical, &alias).unwrap();
+        let ancestor = outside.directory.join("ancestor");
+        std::os::unix::fs::symlink(&source.directory, &ancestor).unwrap();
+        let duplicate = outside.directory.join("wanted.jsonl");
+        std::fs::write(&duplicate, b"").unwrap();
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["wanted"],"roots":[duplicate,ancestor],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        let item = &response["data"]["sessions"][0];
+        assert_eq!(
+            item["path"],
+            json!(ancestor.join("arbitrary-prefix-wanted.jsonl"))
+        );
+        assert_eq!(
+            item["revision"],
+            json!(SourceStamp::of(&std::fs::metadata(&physical).unwrap()).revision())
+        );
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn location_prefilter_preserves_nonmatching_symlink_errors() {
+        for (target, status) in [("unrelated.txt", "changed"), ("missing", "ok")] {
+            let source = Source::new("");
+            std::fs::remove_file(&source.path).unwrap();
+            std::os::unix::fs::symlink(target, source.directory.join("unrelated.txt")).unwrap();
+            let store = store();
+            let owner = context("a");
+            let template = acquire(&source.path);
+            let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["wanted"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let response = finish(
+                &store,
+                store.request(&request, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(response["status"].as_str(), Some(status), "{response:?}");
+            assert_eq!(
+                store
+                    .location_entry_canonicalizations
+                    .load(Ordering::Relaxed),
+                1
+            );
+            store.assert_conserved();
+        }
+    }
+
+    #[test]
+    fn location_prefilter_keeps_restricted_authority_exact() {
+        for outside_link in [false, true] {
+            let source = Source::new("");
+            let outside = Source::new("");
+            std::fs::remove_file(&source.path).unwrap();
+            let path = source.directory.join("unrelated.txt");
+            if outside_link {
+                std::os::unix::fs::symlink(&outside.path, &path).unwrap();
+            } else {
+                std::fs::write(&path, b"").unwrap();
+            }
+            let store = store();
+            let mut owner = context("a");
+            owner.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+            let template = acquire(&source.path);
+            let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["wanted"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let response = finish(
+                &store,
+                store.request(&request, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(
+                response["status"],
+                json!(if outside_link {
+                    "permission_denied"
+                } else {
+                    "ok"
+                }),
+                "{response:?}"
+            );
+            assert_eq!(
+                store
+                    .location_entry_canonicalizations
+                    .load(Ordering::Relaxed),
+                1
+            );
+            store.assert_conserved();
+        }
+    }
+
+    #[test]
+    fn location_prefilter_keeps_special_files_and_failed_prechecks_exact() {
+        for removed in [false, true] {
+            let source = Source::new("");
+            std::fs::remove_file(&source.path).unwrap();
+            let path = source.directory.join("unrelated.txt");
+            if removed {
+                std::fs::write(&path, b"").unwrap();
+            } else {
+                let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            }
+            let store = store();
+            if removed {
+                *store.location_metadata_hook.lock().unwrap() = Some((
+                    "entry",
+                    Arc::new(move || std::fs::remove_file(&path).unwrap()),
+                ));
+            }
+            let owner = context("a");
+            let template = acquire(&source.path);
+            let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["wanted"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let response = finish(
+                &store,
+                store.request(&request, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
+            assert_eq!(
+                store
+                    .location_entry_canonicalizations
+                    .load(Ordering::Relaxed),
+                1
+            );
+            store.assert_conserved();
+        }
+    }
+
+    #[test]
+    fn location_prefilter_classifies_at_first_metadata_observation() {
+        for directory in [false, true] {
+            let source = Source::new("");
+            std::fs::remove_file(&source.path).unwrap();
+            let path = source.directory.join("unrelated.txt");
+            std::fs::write(&path, b"").unwrap();
+            let store = store();
+            *store.location_metadata_hook.lock().unwrap() = Some((
+                "prefilter",
+                Arc::new(move || {
+                    std::fs::remove_file(&path).unwrap();
+                    if directory {
+                        std::fs::create_dir(&path).unwrap();
+                        std::fs::write(path.join("wanted.jsonl"), b"").unwrap();
+                    } else {
+                        std::os::unix::fs::symlink("unrelated.txt", &path).unwrap();
+                    }
+                }),
+            ));
+            let owner = context("a");
+            let template = acquire(&source.path);
+            let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["wanted"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let response = finish(
+                &store,
+                store.request(&request, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
+            assert_eq!(store.lock_state().counters[17], 1);
+            assert_eq!(
+                store
+                    .location_entry_canonicalizations
+                    .load(Ordering::Relaxed),
+                0
+            );
+            store.assert_conserved();
+        }
+    }
+
+    #[test]
+    fn location_prefilter_cancellation_stops_before_the_next_entry() {
+        let source = Source::new("");
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let cancel = Cancellation::default();
+        let stopped = cancel.clone();
+        *store.location_metadata_hook.lock().unwrap() =
+            Some(("prefilter", Arc::new(move || stopped.cancel())));
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["wanted"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = store.request(&request, &owner, &cancel);
+        assert_eq!(
+            response["status"].as_str(),
+            Some("cancelled"),
+            "{response:?}"
+        );
+        assert!(response["cursor"].is_null());
+        assert!(store.lock_state().locates.is_empty());
+        assert_eq!(store.lock_state().counters[17], 1);
+        assert_eq!(
+            store
+                .location_entry_canonicalizations
+                .load(Ordering::Relaxed),
+            0
+        );
+        store.assert_conserved();
     }
 
     #[test]
