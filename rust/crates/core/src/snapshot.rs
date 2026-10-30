@@ -1538,13 +1538,13 @@ struct CarriedOwner {
 }
 
 struct CatalogOwner {
-    key: String,
+    key: Arc<str>,
     touched: u64,
 }
 
 impl Charge<usize> for CatalogOwner {
     fn charge(&self) -> usize {
-        self.key.capacity()
+        arc_slice_bytes::<u8>(self.key.len())
     }
 }
 
@@ -4948,7 +4948,7 @@ impl NativeStore {
     #[cfg(test)]
     fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 23] {
         [
-            ("catalog_owners", state.catalog_owners.charged(), state.catalog_owners.audit_with(|_, record| record.key.capacity())),
+            ("catalog_owners", state.catalog_owners.charged(), state.catalog_owners.audit_with(|_, record| arc_slice_mirror::<u8>(record.key.len()))),
             ("classified", state.classified.charged(), state.classified.audit_with(|key, _| key.capacity())),
             ("carried_owners", state.carried_owners.charged(), state.carried_owners.audit_with(|_, record| record.lineages.capacity() * size_of::<(SourceIdentity, String)>() + record.lineages.iter().map(|(_, key)| key.capacity()).sum::<usize>())),
             (

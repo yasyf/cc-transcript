@@ -125,7 +125,7 @@ impl StoreState {
             let available = match owner {
                 CacheOwner::Catalog(key) => {
                     let metadata = self.catalog_owners.get(key).expect("catalog owner");
-                    Arc::strong_count(self.catalogs.get(metadata.key.as_str()).expect("catalog slot")) == 1
+                    Arc::strong_count(self.catalogs.get(metadata.key.as_ref()).expect("catalog slot")) == 1
                 }
                 CacheOwner::Generation(key) => Arc::strong_count(&self.generations.get(key).expect("cached generation").cached.as_ref().expect("cached owner").snapshot) == 1,
                 CacheOwner::Carried(key) => {
@@ -141,9 +141,8 @@ impl StoreState {
     fn evict_cache_owner(&mut self, owner: CacheOwner) {
         match owner {
             CacheOwner::Catalog(key) => {
-                let metadata = self.detach_catalog_owner(key);
-                let slot = self.catalogs.remove(metadata.key.as_str()).expect("catalog slot");
-                drop(slot);
+                let scope = Arc::clone(&self.catalog_owners.get(&key).expect("catalog owner").key);
+                drop(self.remove_catalog(scope.as_ref()).expect("catalog slot"));
             }
             CacheOwner::Generation(key) => {
                 let cached = self.generations.get_mut(&key).expect("cached generation").cached.take().expect("cached owner");
@@ -230,7 +229,7 @@ impl StoreState {
         assert_eq!(self.cache_order.len(), cached + self.carried_owners.len() + self.catalog_owners.len());
         assert_eq!(self.catalog_owners.len(), self.catalogs.len());
         for (key, owner) in self.catalog_owners.iter() {
-            assert_eq!(Arc::as_ptr(self.catalogs.get(owner.key.as_str()).unwrap()) as usize, *key);
+            assert_eq!(Arc::as_ptr(self.catalogs.get(owner.key.as_ref()).unwrap()) as usize, *key);
             assert!(self.cache_order.contains(&(owner.touched, CacheOwner::Catalog(*key))));
         }
         for (key, record) in self.generations.iter() {
@@ -274,7 +273,7 @@ impl StoreState {
     fn catalog_owner_growth(&self, key: &String, slot: &Arc<CatalogSlot>) -> usize {
         let identity = Arc::as_ptr(slot) as usize;
         if self.catalog_owners.contains_key(&identity) { 0 } else {
-            self.catalog_owners.growth_for(&identity) + key.len() + size_of::<(u64, CacheOwner)>()
+            self.catalog_owners.growth_for(&identity) + arc_slice_bytes::<u8>(key.len()) + size_of::<(u64, CacheOwner)>()
         }
     }
 
@@ -282,7 +281,7 @@ impl StoreState {
         let identity = Arc::as_ptr(slot) as usize;
         let touched = self.next_cache_touch();
         self.catalog_owners.reserve_for(&identity);
-        assert!(self.catalog_owners.insert(identity, CatalogOwner { key: key.clone(), touched }).is_none());
+        assert!(self.catalog_owners.insert(identity, CatalogOwner { key: Arc::from(key.as_str()), touched }).is_none());
         assert!(self.cache_order.insert((touched, CacheOwner::Catalog(identity))));
     }
 
@@ -305,7 +304,7 @@ impl StoreState {
         let slot = self.catalogs.remove(key)?;
         let identity = Arc::as_ptr(&slot) as usize;
         let owner = self.detach_catalog_owner(identity);
-        assert_eq!(owner.key, key);
+        assert_eq!(owner.key.as_ref(), key);
         Some(slot)
     }
 
