@@ -857,11 +857,17 @@ fn registered_catalog_certificate_rejects_a_regular_root_retarget_after_public_l
     std::fs::remove_file(&alias).unwrap();
     std::os::unix::fs::symlink(&replacement.path, &alias).unwrap();
     assert_eq!(SourceStamp::of(&std::fs::metadata(&original.path).unwrap()), initial.members[0].stamp);
-    locate.insert("session_ids", json!(["wanted"]));
-    let (positive, entries) = public_catalog_finish(&store, &locate, &owner);
-    assert_eq!(positive[0]["status"].as_str(), Some("ok"));
+    locate.insert("session_ids", json!(["unhinted-missing"]));
+    let (negative, entries) = public_catalog_finish(&store, &locate, &owner);
+    assert_eq!(negative[0]["status"].as_str(), Some("missing"));
     assert_eq!(entries, 0);
-    assert_eq!(std::fs::canonicalize(Path::new(positive[0]["path"].as_str().unwrap())).unwrap(), std::fs::canonicalize(&replacement.path).unwrap());
+    {
+        let state = store.lock_state();
+        let slot = state.catalogs.get(certificate.key()).expect("shared public catalog");
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("settled public catalog"); };
+        assert!(!certificate.matches(catalog), "public root hold did not invalidate the registered certificate");
+    }
     let second = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
     assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
     let fresh = store.lock_state().warm_memberships.get(&key).cloned().expect("updated registered membership");
