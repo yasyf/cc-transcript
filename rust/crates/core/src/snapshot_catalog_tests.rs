@@ -631,3 +631,68 @@ fn registered_catalog_membership_rejects_a_parent_retargeted_during_its_pin() {
     assert!(matches!(result, Err(error) if error.status == Status::Changed));
     store.assert_conserved();
 }
+
+fn catalog_cached_membership(store: &NativeStore, request: &Value, owner: &Value, revalidate: bool) -> WarmMembership {
+    let key = NativeStore::warm_membership_key(request, owner).unwrap();
+    let mut remaining = limits(request).unwrap();
+    let (membership, mut reservation) = store.registered_membership(&key, request, owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining, revalidate).unwrap();
+    store.publish_warm_membership(&key, &membership, owner, reservation.as_mut()).unwrap();
+    drop(reservation);
+    membership
+}
+
+#[test]
+fn registered_catalog_cached_membership_observes_root_retarget_with_old_target_alive() {
+    for revalidate in [true, false] {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let left = source.directory.join("left");
+        let right = source.directory.join("right");
+        let alias = source.directory.join("alias");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        for (directory, text) in [(&left, "left"), (&right, "right")] {
+            std::fs::write(directory.join("wanted.jsonl"), format!("{}\n", user(text))).unwrap();
+        }
+        std::os::unix::fs::symlink(&left, &alias).unwrap();
+        let store = store();
+        let owner = context("catalog-cache-root-retarget");
+        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+        request.insert("roots", json!([alias]));
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let initial = catalog_cached_membership(&store, &request, &owner, true);
+        assert_eq!(initial.members[0].path, std::fs::canonicalize(left.join("wanted.jsonl")).unwrap());
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&right, &alias).unwrap();
+        let fresh = catalog_cached_membership(&store, &request, &owner, revalidate);
+        assert!(left.join("wanted.jsonl").is_file());
+        assert_eq!(fresh.members[0].path, std::fs::canonicalize(right.join("wanted.jsonl")).unwrap());
+        assert_ne!(initial.revision, fresh.revision);
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn registered_catalog_negative_lookup_observes_a_nested_source_creation() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let nested = source.directory.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let store = store();
+    let owner = context("catalog-negative-created");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let first = store.registered_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining, true);
+    assert!(matches!(first, Err(error) if error.status == Status::Incomplete));
+    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    let path = nested.join("wanted.jsonl");
+    std::fs::write(&path, format!("{}\n", user("new"))).unwrap();
+    let fresh = catalog_cached_membership(&store, &request, &owner, true);
+    assert!(fresh.complete);
+    assert_eq!(fresh.members[0].path, std::fs::canonicalize(path).unwrap());
+    store.assert_conserved();
+}
