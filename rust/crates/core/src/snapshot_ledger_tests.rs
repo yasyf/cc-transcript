@@ -11582,6 +11582,17 @@ fn filesystem_path_slot_covers_a_joined_directory_entry_path() {
                 joined.capacity() + libc::PATH_MAX as usize + 2 * size_of::<libc::dirent>()
                     <= LOCATE_PATH_SLOTS
             );
+            let raw_parent = PathBuf::from(&root);
+            let mut child = PathBuf::from("c".repeat(libc::PATH_MAX as usize - 1));
+            child.reserve_exact(1 + name.len());
+            child.push(&name);
+            assert!(
+                joined.capacity()
+                    + raw_parent.capacity()
+                    + child.capacity()
+                    + size_of::<libc::dirent>()
+                    <= LOCATE_PATH_SLOTS
+            );
         }
     }
 }
