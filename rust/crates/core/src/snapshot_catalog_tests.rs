@@ -826,3 +826,90 @@ fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_
     assert!(!store.lock_state().warm_memberships.contains_key(&key));
     store.assert_conserved();
 }
+
+fn catalog_ancestor_aba_preserves_fresh_membership(stream: bool) {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let parent = source.directory.join("parent");
+    let saved = source.directory.join("saved-parent");
+    let replacement = source.directory.join("replacement-parent");
+    let forest = parent.join("forest");
+    std::fs::create_dir_all(&forest).unwrap();
+    std::fs::create_dir_all(replacement.join("forest")).unwrap();
+    let (ids, expected) = if stream {
+        std::fs::create_dir(forest.join("child")).unwrap();
+        std::fs::create_dir(replacement.join("forest/child")).unwrap();
+        let wanted = forest.join("child/wanted.jsonl");
+        std::fs::write(&wanted, format!("{}\n", user("wanted"))).unwrap();
+        std::fs::write(replacement.join("forest/child/other.jsonl"), format!("{}\n", user("other"))).unwrap();
+        (vec!["wanted".to_owned()], vec![wanted])
+    } else {
+        let mut expected = Vec::new();
+        for id in ["first", "second"] {
+            let path = forest.join(format!("{id}.jsonl"));
+            std::fs::write(&path, format!("{}\n", user(id))).unwrap();
+            expected.push(path);
+        }
+        (vec!["first".to_owned(), "second".to_owned()], expected)
+    };
+    let before = SourceStamp::of(&std::fs::metadata(&forest).unwrap());
+    let child_before = stream.then(|| SourceStamp::of(&std::fs::metadata(forest.join("child")).unwrap()));
+    let store = Arc::new(NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_events_per_step":16,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap());
+    let owner = context(if stream { "catalog-opened-stream-aba" } else { "catalog-child-fact-aba" });
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &ids);
+    request.insert("roots", json!([forest]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let swapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let restored = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new({
+        let store = Arc::downgrade(&store);
+        let (parent, saved, replacement, swapped, restored) = (parent.clone(), saved.clone(), replacement.clone(), Arc::clone(&swapped), Arc::clone(&restored));
+        move || {
+            std::fs::rename(&parent, &saved).unwrap();
+            std::fs::rename(&replacement, &parent).unwrap();
+            swapped.store(true, Ordering::Relaxed);
+            *store.upgrade().unwrap().location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new({
+                let (parent, saved, replacement, restored) = (parent.clone(), saved.clone(), replacement.clone(), Arc::clone(&restored));
+                move || {
+                    std::fs::rename(&parent, &replacement).unwrap();
+                    std::fs::rename(&saved, &parent).unwrap();
+                    restored.store(true, Ordering::Relaxed);
+                }
+            })));
+        }
+    })));
+    let (first, first_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+    *store.location_metadata_hook.lock().unwrap() = None;
+    assert!(swapped.load(Ordering::Relaxed));
+    if !restored.load(Ordering::Relaxed) {
+        std::fs::rename(&parent, &replacement).unwrap();
+        std::fs::rename(&saved, &parent).unwrap();
+    }
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&forest).unwrap()), before);
+    if let Some(before) = child_before {
+        assert_eq!(SourceStamp::of(&std::fs::metadata(forest.join("child")).unwrap()), before);
+    }
+    assert!(expected.iter().all(|path| path.is_file()));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let (fresh, fresh_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+    eprintln!("registered_ancestor_aba stream={stream} first={:?} first_entries={first_entries} fresh={:?} fresh_entries={fresh_entries}", first["status"].as_str(), fresh["status"].as_str());
+    store.assert_conserved();
+    assert_eq!(fresh["status"].as_str(), Some("ok"), "{fresh:?}");
+    let graph_id = fresh["data"]["handle"]["graph_id"].as_str().unwrap().to_owned();
+    let state = store.lock_state();
+    let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+    for path in expected {
+        let canonical = std::fs::canonicalize(path).unwrap();
+        assert!(graph.sources.iter().any(|source| source.path == canonical));
+    }
+}
+
+#[test]
+fn registered_catalog_ancestor_aba_does_not_share_another_directorys_stream() {
+    catalog_ancestor_aba_preserves_fresh_membership(true);
+}
+
+#[test]
+fn registered_catalog_ancestor_aba_does_not_cache_another_directorys_child_issue() {
+    catalog_ancestor_aba_preserves_fresh_membership(false);
+}
