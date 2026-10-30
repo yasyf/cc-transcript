@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"fix/sdk17-window-alignment"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_criterion_status","id":"d5b437778a469a0f3a40d142f672e055","status":"met","note":"One annotated v14.45.17 object980e3043 points to accepted merge817a9b68/treefbca; official normal allfive release40996239414SUCCESS"}]}
