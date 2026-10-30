@@ -86,7 +86,9 @@ if sys.argv[2] == "legacy":
 else:
     result = project_request_body(sys.argv[1])
     assert result == {"bypass_rules": True, "sha": "a" * 40}, result
-print(json.dumps({"peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}))
+peak = next(line.split() for line in Path("/proc/self/status").read_text().splitlines() if line.startswith("VmHWM:"))
+assert len(peak) == 3 and peak[2] == "kB", peak
+print(json.dumps({"peak_rss_kib": int(peak[1]), "historical_ru_maxrss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}))
 '''
     for size in (4 * 1024 * 1024, 64 * 1024 * 1024):
         path = tmp_path / f"request-{size}.json"
@@ -102,7 +104,9 @@ print(json.dumps({"peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_ma
         report = {"source_bytes": path.stat().st_size}
         for mode in ("native", "legacy"):
             completed = subprocess.run([sys.executable, "-c", script, str(path), mode], check=True, capture_output=True, text=True, timeout=120, env=os.environ.copy())
-            report[mode] = json.loads(completed.stdout)["peak_rss_kib"]
+            measured = json.loads(completed.stdout)
+            report[mode] = measured["peak_rss_kib"]
+            report[mode + "_historical_ru_maxrss"] = measured["historical_ru_maxrss_kib"]
         reports.append(report)
         path.unlink()
     assert reports[1]["native"] <= reports[0]["native"] + 16 * 1024, reports

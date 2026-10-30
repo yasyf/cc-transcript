@@ -2083,7 +2083,7 @@ class Transcript:
     The parsed events of a single transcript file, backed by the native parse
     output; ``events`` materializes lazy views on access.
 
-    One parse owns one ``Arc<Vec<Entry>>`` shared by every view, so retaining any
+    One parse owns one ``Arc<ChunkRows>`` shared by every view, so retaining any
     view keeps the whole parse's entries alive; the live
     :class:`~watch.WatchEvent` stream is exempt (one-entry Arc each).
 
@@ -2540,6 +2540,8 @@ def parse_bytes(raw: bytes, spec_json: typing.Optional[builtins.str] = None) -> 
 
 def parse_print_result(raw: bytes) -> PrintResult: ...
 
+def project_request_body(path: builtins.str) -> typing.Optional[tuple[builtins.bool, typing.Optional[builtins.str]]]: ...
+
 def query_session(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
 
 def register_mcp_tool(tool: builtins.str, behaves_like: builtins.str, span_edit: collections.abc.Mapping[str, str] | None = None) -> None:
@@ -2607,6 +2609,3 @@ def unregister_mcp_tool(tool: builtins.str) -> builtins.bool:
 class SnapshotOperationError(RuntimeError):
     @property
     def __weakref__(self) -> object: ...
-
-
-def project_request_body(path: builtins.str) -> tuple[builtins.bool, builtins.str | None] | None: ...
