@@ -501,7 +501,9 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
         assert_eq!(charge, catalog.audit_charge());
         let growth = vec_growth(&catalog.pending, retries.len());
         assert!(growth > 0);
-        let headroom = LOCATE_USER_PATH_SLOTS + growth - 1;
+        let scratch_growth = LOCATE_USER_PATH_SLOTS.saturating_sub(budget.scratch_bytes);
+        let headroom = scratch_growth + growth - 1;
+        eprintln!("registered_retry_admission background={background} scratch_admitted={} scratch_growth={scratch_growth} retry_growth={growth} headroom={headroom}", budget.scratch_bytes);
         let cap = store.config.retained - if background { store.config.hook_bytes } else { 0 };
         let used = store.retained_accounted_bytes();
         let filler = store.reserve_projection(&owner, cap - used - headroom).unwrap();
