@@ -254,9 +254,9 @@ impl NativeStore {
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
         let outcome = (|| {
-            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64 };
+            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes: 0 };
             if catalog.is_none() {
-                catalog = Some(SourceCatalog::new(self, roots, context, &mut budget)?);
+                catalog = Some(SourceCatalog::new(self, key.as_bytes().try_into().expect("catalog scope digest size"), roots, context, &mut budget)?);
             }
             let catalog = catalog.as_mut().expect("source catalog");
             match &mut mode {
@@ -273,8 +273,8 @@ impl NativeStore {
                     return Ok(CatalogWorkResult::Pending);
                 }
                 CatalogMode::Check(expected) => {
-                    catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-                    return Ok(CatalogWorkResult::Checked(expected.key() == key && expected.matches(catalog)));
+                    let issue = catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    return Ok(CatalogWorkResult::Checked(issue.is_none() && expected.key() == key && expected.matches(catalog)));
                 }
                 CatalogMode::Locate => {}
             }
@@ -291,10 +291,11 @@ impl NativeStore {
                     if plan_epoch != catalog.epoch { plan = None; }
                     if catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) {
                         if plan.is_none() {
-                            catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-                            if !catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) { continue; }
+                            let before_epoch = catalog.epoch;
+                            let issue = catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                            if catalog.epoch != before_epoch || !catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) { continue; }
                             catalog.sync_routes(&mut budget)?;
-                            plan = Some(catalog.read_plan(cancel, remaining.deadline_unix_ms, &mut budget)?);
+                            plan = Some(catalog.read_plan(cancel, remaining.deadline_unix_ms, issue, &mut budget)?);
                             plan_epoch = catalog.epoch;
                         }
                         if let Some(located) = catalog.try_locate(self, chunk, context, cancel,

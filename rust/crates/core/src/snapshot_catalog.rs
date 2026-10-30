@@ -3,11 +3,24 @@ struct CatalogBudget<'a, 'b> {
     context: &'b Value,
     reservation: &'b mut ProjectionReservation<'a>,
     attempt: u64,
+    scratch_bytes: usize,
 }
 
 impl CatalogBudget<'_, '_> {
     fn reserve(&mut self, bytes: usize) -> Result<(), SnapshotError> {
         self.store.extend_projection_reservation(self.reservation, self.context, bytes)
+    }
+
+    fn scratch(&mut self, bytes: usize) -> Result<(), SnapshotError> {
+        if bytes > self.scratch_bytes {
+            self.reserve(bytes - self.scratch_bytes)?;
+            self.scratch_bytes = bytes;
+        }
+        Ok(())
+    }
+
+    fn retain_scratch(&mut self, bytes: usize) {
+        self.scratch_bytes = self.scratch_bytes.checked_sub(bytes).expect("catalog retained payload fits admitted scratch");
     }
 }
 
@@ -20,6 +33,12 @@ struct CatalogBinding {
 }
 
 impl CatalogBinding {
+    fn canonical_path(store: &NativeStore, path: &Path) -> Result<PathBuf, SnapshotError> {
+        #[cfg(test)]
+        store.location_canonicalizations.fetch_add(1, Ordering::Relaxed);
+        std::fs::canonicalize(path).map_err(io_error)
+    }
+
     fn inspect(store: &NativeStore, path: &Path, context: &Value) -> Self {
         #[cfg(test)]
         store.location_canonicalizations.fetch_add(1, Ordering::Relaxed);
@@ -56,15 +75,66 @@ impl CatalogBinding {
     }
 }
 
+struct CatalogNameEvidence {
+    inode: u64,
+    kind: Option<u8>,
+}
+
+#[derive(Clone,Copy)]
+struct CatalogChildMetadata {
+    stamp: SourceStamp,
+    directory: bool,
+    regular: bool,
+    revalidate: bool,
+}
+
+impl CatalogChildMetadata {
+    fn from_descriptor(metadata: &libc::stat) -> Self {
+        let kind = metadata.st_mode & libc::S_IFMT;
+        Self { stamp:SourceStamp { identity:SourceIdentity { device:metadata.st_dev as u64,inode:metadata.st_ino as u64,window_base:0 },
+            size:metadata.st_size as u64,mtime_ns:metadata.st_mtime as i128 * 1_000_000_000 + metadata.st_mtime_nsec as i128,
+            ctime_ns:metadata.st_ctime as i128 * 1_000_000_000 + metadata.st_ctime_nsec as i128 },
+            directory:kind == libc::S_IFDIR,regular:kind == libc::S_IFREG,symlink:kind == libc::S_IFLNK }
+    }
+
+    fn of(metadata: &Metadata) -> Self {
+        Self { stamp:SourceStamp::of(metadata),directory:metadata.is_dir(),regular:metadata.is_file(),symlink:metadata.is_symlink() }
+    }
+
+    fn binding(self, canonical: PathBuf) -> CatalogBinding {
+        CatalogBinding { canonical:Some(canonical),stamp:Some(self.stamp),directory:self.directory,regular:self.regular,
+            issue:None }
+    }
+}
+
 struct CatalogEdge {
     name: OsString,
-    binding: CatalogBinding,
+    binding: Option<CatalogBinding>,
+}
+
+impl CatalogEdge {
+    fn directory(&self) -> Option<&CatalogBinding> {
+        self.binding.as_ref().filter(|binding| binding.directory)
+    }
+
+    fn regular(&self) -> bool {
+        self.binding.as_ref().is_some_and(|binding| binding.regular)
+    }
+
+    fn has_issue(&self) -> bool {
+        self.binding.as_ref().is_none_or(|binding| binding.issue.as_ref().is_some_and(|(status, _)| *status != Status::Missing))
+    }
+
+    fn payload_bytes(&self) -> usize {
+        self.name.capacity() + self.binding.as_ref().map_or(0, CatalogBinding::payload_bytes)
+    }
 }
 
 enum CatalogScan {
     Queued,
     Open(OpenDirectory),
     Done,
+    Unresolved,
     Issue { status: Status, reason: String, position: usize, attempt: u64 },
     Gone,
 }
@@ -84,7 +154,7 @@ struct CatalogDirectory {
     observed: CatalogBinding,
     edges: Vec<CatalogEdge>,
     directories: Vec<usize>,
-    symlinks: Vec<usize>,
+    conditional: Vec<usize>,
     issues: Vec<usize>,
     scan: CatalogScan,
     payload_bytes: usize,
@@ -94,7 +164,7 @@ impl CatalogDirectory {
     fn owned_bytes(&self) -> usize {
         self.canonical.capacity() + self.observed.payload_bytes() + self.payload_bytes
             + self.edges.capacity() * size_of::<CatalogEdge>()
-            + (self.directories.capacity() + self.symlinks.capacity() + self.issues.capacity()) * size_of::<usize>()
+            + (self.directories.capacity() + self.conditional.capacity() + self.issues.capacity()) * size_of::<usize>()
             + self.scan.owned_bytes()
     }
 }
@@ -113,12 +183,30 @@ struct CatalogCandidate {
 struct CatalogPendingEdge {
     directory: SourceIdentity,
     edge: CatalogEdge,
-    symlink: bool,
+    revalidate: bool,
 }
 
 impl CatalogPendingEdge {
     fn owned_bytes(&self) -> usize {
-        self.edge.name.capacity() + self.edge.binding.payload_bytes()
+        self.edge.payload_bytes()
+    }
+}
+
+enum CatalogNameObservation {
+    Bound { binding: CatalogBinding, revalidate: bool },
+    CurrentIssue(SnapshotError),
+    DirectoryIssue(SnapshotError),
+    Unproven,
+}
+
+struct CatalogPendingName {
+    directory: SourceIdentity,
+    entry: OpenDirectoryEntry,
+}
+
+impl CatalogPendingName {
+    fn owned_bytes(&self) -> usize {
+        self.entry.name.capacity()
     }
 }
 
@@ -131,6 +219,7 @@ struct CatalogPendingIssue {
 }
 
 struct SourceCatalog {
+    scope: [u8; 64],
     context: Value,
     roots: Vec<CatalogRoot>,
     directories: Table<SourceIdentity, CatalogDirectory>,
@@ -144,6 +233,7 @@ struct SourceCatalog {
     issues_dirty: bool,
     pending: Vec<SourceIdentity>,
     pending_edge: Option<CatalogPendingEdge>,
+    pending_name: Option<CatalogPendingName>,
     pending_issue: Option<CatalogPendingIssue>,
     context_bytes: usize,
     roots_bytes: usize,
@@ -167,9 +257,11 @@ impl CatalogRoute {
     }
 }
 
+type CatalogQueryIssue = (Vec<usize>, Status, String, bool);
+
 struct CatalogReadPlan {
     scope: Vec<PathBuf>,
-    issue: Option<(Vec<usize>, Status, String, bool)>,
+    issue: Option<CatalogQueryIssue>,
 }
 
 fn catalog_child_path(parent: &Path, name: &OsStr) -> PathBuf {
@@ -189,6 +281,7 @@ impl SourceCatalog {
             + self.retry_issues.capacity() * size_of::<SourceIdentity>()
             + self.pending.capacity() * size_of::<SourceIdentity>()
             + self.pending_edge.as_ref().map_or(0, CatalogPendingEdge::owned_bytes)
+            + self.pending_name.as_ref().map_or(0, CatalogPendingName::owned_bytes)
             + self.pending_issue.as_ref().map_or(0, |issue| issue.reason.capacity())
     }
 
@@ -201,8 +294,8 @@ impl SourceCatalog {
             + self.directories.values().map(|node| {
                 node.canonical.capacity() + node.observed.payload_bytes()
                     + node.edges.capacity() * size_of::<CatalogEdge>()
-                    + node.edges.iter().map(|edge| edge.name.capacity() + edge.binding.payload_bytes()).sum::<usize>()
-                    + (node.directories.capacity() + node.symlinks.capacity() + node.issues.capacity()) * size_of::<usize>()
+                    + node.edges.iter().map(|edge| edge.name.capacity() + edge.binding.as_ref().map_or(0, CatalogBinding::payload_bytes)).sum::<usize>()
+                    + (node.directories.capacity() + node.conditional.capacity() + node.issues.capacity()) * size_of::<usize>()
                     + node.scan.owned_bytes()
             }).sum::<usize>()
             + self.candidates.iter().map(|(key, matches)| key.capacity() + matches.capacity() * size_of::<CatalogCandidate>()).sum::<usize>()
@@ -211,10 +304,19 @@ impl SourceCatalog {
             + self.retry_issues.capacity() * size_of::<SourceIdentity>()
             + self.pending.capacity() * size_of::<SourceIdentity>()
             + self.pending_edge.as_ref().map_or(0, CatalogPendingEdge::owned_bytes)
+            + self.pending_name.as_ref().map_or(0, |pending| {
+                let CatalogPendingName { directory, entry } = pending;
+                let OpenDirectoryEntry { directory: opened, name, kind: _, inode: _ } = entry;
+                let CatalogScan::Open(reader) = &self.directories.get(directory).expect("pending NAME parent").scan else {
+                    panic!("pending NAME retains its open directory");
+                };
+                assert!(Arc::ptr_eq(opened, &reader.entries));
+                name.capacity()
+            })
             + self.pending_issue.as_ref().map_or(0, |issue| issue.reason.capacity())
     }
 
-    fn new(store: &NativeStore, roots: &[Value], context: &Value, budget: &mut CatalogBudget<'_, '_>) -> Result<Self, SnapshotError> {
+    fn new(store: &NativeStore, scope: [u8; 64], roots: &[Value], context: &Value, budget: &mut CatalogBudget<'_, '_>) -> Result<Self, SnapshotError> {
         let authority_len = encoded_size(&context["authority"], MAX_DATA_BYTES)?;
         budget.reserve(size_of::<Self>() + authority_len
             + dom_parse_bound(authority_len).expect("catalog authority allocation bound")
@@ -232,10 +334,11 @@ impl SourceCatalog {
         }).collect::<Result<Vec<_>, SnapshotError>>()?;
         let work = store.lock_state().ledger.shared.work().clone();
         let mut catalog = Self {
+            scope,
             context: json!({"authority":authority}), roots,
             directories: Table::new(work.clone()), candidates: Table::new(work.clone()),
             route_index: Table::new(work), route_bytes: 0, routes_dirty: false, retry_issues: Vec::new(), edge_issues: 0, issue_bound: None, issues_dirty: false,
-            pending: Vec::new(), pending_edge: None, pending_issue: None,
+            pending: Vec::new(), pending_edge: None, pending_name: None, pending_issue: None,
             context_bytes: 0, roots_bytes: 0, directory_bytes: 0, index_bytes: 0,
             incarnation: store.sequence.fetch_add(1, Ordering::Relaxed) as u64,
             decision_revision: 0, selection_revision: 0, epoch: 0, complete: false,
@@ -310,7 +413,7 @@ impl SourceCatalog {
             self.remove_directory_index(identity);
             let node = self.directories.get_mut(&identity).expect("orphan catalog directory");
             let before = node.owned_bytes();
-            node.edges.clear(); node.directories.clear(); node.symlinks.clear(); node.issues.clear();
+            node.edges.clear(); node.directories.clear(); node.conditional.clear(); node.issues.clear();
             node.payload_bytes = 0; node.scan = CatalogScan::Gone;
             self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
         }
@@ -327,6 +430,7 @@ impl SourceCatalog {
         self.retry_issues.extend(routes.keys().filter(|identity|
             matches!(nodes.get(identity).expect("catalog route node").scan, CatalogScan::Issue { .. })).copied());
         if self.pending_edge.as_ref().is_some_and(|edge| !routes.contains_key(&edge.directory)) { self.pending_edge = None; }
+        if self.pending_name.as_ref().is_some_and(|name| !routes.contains_key(&name.directory)) { self.pending_name = None; }
         if self.pending_issue.as_ref().is_some_and(|issue| !routes.contains_key(&issue.directory)) { self.pending_issue = None; }
         self.edge_issues = routes.keys().map(|identity| nodes.get(identity).expect("catalog route node").issues.len()).sum();
         self.routes_dirty = false;
@@ -353,7 +457,11 @@ impl SourceCatalog {
         let mut bound = None;
         for identity in self.route_index.keys() {
             let node = self.directories.get(identity).expect("catalog issue directory");
-            let scanned = match node.scan { CatalogScan::Issue { position, .. } => Some(position), _ => None };
+            let scanned = match node.scan {
+                CatalogScan::Issue { position, .. } => Some(position),
+                CatalogScan::Unresolved => Some(0),
+                _ => None,
+            };
             for position in node.issues.first().copied().into_iter().chain(scanned) {
                 let candidate = (*identity, position);
                 if bound.is_none_or(|old| self.issue_precedes(candidate, old)) { bound = Some(candidate); }
@@ -457,7 +565,7 @@ impl SourceCatalog {
         }
         let observed = CatalogBinding { canonical: Some(canonical.clone()), stamp: Some(stamp), directory: true, regular: false, issue: None };
         let node = CatalogDirectory {
-            canonical, observed, edges: Vec::new(), directories: Vec::new(), symlinks: Vec::new(), issues: Vec::new(),
+            canonical, observed, edges: Vec::new(), directories: Vec::new(), conditional: Vec::new(), issues: Vec::new(),
             scan: CatalogScan::Queued, payload_bytes: 0,
         };
         self.directory_bytes += node.owned_bytes();
@@ -469,10 +577,10 @@ impl SourceCatalog {
     fn install_edge(&mut self, pending: &CatalogPendingEdge, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
         let node = self.directories.get(&pending.directory).expect("catalog directory");
         let edge = &pending.edge;
-        let has_issue = edge.binding.issue.as_ref().is_some_and(|(status, _)| *status != Status::Missing);
+        let has_issue = edge.has_issue();
         let path = Path::new(&edge.name);
         let stem = path.file_stem().map(|stem| stem.to_string_lossy());
-        let indexed = edge.binding.regular && path.extension().is_some_and(|extension| extension == "jsonl");
+        let indexed = edge.regular() && path.extension().is_some_and(|extension| extension == "jsonl");
         let mut new_ids = 0;
         let mut index_growth = 0;
         if indexed {
@@ -485,9 +593,9 @@ impl SourceCatalog {
                 }
             }
         }
-        let directory_growth = if edge.binding.directory {
-            let stamp = edge.binding.stamp.expect("catalog child stamp");
-            let canonical = edge.binding.canonical.as_ref().expect("catalog child path");
+        let directory_growth = if let Some(binding) = edge.directory() {
+            let stamp = binding.stamp.expect("catalog child stamp");
+            let canonical = binding.canonical.as_ref().expect("catalog child path");
             if let Some(child) = self.directories.get(&stamp.identity) {
                 if matches!(child.scan, CatalogScan::Gone) {
                     2 * canonical.as_os_str().len() + vec_growth(&self.pending, 1)
@@ -496,15 +604,15 @@ impl SourceCatalog {
                 self.directories.growth_for(&stamp.identity) + 2 * canonical.as_os_str().len() + vec_growth(&self.pending, 1)
             }
         } else { 0 };
-        let route_growth = if edge.binding.directory {
-            let child = edge.binding.stamp.expect("catalog child stamp").identity;
+        let route_growth = if let Some(binding) = edge.directory() {
+            let child = binding.stamp.expect("catalog child stamp").identity;
             let route = self.route_index.get(&pending.directory).expect("catalog parent route");
             self.route_index.growth_for(&child) + route.path.as_os_str().len() + 1 + edge.name.len()
                 + (route.order.len() + 1) * size_of::<usize>()
         } else { 0 };
-        budget.reserve(route_growth + vec_growth(&node.edges, 1) + pending.owned_bytes()
-            + if pending.symlink { vec_growth(&node.symlinks, 1) } else { 0 }
-            + if edge.binding.directory { vec_growth(&node.directories, 1) } else { 0 }
+        budget.reserve(route_growth + vec_growth(&node.edges, 1)
+            + if pending.revalidate { vec_growth(&node.conditional, 1) } else { 0 }
+            + if edge.directory().is_some() { vec_growth(&node.directories, 1) } else { 0 }
             + if has_issue { vec_growth(&node.issues, 1) } else { 0 }
             + self.candidates.growth(new_ids) + index_growth + directory_growth)?;
         Ok(())
@@ -513,32 +621,32 @@ impl SourceCatalog {
     fn commit_edge(&mut self, pending: CatalogPendingEdge) {
         self.decision_revision += 1;
         let directory = pending.directory;
-        if pending.edge.binding.directory {
+        if let Some(binding) = pending.edge.directory() {
             let parent = self.route_index.get(&directory).expect("catalog parent route");
             let mut order = Vec::with_capacity(parent.order.len() + 1);
             order.extend_from_slice(&parent.order);
             order.push(self.directories.get(&directory).expect("catalog directory").edges.len());
             let route = CatalogRoute { path: catalog_child_path(&parent.path, &pending.edge.name), order };
-            let child = pending.edge.binding.stamp.expect("catalog child stamp").identity;
+            let child = binding.stamp.expect("catalog child stamp").identity;
             self.install_route(child, route);
-            self.install_directory(pending.edge.binding.canonical.as_ref().expect("catalog child path").clone(),
-                pending.edge.binding.stamp.expect("catalog child stamp"), Some(directory));
+            self.install_directory(binding.canonical.as_ref().expect("catalog child path").clone(),
+                binding.stamp.expect("catalog child stamp"), Some(directory));
         }
         let node = self.directories.get_mut(&directory).expect("catalog directory");
         let before = node.owned_bytes();
         let edge_index = node.edges.len();
-        if pending.symlink { node.symlinks.push(edge_index); }
-        if pending.edge.binding.directory { node.directories.push(edge_index); }
-        if pending.edge.binding.issue.as_ref().is_some_and(|(status, _)| *status != Status::Missing) {
+        if pending.revalidate { node.conditional.push(edge_index); }
+        if pending.edge.directory().is_some() { node.directories.push(edge_index); }
+        if pending.edge.has_issue() {
             self.edge_issues += 1;
             node.issues.push(edge_index);
         }
-        node.payload_bytes += pending.edge.name.capacity() + pending.edge.binding.payload_bytes();
+        node.payload_bytes += pending.edge.payload_bytes();
         node.edges.push(pending.edge);
         self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
         let edge = &node.edges[edge_index];
         let path = Path::new(&edge.name);
-        if edge.binding.regular && path.extension().is_some_and(|extension| extension == "jsonl") {
+        if edge.regular() && path.extension().is_some_and(|extension| extension == "jsonl") {
             let stem = path.file_stem().expect("catalog source stem").to_string_lossy();
             for id in Self::index_names(&stem) {
                 if !self.candidates.contains_key(id) {
@@ -557,9 +665,52 @@ impl SourceCatalog {
         }
     }
 
+    fn observe_name(&self, identity: SourceIdentity, reader: &OpenedDirectory, name: &OsStr,
+        inode: u64, order: &[usize], cancel: &Cancellation, deadline: u64,
+        budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogNameObservation, SnapshotError> {
+        let node = self.directories.get(&identity).expect("catalog name parent");
+        let route = self.route_index.get(&identity).expect("catalog name route");
+        let request = CatalogProofRequest { store: budget.store, context: budget.context, cancel, deadline_unix_ms: deadline };
+        let input = CatalogNameProofInput { reader, name, physical_parent: &node.canonical,
+            expected_parent: node.observed.stamp.expect("catalog directory stamp"), logical_target_hint: None };
+        let route = CatalogLogicalRoute { scope: self.scope, listing_generation: self.epoch, raw_parent: &route.path, order };
+        let outcome = match catalog_observe_symlink_edge(&request, input, route, budget) {
+            Ok(outcome) => outcome,
+            Err(error) if matches!(error.status, Status::Missing | Status::Changed | Status::PermissionDenied) => {
+                return Ok(if error.status == Status::Missing { CatalogNameObservation::Unproven }
+                    else { CatalogNameObservation::CurrentIssue(error) });
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(match outcome {
+            CatalogSymlinkEdgeProof::CurrentView { object: _, edge } => {
+                let binding = match edge.target {
+                    CatalogTargetObservation::Metadata { canonical, metadata } => metadata.binding(canonical),
+                    CatalogTargetObservation::ResolutionError { canonical: _, error } if error.status == Status::PermissionDenied => {
+                        return Ok(CatalogNameObservation::CurrentIssue(error));
+                    }
+                    CatalogTargetObservation::ResolutionError { canonical: _, error } => CatalogBinding {
+                        canonical: None, stamp: None, directory: false, regular: false,
+                        issue: Some((error.status, error.reason)),
+                    },
+                };
+                CatalogNameObservation::Bound { binding, revalidate: true }
+            }
+            CatalogSymlinkEdgeProof::NotSymlink(object) => {
+                let stamp = object.metadata.stamp;
+                let revalidate = inode == 0 || stamp.identity.device != identity.device || stamp.identity.inode != inode;
+                CatalogNameObservation::Bound { binding: object.metadata.binding(catalog_child_path(&node.canonical, name)), revalidate }
+            }
+            CatalogSymlinkEdgeProof::CurrentRefusal { stage: CatalogProofStage::LogicalTarget, error } => CatalogNameObservation::CurrentIssue(error),
+            CatalogSymlinkEdgeProof::CurrentRefusal { stage: _, error } => CatalogNameObservation::DirectoryIssue(error),
+            CatalogSymlinkEdgeProof::ObjectError(error) if error.status != Status::Missing => CatalogNameObservation::CurrentIssue(error),
+            CatalogSymlinkEdgeProof::ObjectError(_) | CatalogSymlinkEdgeProof::Unproven(_) => CatalogNameObservation::Unproven,
+        })
+    }
+
     fn advance(&mut self, store: &NativeStore, cancel: &Cancellation, deadline: u64,
         max_entries: usize, usage: &mut [u64; 20], budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
-        budget.reserve(LOCATE_USER_PATH_SLOTS)?;
+        budget.scratch(LOCATE_USER_PATH_SLOTS)?;
         let retries = self.retry_issues.iter().filter(|identity| {
             self.directories.get(*identity).is_some_and(|node|
                 matches!(node.scan, CatalogScan::Issue { attempt, .. } if attempt != budget.attempt))
@@ -579,7 +730,7 @@ impl SourceCatalog {
             self.remove_directory_index(identity);
             let node = self.directories.get_mut(&identity).expect("catalog directory");
             let before = node.owned_bytes();
-            node.edges.clear(); node.directories.clear(); node.symlinks.clear(); node.issues.clear(); node.payload_bytes = 0;
+            node.edges.clear(); node.directories.clear(); node.conditional.clear(); node.issues.clear(); node.payload_bytes = 0;
             node.scan = CatalogScan::Queued;
             self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
             self.pending.push(identity);
@@ -590,6 +741,8 @@ impl SourceCatalog {
         if self.issues_dirty { self.rebuild_issue_bound(); }
         if self.complete { return Ok(()); }
         let mut examined = 0;
+        let mut proof_order = Vec::new();
+        let mut proof_directory = None;
         loop {
             cancel.check(deadline)?;
             if let Some(issue) = self.pending_issue.take() {
@@ -616,6 +769,46 @@ impl SourceCatalog {
                 self.commit_edge(pending);
                 continue;
             }
+            if let Some(pending) = self.pending_name.as_ref() {
+                let identity = pending.directory;
+                assert_eq!(self.pending.last(), Some(&identity));
+                let position = self.directories.get(&identity).expect("pending NAME directory").edges.len();
+                if proof_directory != Some(identity) {
+                    let route = self.route_index.get(&identity).expect("pending NAME route");
+                    let additional = (route.order.len() + 1).saturating_sub(proof_order.len());
+                    budget.reserve(vec_growth(&proof_order, additional))?;
+                    proof_order.reserve(additional);
+                    proof_order.clear();
+                    proof_order.extend_from_slice(&route.order);
+                    proof_order.push(position);
+                    proof_directory = Some(identity);
+                } else {
+                    *proof_order.last_mut().expect("catalog NAME order") = position;
+                }
+                #[cfg(test)]
+                store.after_location_metadata("catalog_name");
+                let observed = self.observe_name(identity, &pending.entry.directory, &pending.entry.name,
+                    pending.entry.inode, &proof_order, cancel, deadline, budget)?;
+                let (binding, revalidate) = match observed {
+                    CatalogNameObservation::Bound { binding, revalidate } => {
+                        budget.retain_scratch(binding.payload_bytes());
+                        (Some(binding), revalidate)
+                    }
+                    CatalogNameObservation::CurrentIssue(_) => (None, true),
+                    CatalogNameObservation::DirectoryIssue(_) => {
+                        self.mark_unresolved_directory(identity);
+                        return Ok(());
+                    }
+                    CatalogNameObservation::Unproven => return Err(self.reject_directory_observation(identity)),
+                };
+                let pending = self.pending_name.take().expect("proved catalog NAME");
+                self.decision_revision += 1;
+                self.pending_edge = Some(CatalogPendingEdge { directory: identity,
+                    edge: CatalogEdge { name: pending.entry.name, binding }, revalidate });
+                #[cfg(test)]
+                store.after_location_metadata("entry");
+                continue;
+            }
             let Some(identity) = self.pending.last().copied() else {
                 self.decision_revision += 1;
                 self.epoch += 1;
@@ -623,24 +816,38 @@ impl SourceCatalog {
                 return Ok(());
             };
             if examined == max_entries { return Ok(()); }
-            let node = self.directories.get_mut(&identity).expect("catalog directory");
-            let before = node.owned_bytes();
+            let node = self.directories.get(&identity).expect("catalog directory");
             if matches!(node.scan, CatalogScan::Queued) {
-                budget.reserve(READ_DIR_HANDLE_BYTES + node.canonical.as_os_str().len() + FILESYSTEM_PATH_BYTES
-                    + vec_growth(&self.retry_issues, 1))?;
-                node.scan = match OpenDirectory::open(&node.canonical) {
-                    Ok(reader) => CatalogScan::Open(reader),
-                    Err(error) => CatalogScan::Issue { status: error.status, reason: error.reason, position: 0, attempt: budget.attempt },
-                };
-                self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
-                if matches!(node.scan, CatalogScan::Issue { .. }) {
-                    self.decision_revision += 1;
-                    self.retry_issues.push(identity);
-                    self.record_issue(identity, 0);
-                    self.pending.pop();
-                    continue;
+                let request = CatalogProofRequest { store, context: budget.context, cancel, deadline_unix_ms: deadline };
+                match catalog_open_proof_directory(&request, &node.canonical,
+                    node.observed.stamp.expect("queued directory stamp"), budget) {
+                    Ok(CatalogProofDirectory::Opened(reader)) => {
+                        budget.retain_scratch(reader.retained_bytes());
+                        let node = self.directories.get_mut(&identity).expect("catalog directory");
+                        let before = node.owned_bytes();
+                        node.scan = CatalogScan::Open(reader);
+                        self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
+                    }
+                    Ok(CatalogProofDirectory::CurrentRefusal(_)) => {
+                        self.mark_unresolved_directory(identity);
+                        return Ok(());
+                    }
+                    Ok(CatalogProofDirectory::Unproven(_)) => return Err(self.reject_directory_observation(identity)),
+                    Err(error) if matches!(error.status, Status::Missing | Status::Changed | Status::PermissionDenied) => {
+                        self.mark_unresolved_directory(identity);
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
                 }
             }
+            budget.scratch(LOCATE_USER_PATH_SLOTS)?;
+            let node = self.directories.get(&identity).expect("catalog directory");
+            let current = CatalogBinding::inspect(store, &node.canonical, budget.context);
+            if current.issue.is_some() {
+                self.mark_unresolved_directory(identity);
+                return Ok(());
+            }
+            if !node.observed.unchanged(&current) { return Err(self.reject_directory_observation(identity)); }
             let node = self.directories.get_mut(&identity).expect("catalog directory");
             let CatalogScan::Open(reader) = &mut node.scan else {
                 self.pending.pop();
@@ -665,15 +872,16 @@ impl SourceCatalog {
                     continue;
                 }
             };
+            #[cfg(test)]
+            let entry = {
+                let mut entry = entry;
+                if store.directory_force_unknown.load(Ordering::Relaxed) { entry.kind = libc::DT_UNKNOWN; }
+                entry
+            };
             examined += 1;
             usage[17] += 1;
-            let path = entry.path();
-            let symlink = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_symlink());
-            let binding = CatalogBinding::inspect(store, &path, &self.context);
-            self.decision_revision += 1;
-            self.pending_edge = Some(CatalogPendingEdge { directory: identity, edge: CatalogEdge { name: entry.file_name(), binding }, symlink });
-            #[cfg(test)]
-            store.after_location_metadata("entry");
+            budget.retain_scratch(entry.name.capacity());
+            self.pending_name = Some(CatalogPendingName { directory: identity, entry });
         }
     }
 
@@ -699,7 +907,7 @@ impl SourceCatalog {
                 let mut order = Vec::with_capacity(route.order.len() + 1);
                 order.extend_from_slice(&route.order);
                 order.push(*index);
-                pending.push((edge.binding.stamp.expect("catalog child stamp").identity,
+                pending.push((edge.directory().expect("catalog directory edge").stamp.expect("catalog child stamp").identity,
                     CatalogRoute { path: catalog_child_path(&route.path, &edge.name), order }));
             }
             budget.reserve(map_growth(&routes, 1))?;
@@ -716,7 +924,7 @@ impl SourceCatalog {
         if self.route_index.contains_key(&identity) { self.edge_issues -= node.issues.len(); }
         for edge in &node.edges {
             let path = Path::new(&edge.name);
-            if !edge.binding.regular || path.extension().is_none_or(|extension| extension != "jsonl") { continue; }
+            if !edge.regular() || path.extension().is_none_or(|extension| extension != "jsonl") { continue; }
             let stem = path.file_stem().expect("catalog source stem").to_string_lossy();
             for id in Self::index_names(&stem) {
                 if let Some(candidates) = self.candidates.get_mut(id) {
@@ -730,6 +938,48 @@ impl SourceCatalog {
         }
     }
 
+    fn mark_unresolved_directory(&mut self, identity: SourceIdentity) {
+        if matches!(self.directories.get(&identity).expect("catalog directory").scan, CatalogScan::Unresolved) { return; }
+        self.remove_directory_index(identity);
+        let node = self.directories.get_mut(&identity).expect("catalog directory");
+        let before = node.owned_bytes();
+        node.edges.clear();
+        node.directories.clear();
+        node.conditional.clear();
+        node.issues.clear();
+        node.payload_bytes = 0;
+        node.scan = CatalogScan::Unresolved;
+        self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
+        self.pending.retain(|pending| *pending != identity);
+        if self.pending_name.as_ref().is_some_and(|pending| pending.directory == identity) { self.pending_name = None; }
+        if self.pending_edge.as_ref().is_some_and(|pending| pending.directory == identity) { self.pending_edge = None; }
+        if self.pending_issue.as_ref().is_some_and(|pending| pending.directory == identity) { self.pending_issue = None; }
+        self.complete = false;
+        self.routes_dirty = true;
+        self.epoch += 1;
+        self.record_issue(identity, 0);
+    }
+
+    fn reject_directory_observation(&mut self, identity: SourceIdentity) -> SnapshotError {
+        assert_eq!(self.pending.last(), Some(&identity));
+        assert!(self.pending_edge.is_none() && self.pending_issue.is_none());
+        self.remove_directory_index(identity);
+        let node = self.directories.get_mut(&identity).expect("catalog directory");
+        let before = node.owned_bytes();
+        node.edges.clear();
+        node.directories.clear();
+        node.conditional.clear();
+        node.issues.clear();
+        node.payload_bytes = 0;
+        node.scan = CatalogScan::Queued;
+        self.pending_name = None;
+        self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
+        self.complete = false;
+        self.routes_dirty = true;
+        self.epoch += 1;
+        SnapshotError::new(Status::Changed, "registered directory observation changed")
+    }
+
     fn invalidate_directory(&mut self, identity: SourceIdentity, fresh: CatalogBinding,
         budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
         budget.reserve(vec_growth(&self.pending, 1))?;
@@ -738,7 +988,7 @@ impl SourceCatalog {
         let before = node.owned_bytes();
         node.edges.clear();
         node.directories.clear();
-        node.symlinks.clear();
+        node.conditional.clear();
         node.issues.clear();
         node.payload_bytes = 0;
         let same_directory = fresh.directory && fresh.stamp.is_some_and(|stamp| stamp.identity == identity);
@@ -748,6 +998,9 @@ impl SourceCatalog {
         self.pending.retain(|pending| *pending != identity);
         if self.pending_edge.as_ref().is_some_and(|pending| pending.directory == identity) {
             self.pending_edge = None;
+        }
+        if self.pending_name.as_ref().is_some_and(|pending| pending.directory == identity) {
+            self.pending_name = None;
         }
         if self.pending_issue.as_ref().is_some_and(|issue| issue.directory == identity) {
             self.pending_issue = None;
@@ -798,33 +1051,125 @@ impl SourceCatalog {
         let Some(identity) = self.pending.last().copied() else { return Ok(()); };
         let node = self.directories.get(&identity).expect("catalog frontier directory");
         let fresh = CatalogBinding::inspect(store, &node.canonical, &self.context);
-        if !node.observed.unchanged(&fresh) { self.invalidate_directory(identity, fresh, budget)?; }
+        if fresh.issue.is_some() { self.mark_unresolved_directory(identity); }
+        else if !node.observed.unchanged(&fresh) { self.invalidate_directory(identity, fresh, budget)?; }
         Ok(())
     }
 
     fn refresh(&mut self, store: &NativeStore, cancel: &Cancellation, deadline: u64,
-        budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
+        budget: &mut CatalogBudget<'_, '_>) -> Result<Option<CatalogQueryIssue>, SnapshotError> {
         self.check_roots(store, cancel, deadline, budget)?;
+        self.sync_routes(budget)?;
         let mut changed = Vec::new();
+        let mut unresolved = Vec::new();
+        let mut query_issue = None;
+        let mut proof_order = Vec::new();
         for (identity, node) in self.directories.iter() {
             cancel.check(deadline)?;
             let fresh = CatalogBinding::inspect(store, &node.canonical, &self.context);
-            let mut dirty = !node.observed.unchanged(&fresh);
-            for index in &node.symlinks {
-                cancel.check(deadline)?;
-                let edge = &node.edges[*index];
-                let path = catalog_child_path(&node.canonical, &edge.name);
-                let fresh = CatalogBinding::inspect(store, &path, &self.context);
-                dirty |= !edge.binding.unchanged(&fresh);
+            if let Some((status, reason)) = fresh.issue {
+                if self.route_index.contains_key(identity) {
+                    self.remember_query_issue(&mut query_issue, *identity, 0, SnapshotError { status, reason }, budget)?;
+                }
+                if !matches!(node.scan, CatalogScan::Unresolved) {
+                    budget.reserve(vec_growth(&unresolved, 1))?;
+                    unresolved.push(*identity);
+                }
+                continue;
             }
-            if dirty {
+            let mut dirty = !node.observed.unchanged(&fresh);
+            let reachable = self.route_index.contains_key(identity);
+            let request = CatalogProofRequest { store, context: budget.context, cancel, deadline_unix_ms: deadline };
+            let mut unavailable = false;
+            if !dirty && reachable && matches!(node.scan, CatalogScan::Unresolved) {
+                match catalog_open_proof_directory(&request, &node.canonical,
+                    fresh.stamp.expect("current directory stamp"), budget) {
+                    Ok(CatalogProofDirectory::Opened(reader)) => { drop(reader); dirty = true; }
+                    Ok(CatalogProofDirectory::CurrentRefusal(error)) => {
+                        self.remember_query_issue(&mut query_issue, *identity, 0, error, budget)?;
+                        unavailable = true;
+                    }
+                    Ok(CatalogProofDirectory::Unproven(_)) => dirty = true,
+                    Err(error) if matches!(error.status, Status::Missing | Status::Changed | Status::PermissionDenied) => {
+                        self.remember_query_issue(&mut query_issue, *identity, 0, error, budget)?;
+                        unavailable = true;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            if !dirty && !unavailable && reachable && !node.conditional.is_empty() {
+                let mut temporary = None;
+                let mut retained = 0;
+                let reader = if let CatalogScan::Open(reader) = &node.scan { Some(reader) }
+                else {
+                    match catalog_open_proof_directory(&request, &node.canonical,
+                        node.observed.stamp.expect("catalog directory stamp"), budget) {
+                        Ok(CatalogProofDirectory::Opened(reader)) => {
+                            retained = reader.retained_bytes();
+                            budget.retain_scratch(retained);
+                            temporary = Some(reader);
+                            temporary.as_ref()
+                        }
+                        Ok(CatalogProofDirectory::CurrentRefusal(error)) => {
+                            self.remember_query_issue(&mut query_issue, *identity, 0, error, budget)?;
+                            unavailable = true;
+                            None
+                        }
+                        Ok(CatalogProofDirectory::Unproven(_)) => { dirty = true; None }
+                        Err(error) if matches!(error.status, Status::Missing | Status::Changed | Status::PermissionDenied) => {
+                            self.remember_query_issue(&mut query_issue, *identity, 0, error, budget)?;
+                            unavailable = true;
+                            None
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
+                if let Some(reader) = reader {
+                    let route = self.route_index.get(identity).expect("conditional directory route");
+                    let additional = (route.order.len() + 1).saturating_sub(proof_order.len());
+                    budget.reserve(vec_growth(&proof_order, additional))?;
+                    proof_order.reserve(additional);
+                    proof_order.clear();
+                    proof_order.extend_from_slice(&route.order);
+                    proof_order.push(0);
+                    for index in &node.conditional {
+                        *proof_order.last_mut().expect("conditional NAME order") = *index;
+                        let edge = &node.edges[*index];
+                        match self.observe_name(*identity, &reader.entries, &edge.name, 0,
+                            &proof_order, cancel, deadline, budget)? {
+                            CatalogNameObservation::Bound { binding, revalidate: _ } => {
+                                dirty |= edge.binding.as_ref().is_none_or(|old| !old.unchanged(&binding));
+                            }
+                            CatalogNameObservation::CurrentIssue(error) => {
+                                dirty |= edge.binding.is_some();
+                                self.remember_query_issue(&mut query_issue, *identity, *index, error, budget)?;
+                            }
+                            CatalogNameObservation::DirectoryIssue(error) => {
+                                self.remember_query_issue(&mut query_issue, *identity, 0, error, budget)?;
+                                unavailable = true;
+                                break;
+                            }
+                            CatalogNameObservation::Unproven => { dirty = true; break; }
+                        }
+                    }
+                }
+                drop(temporary);
+                budget.scratch_bytes += retained;
+            }
+            if unavailable {
+                if !matches!(node.scan, CatalogScan::Unresolved) {
+                    budget.reserve(vec_growth(&unresolved, 1))?;
+                    unresolved.push(*identity);
+                }
+            } else if dirty {
                 budget.reserve(vec_growth(&changed, 1) + fresh.payload_bytes())?;
                 changed.push((*identity, fresh));
             }
         }
+        for identity in unresolved { self.mark_unresolved_directory(identity); }
         for (identity, fresh) in changed { self.invalidate_directory(identity, fresh, budget)?; }
         self.sync_routes(budget)?;
-        if self.pending.is_empty() && self.pending_edge.is_none() && self.pending_issue.is_none() {
+        if self.pending.is_empty() && self.pending_edge.is_none() && self.pending_name.is_none() && self.pending_issue.is_none() {
             let reachable = &self.route_index;
             let mut removed = Vec::new();
             for identity in self.directories.keys() {
@@ -839,7 +1184,7 @@ impl SourceCatalog {
                 self.directory_bytes -= node.owned_bytes();
             }
         }
-        Ok(())
+        Ok(query_issue)
     }
 
     fn query_order(route: &CatalogRoute, edge: usize, budget: &mut CatalogBudget<'_, '_>) -> Result<Vec<usize>, SnapshotError> {
@@ -854,12 +1199,32 @@ impl SourceCatalog {
         self.frontier_after(bound.iter().copied())
     }
 
-    fn read_plan(&self, cancel: &Cancellation, deadline: u64,
+    fn remember_query_issue(&self, current: &mut Option<CatalogQueryIssue>, identity: SourceIdentity,
+        position: usize, error: SnapshotError, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
+        let route = self.route_index.get(&identity).expect("catalog current issue route");
+        if current.as_ref().is_some_and(|(old, _, _, _)|
+            route.order.iter().copied().chain(std::iter::once(position)).cmp(old.iter().copied()).is_ge())
+        { return Ok(()); }
+        let length = route.order.len() + 1;
+        budget.scratch(length * size_of::<usize>() + error.reason.capacity())?;
+        let mut order = Vec::with_capacity(length);
+        order.extend_from_slice(&route.order);
+        order.push(position);
+        if let Some(old) = current.take() {
+            let released = old.0.capacity() * size_of::<usize>() + old.2.capacity();
+            drop(old);
+            budget.scratch_bytes += released;
+        }
+        budget.retain_scratch(order.capacity() * size_of::<usize>() + error.reason.capacity());
+        *current = Some((order, error.status, error.reason, false));
+        Ok(())
+    }
+
+    fn read_plan(&self, cancel: &Cancellation, deadline: u64, mut issue: Option<CatalogQueryIssue>,
         budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogReadPlan, SnapshotError> {
         budget.reserve(self.roots.len() * size_of::<PathBuf>()
             + self.roots.iter().map(|root| root.path.as_os_str().len()).sum::<usize>())?;
         let scope = self.roots.iter().map(|root| root.path.clone()).collect();
-        let mut issue = None;
         for (identity, route) in self.route_index.iter() {
             cancel.check(deadline)?;
             let node = self.directories.get(identity).expect("catalog directory");
@@ -872,7 +1237,7 @@ impl SourceCatalog {
             }
             for index in &node.issues {
                 let edge = &node.edges[*index];
-                if let Some((status, reason)) = &edge.binding.issue {
+                if let Some((status, reason)) = edge.binding.as_ref().and_then(|binding| binding.issue.as_ref()) {
                     let order = Self::query_order(route, *index, budget)?;
                     if issue.as_ref().is_none_or(|(old, _, _, _)| &order < old) {
                         budget.reserve(reason.len())?;

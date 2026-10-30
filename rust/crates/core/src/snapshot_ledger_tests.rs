@@ -8746,7 +8746,7 @@ fn location_parked(fixture: &Fixture) -> bool {
 fn open_directory_reservation(cursor: &LocateCursor, root: &Path) -> usize {
     cursor.seen_directories.capacity() * size_of::<SourceIdentity>()
         + cursor.directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>()
         + root.as_os_str().len()
 }
 
@@ -9947,7 +9947,7 @@ fn location_cursor_charges_its_open_directory_root_copy() {
             let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
             assert_eq!(cursor.directories.len(), 1);
             assert_eq!(
-                cursor.directories[0].root_capacity,
+                cursor.directories[0].entries.root.capacity(),
                 root.as_os_str().len(),
                 "{site}: the open directory does not record its root copy"
             );
@@ -11136,7 +11136,7 @@ fn fresh_graph_cursor_admits_its_record_before_constructing_it() {
         .join("s")
         .join("subagents");
     let listed_directory =
-        2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
+        2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
     for background in [false, true] {
         let build = || graph_fixture(&source, background, json!([]));
         let control = build();
@@ -11793,7 +11793,11 @@ fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
         scenario
             .sidechains
             .iter()
-            .map(|path| acquired(&store, path, &owner).1),
+            .map(|path| {
+                let (handle, snapshot) = acquired(&store, path, &owner);
+                release_lease(&store, &handle, &owner);
+                snapshot
+            }),
     );
     Fixture {
         store,
@@ -12459,7 +12463,7 @@ fn discovery_step_peak(token: &String, scan: &DiscoveryCursor, root: &Path) -> u
 fn discovery_directory_reservation(scan: &DiscoveryCursor, root: &Path) -> usize {
     scan.seen_directories.capacity() * size_of::<SourceIdentity>()
         + scan.directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>()
         + std::fs::canonicalize(root).unwrap().as_os_str().len()
 }
 
@@ -12561,7 +12565,7 @@ fn first_directory_reservation(root: &Path, root_len: usize) -> usize {
     directories.push([0; size_of::<OpenDirectory>()]);
     seen.capacity() * size_of::<SourceIdentity>()
         + directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>()
         + root_len
 }
 
@@ -12680,7 +12684,7 @@ fn denied_graph_listing_admission_opens_nothing_and_retries() {
         .unwrap()
         .join("s")
         .join("subagents");
-    let listed = 2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
+    let listed = 2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
     for background in [false, true] {
         assert_denied_directory_admission_opens_nothing(
             "graph listing",
