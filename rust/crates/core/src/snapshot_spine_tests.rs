@@ -14,6 +14,7 @@ fn source_spine_reuses_full_history_rows_for_a_tail_view() {
     assert_eq!(tail.entries().iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>(),
         full.entries()[first..].iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>());
     let read = after[1] - before[1];
+    eprintln!("source_spine_probe full_to_tail {}", json!({"source_bytes":read,"cold_parses":after[4]-before[4],"events_parsed":after[3]-before[3]}));
     assert!(read <= 8192, "full-to-tail source bytes={read}, limit=8192");
     assert_eq!(after[4], before[4], "full-to-tail cold parses");
     assert!(tail.chunks.iter().any(|selected| full.chunks.iter().any(|original| Arc::ptr_eq(&selected.entries, &original.entries))));
@@ -44,6 +45,7 @@ fn source_spine_reuses_rows_across_a_half_tail_quantum() {
     assert_eq!(current.window_start, start);
     assert_eq!(current.event_count, next - first_event);
     let read = after[1] - before[1];
+    eprintln!("source_spine_probe half_quantum {}", json!({"source_bytes":read,"appended_bytes":appended,"cold_parses":after[4]-before[4],"events_parsed":after[3]-before[3]}));
     assert!(read <= appended + 4096, "half-quantum source bytes={read}, appended={appended}, overlap limit=4096");
     assert_eq!(after[4], before[4], "half-quantum cold parses");
     assert!(current.chunks.iter().any(|selected| prior.chunks.iter().any(|original| Arc::ptr_eq(&selected.entries, &original.entries))));
@@ -73,6 +75,7 @@ fn source_spine_tail_matches_a_cold_parse_with_skipped_lines_and_a_provisional_t
             cold.entries().iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>());
         let after = store.state.lock().unwrap().counters;
         let read = after[1] - before[1];
+        eprintln!("source_spine_probe skipped_provisional {}", json!({"provisional":provisional,"source_bytes":read,"cold_parses":after[4]-before[4],"events_parsed":after[3]-before[3]}));
         assert!(read <= 8192, "skipped/provisional source bytes={read}, limit=8192, provisional={provisional}");
         store.assert_conserved();
         reference.assert_conserved();
