@@ -145,6 +145,13 @@ impl CatalogNameRecord {
     fn payload_bytes(&self) -> usize {
         self.name.capacity() + self.binding.payload_bytes() + self.issue.as_ref().map_or(0,|(_,reason)| reason.capacity())
     }
+
+    fn unchanged(&self, fresh: &CatalogBinding) -> bool {
+        if self.issue.is_some() {
+            return self.issue == fresh.issue && fresh.canonical.is_none() && fresh.stamp.is_none();
+        }
+        self.binding.unchanged(fresh)
+    }
 }
 
 enum CatalogScan {
@@ -1083,7 +1090,7 @@ impl SourceCatalog {
                 let edge = &node.edges[*index];
                 let path = catalog_child_path(&node.canonical, &edge.name);
                 match CatalogBinding::inspect(store, &path, budget.context) {
-                    Ok(fresh) => dirty |= !edge.binding.unchanged(&fresh),
+                    Ok(fresh) => dirty |= !edge.unchanged(&fresh),
                     Err(error) if error.status == Status::PermissionDenied => {},
                     Err(error) => return Err(error),
                 }
@@ -1200,7 +1207,11 @@ impl SourceCatalog {
                     route.order.iter().copied().chain(std::iter::once(offset)).cmp(bound.iter().copied()).is_le()
                 }))
             });
-            if old.unchanged(&fresh) && !uncertain {
+            let unchanged = match check.kind {
+                CatalogCheckKind::Edge(identity,index) => self.directories.get(&identity).expect("prefix parent").edges[index].unchanged(&fresh),
+                _ => old.unchanged(&fresh),
+            };
+            if unchanged && !uncertain {
                 if fresh.directory {
                     budget.reserve(set_growth(&query.seen_directories,1))?;
                     query.seen_directories.insert(fresh.stamp.expect("certified prefix directory").identity);
