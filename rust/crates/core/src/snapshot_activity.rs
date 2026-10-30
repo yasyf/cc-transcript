@@ -284,7 +284,10 @@ impl ActivityIndex {
                 prefix_call_bytes: prefix_call_bytes + fresh_call_bytes,
             };
             if position == 0 && tail.continued {
-                let stable_turn_bytes = next.turns.len().checked_sub(2)
+                let stable_turn_bytes = next
+                    .turns
+                    .len()
+                    .checked_sub(2)
                     .map_or(0, |at| next.turns[at].prefix_turn_bytes);
                 let prior = Arc::make_mut(&mut next.turns).last_mut().unwrap();
                 if Arc::strong_count(prior) > 1 {
@@ -295,11 +298,14 @@ impl ActivityIndex {
                 prior.started = prior.started.or(turn.started);
                 prior.ended = turn.ended.or(prior.ended);
                 prior.calls.extend(turn.calls);
-                prior.prefix_turn_bytes = stable_turn_bytes + arc_bytes::<CachedTurn>()
-                    + prior.prompt.capacity() + prior.calls.capacity() * size_of::<Arc<CachedCall>>();
+                prior.prefix_turn_bytes = stable_turn_bytes
+                    + arc_bytes::<CachedTurn>()
+                    + prior.prompt.capacity()
+                    + prior.calls.capacity() * size_of::<Arc<CachedCall>>();
                 prior.prefix_call_bytes = prefix_call_bytes + fresh_call_bytes;
             } else {
-                turn.prefix_turn_bytes += arc_bytes::<CachedTurn>() + turn.prompt.capacity()
+                turn.prefix_turn_bytes += arc_bytes::<CachedTurn>()
+                    + turn.prompt.capacity()
                     + turn.calls.capacity() * size_of::<Arc<CachedCall>>();
                 Arc::make_mut(&mut next.turns).push(Arc::new(turn));
             }
@@ -314,11 +320,13 @@ impl ActivityIndex {
                 if Arc::ptr_eq(&self.turns[last], &prior.turns[last]) {
                     prior.turns[last].prefix_turn_bytes
                 } else {
-                    last.checked_sub(1).map_or(0, |at| prior.turns[at].prefix_turn_bytes)
+                    last.checked_sub(1)
+                        .map_or(0, |at| prior.turns[at].prefix_turn_bytes)
                 }
             })
         });
-        let shared_calls = previous.and_then(|prior| prior.turns.last())
+        let shared_calls = previous
+            .and_then(|prior| prior.turns.last())
             .map_or(0, |turn| turn.prefix_call_bytes);
         let turns = if previous.is_some_and(|prior| Arc::ptr_eq(&self.turns, &prior.turns)) {
             0
@@ -330,13 +338,15 @@ impl ActivityIndex {
             0
         } else {
             arc_bytes::<HashMap<String, usize>>()
-                + self.uuids.capacity() * size_of::<(String, usize)>() + self.uuid_key_bytes
+                + self.uuids.capacity() * size_of::<(String, usize)>()
+                + self.uuid_key_bytes
         };
         let results = if previous.is_some_and(|prior| Arc::ptr_eq(&self.results, &prior.results)) {
             0
         } else {
             arc_bytes::<HashMap<String, ResultPosition>>()
-                + self.results.capacity() * size_of::<(String, ResultPosition)>() + self.result_key_bytes
+                + self.results.capacity() * size_of::<(String, ResultPosition)>()
+                + self.result_key_bytes
         };
         let payload = self.turns.last().map_or(0, |turn| {
             turn.prefix_turn_bytes - shared_turns + turn.prefix_call_bytes - shared_calls
@@ -1183,17 +1193,38 @@ mod tests {
 
     #[test]
     fn load_charge_activity_summaries_match_independent_allocations() {
-        let entries = [user("u", "first"), tools(), results(), user("v", "second"), tools(), results()];
+        let entries = [
+            user("u", "first"),
+            tools(),
+            results(),
+            user("v", "second"),
+            tools(),
+            results(),
+        ];
         let refs: Vec<_> = entries.iter().collect();
         let mut previous = ActivityIndex::default();
         for end in 1..=entries.len() {
-            let prior: std::collections::HashSet<_> = previous.audited_heap_allocations().into_iter().map(|(id, _)| id).collect();
+            let prior: std::collections::HashSet<_> = previous
+                .audited_heap_allocations()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
             let old = previous.audited_heap_allocations();
             let next = previous.append(&refs[..end], end - 1, None);
-            let actual: usize = next.audited_heap_allocations().into_iter()
-                .filter(|(id, _)| !prior.contains(id)).map(|(_, bytes)| bytes).sum();
+            let actual: usize = next
+                .audited_heap_allocations()
+                .into_iter()
+                .filter(|(id, _)| !prior.contains(id))
+                .map(|(_, bytes)| bytes)
+                .sum();
             assert_eq!(next.heap_bytes_since(Some(&previous)), actual);
-            assert_eq!(next.heap_bytes_since(None), next.audited_heap_allocations().into_iter().map(|(_, bytes)| bytes).sum());
+            assert_eq!(
+                next.heap_bytes_since(None),
+                next.audited_heap_allocations()
+                    .into_iter()
+                    .map(|(_, bytes)| bytes)
+                    .sum::<usize>()
+            );
             assert_eq!(previous.audited_heap_allocations(), old);
             parity(&next, &refs[..end], None);
             previous = next;

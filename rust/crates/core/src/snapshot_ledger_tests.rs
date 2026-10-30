@@ -9420,7 +9420,11 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         .iter()
         .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
         .collect();
-    let shared_wrappers: HashSet<usize> = previous.chunks.iter().map(|chunk| Arc::as_ptr(chunk) as usize).collect();
+    let shared_wrappers: HashSet<usize> = previous
+        .chunks
+        .iter()
+        .map(|chunk| Arc::as_ptr(chunk) as usize)
+        .collect();
     let prior: HashSet<usize> = previous
         .activity
         .audited_allocations(true)

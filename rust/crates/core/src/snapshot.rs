@@ -8410,12 +8410,20 @@ impl NativeStore {
     fn unpublished_load_charge(load: &Load) -> usize {
         load.charge_work.tick(1);
         let previous_activity = load.activity_from_previous.then(|| {
-            load.previous.as_ref().expect("inherited activity").activity.as_ref()
+            load.previous
+                .as_ref()
+                .expect("inherited activity")
+                .activity
+                .as_ref()
         });
         load.pending.capacity()
             + load.codex_raw.as_ref().map_or(0, |raw| {
-                if load.previous.as_ref().and_then(|previous| previous.codex_raw.as_ref())
-                    .is_some_and(|previous| Arc::ptr_eq(previous, raw)) {
+                if load
+                    .previous
+                    .as_ref()
+                    .and_then(|previous| previous.codex_raw.as_ref())
+                    .is_some_and(|previous| Arc::ptr_eq(previous, raw))
+                {
                     0
                 } else {
                     arc_bytes::<Vec<u8>>() + raw.capacity()
@@ -9056,8 +9064,8 @@ impl NativeStore {
                         end: load.pending_start + consumed as u64,
                     });
                     let chunk = Arc::new(EntryChunk::retaining(load.count, entries, arenas));
-                    load.fresh_chunk_bytes += chunk.charge.owned_capacity_bytes
-                        + chunk.charge.opaque_dom_accounted_bytes;
+                    load.fresh_chunk_bytes +=
+                        chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes;
                     load.chunks.push(chunk);
                     load.count += count;
                 }
@@ -9127,8 +9135,8 @@ impl NativeStore {
                         end: slot.stamp.size,
                     });
                     let chunk = Arc::new(EntryChunk::retaining(load.count, tail, arenas));
-                    load.fresh_chunk_bytes += chunk.charge.owned_capacity_bytes
-                        + chunk.charge.opaque_dom_accounted_bytes;
+                    load.fresh_chunk_bytes +=
+                        chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes;
                     load.chunks.push(chunk);
                     load.count += count;
                     load.provisional = true;
