@@ -39,6 +39,7 @@ pub mod scan_stream;
 #[cfg(feature = "sqlite")]
 pub mod schema;
 pub mod snapshot;
+mod snapshot_raw_window;
 pub mod snapshot_activity;
 pub mod snapshot_codec;
 pub mod snapshot_labels;
