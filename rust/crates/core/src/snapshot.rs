@@ -1167,8 +1167,8 @@ struct OpenedDirectory {
     identity: SourceIdentity,
 }
 
-// Only OpenDirectory owns the iteration capability. Entries share immutable root/identity and
-// descriptor-relative metadata; their Arc keeps the descriptor alive through those operations.
+// Only OpenDirectory owns the iteration capability. Entries share immutable root/name hints;
+// descriptor metadata is resolved separately after current authority and physical identity proof.
 unsafe impl Send for OpenedDirectory {}
 unsafe impl Sync for OpenedDirectory {}
 
@@ -1189,29 +1189,31 @@ struct OpenDirectoryEntry {
     kind: u8,
 }
 
-struct OpenDirectoryEntryType {
-    symlink: bool,
-}
-
-impl OpenDirectoryEntryType {
-    fn is_symlink(&self) -> bool { self.symlink }
-}
-
 impl OpenDirectoryEntry {
     fn path(&self) -> PathBuf { self.directory.root.join(&self.name) }
     fn file_name(&self) -> OsString { self.name.clone() }
 
-    fn file_type(&self) -> std::io::Result<OpenDirectoryEntryType> {
-        if self.kind != libc::DT_UNKNOWN {
-            return Ok(OpenDirectoryEntryType { symlink:self.kind == libc::DT_LNK });
-        }
-        let name = std::ffi::CString::new(self.name.as_encoded_bytes()).expect("directory name contains no NUL");
+    fn symlink_hint(&self, _store: &NativeStore) -> Option<bool> {
+        #[cfg(test)]
+        if _store.directory_force_unknown.load(Ordering::Relaxed) { return None; }
+        (self.kind != libc::DT_UNKNOWN).then_some(self.kind == libc::DT_LNK)
+    }
+}
+
+impl OpenedDirectory {
+    fn descriptor_symlink(&self, name: &OsStr, _store: &NativeStore) -> std::io::Result<bool> {
+        let name = std::ffi::CString::new(name.as_encoded_bytes()).expect("directory name contains no NUL");
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-        let result = unsafe { libc::fstatat(libc::dirfd(self.directory.directory.as_ptr()),name.as_ptr(),
+        #[cfg(test)]
+        {
+            _store.directory_descriptor_metadata.fetch_add(1,Ordering::Relaxed);
+            _store.after_location_metadata("descriptor_metadata");
+        }
+        let result = unsafe { libc::fstatat(libc::dirfd(self.directory.as_ptr()),name.as_ptr(),
             metadata.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW) };
         if result != 0 { return Err(std::io::Error::last_os_error()); }
         let metadata = unsafe { metadata.assume_init() };
-        Ok(OpenDirectoryEntryType { symlink:metadata.st_mode & libc::S_IFMT == libc::S_IFLNK })
+        Ok(metadata.st_mode & libc::S_IFMT == libc::S_IFLNK)
     }
 }
 
@@ -3312,6 +3314,14 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) directory_opens: AtomicUsize,
     #[cfg(test)]
+    directory_force_unknown: AtomicBool,
+    #[cfg(test)]
+    directory_descriptor_metadata: AtomicUsize,
+    #[cfg(test)]
+    directory_parent_proof_metadata: AtomicUsize,
+    #[cfg(test)]
+    directory_logical_type_metadata: AtomicUsize,
+    #[cfg(test)]
     pub(crate) audits: Arc<AtomicUsize>,
 }
 
@@ -3808,6 +3818,14 @@ impl NativeStore {
             warm_records: AtomicUsize::new(0),
             #[cfg(test)]
             directory_opens: AtomicUsize::new(0),
+            #[cfg(test)]
+            directory_force_unknown: AtomicBool::new(false),
+            #[cfg(test)]
+            directory_descriptor_metadata: AtomicUsize::new(0),
+            #[cfg(test)]
+            directory_parent_proof_metadata: AtomicUsize::new(0),
+            #[cfg(test)]
+            directory_logical_type_metadata: AtomicUsize::new(0),
             #[cfg(test)]
             audits,
         })
@@ -10631,13 +10649,21 @@ impl NativeStore {
                 scan.examined += 1;
                 usage[17] += 1;
                 let path = entry.path();
-                let symlink = entry.file_type().map_err(io_error)?.is_symlink();
-                let canonical = if symlink {
-                    std::fs::canonicalize(&path).map_err(io_error)?
-                } else {
-                    path.clone()
-                };
+                let hint = entry.symlink_hint(self);
+                let canonical = if hint == Some(false) { path.clone() }
+                    else { std::fs::canonicalize(&path).map_err(io_error)? };
                 self.authority(&scan.context, Some(&canonical))?;
+                let symlink = match hint {
+                    Some(symlink) => symlink,
+                    None => {
+                        #[cfg(test)]
+                        {
+                            self.directory_logical_type_metadata.fetch_add(1,Ordering::Relaxed);
+                            self.after_location_metadata("logical_type_metadata");
+                        }
+                        std::fs::symlink_metadata(&path).map_err(io_error)?.is_symlink()
+                    }
+                };
                 let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
                 if metadata.is_dir() {
                     if scan
@@ -11641,6 +11667,7 @@ mod tests {
     include!("snapshot_public_catalog_tests.rs");
     include!("snapshot_public_zero_hit_tests.rs");
     include!("snapshot_public_observation_tests.rs");
+    include!("snapshot_public_unknown_dtype_tests.rs");
 
     #[test]
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {

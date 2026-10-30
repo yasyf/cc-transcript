@@ -34,6 +34,11 @@ struct CatalogBinding {
     issue_provenance: CatalogIssueProvenance,
 }
 
+struct CatalogParentObservation {
+    canonical: PathBuf,
+    identity: SourceIdentity,
+}
+
 impl CatalogBinding {
     fn empty() -> Self {
         Self { canonical:None, stamp:None, directory:false, regular:false, issue:None, issue_provenance:CatalogIssueProvenance::Physical }
@@ -75,6 +80,21 @@ impl CatalogBinding {
             return Ok(Self { canonical:Some(canonical), issue:Some((error.status,error.reason)), issue_provenance:CatalogIssueProvenance::Authority, ..Self::empty() });
         }
         Ok(Self::metadata(canonical))
+    }
+
+    fn parent_observation(store: &NativeStore, raw: &Path, physical: &Path, context: &Value) -> Option<CatalogParentObservation> {
+        // An already admitted iterator may survive authority narrowing. Its old parent is not
+        // a grant to inspect that parent again merely to publish optional cache evidence.
+        store.authority(context,Some(physical)).ok()?;
+        let canonical = Self::canonical_path(store,raw).ok()?;
+        store.authority(context,Some(&canonical)).ok()?;
+        #[cfg(test)]
+        {
+            store.directory_parent_proof_metadata.fetch_add(1,Ordering::Relaxed);
+            store.after_location_metadata("parent_proof_metadata");
+        }
+        let metadata = std::fs::metadata(&canonical).ok()?;
+        metadata.is_dir().then(|| CatalogParentObservation { canonical,identity:SourceStamp::of(&metadata).identity })
     }
 
     fn entry(store: &NativeStore, path: &Path, parent: Option<&Path>, context: &Value,
@@ -187,7 +207,7 @@ impl CatalogScan {
 struct CatalogDirectory {
     generation: u64,
     lease: Arc<()>,
-    pending_name: Option<(OsString, bool)>,
+    pending_name: Option<(OsString, Option<bool>)>,
     stream_identity: Option<SourceIdentity>,
     physical_complete: bool,
     first_unproven: Option<usize>,
@@ -212,7 +232,7 @@ impl CatalogDirectory {
 }
 
 enum CatalogNameStep {
-    Name { name: OsString, symlink: bool, appended: bool },
+    Name { name: OsString, symlink: Option<bool>, appended: bool },
     End,
     Issue { status: Status, reason: String },
 }
@@ -468,7 +488,7 @@ impl SourceCatalog {
         let node = self.generation(identity,generation);
         if let Some(edge) = node.edges.get(offset) {
             budget.scratch(LOCATE_USER_PATH_SLOTS + edge.name.capacity())?;
-            return Ok(CatalogNameStep::Name { name:edge.name.clone(),symlink:node.symlinks.binary_search(&offset).is_ok(),appended:false });
+            return Ok(CatalogNameStep::Name { name:edge.name.clone(),symlink:if edge.binding.stamp.is_none() && edge.issue.is_none() { None } else { Some(node.symlinks.binary_search(&offset).is_ok()) },appended:false });
         }
         assert_eq!(offset,node.edges.len(),"generation name offset");
         if let Some((name,symlink)) = &node.pending_name {
@@ -486,7 +506,7 @@ impl SourceCatalog {
         let CatalogScan::Open(reader) = &mut node.scan else { unreachable!("opened generation"); };
         let appended = match reader.next() {
             Some(Ok(entry)) => {
-                let symlink = entry.file_type().is_ok_and(|kind| kind.is_symlink());
+                let symlink = entry.symlink_hint(budget.store);
                 node.pending_name = Some((entry.file_name(),symlink));
                 true
             }
@@ -500,6 +520,16 @@ impl SourceCatalog {
         if appended { self.physical_append_work += 1; }
         self.update_generation_charge(identity,generation,before);
         self.next_generation_name(identity,generation,offset,budget)
+    }
+
+    fn authorized_symlink_hint(&self, store: &NativeStore, identity: SourceIdentity, generation: u64,
+        name: &OsStr, hint: Option<bool>, parent: Option<&CatalogParentObservation>) -> Option<bool> {
+        if hint.is_some() { return hint; }
+        let node = self.generation(identity,generation);
+        let parent = parent?;
+        if node.stream_identity != Some(identity) || parent.identity != identity || parent.canonical != node.canonical { return None; }
+        let CatalogScan::Open(reader) = &node.scan else { return None; };
+        reader.entries.descriptor_symlink(name,store).ok()
     }
 
     fn next_is_root(&self) -> bool {
@@ -984,9 +1014,18 @@ impl SourceCatalog {
                         self.publish_observed_name(identity,generation,name,&CatalogBinding::empty(),symlink,None,budget)?;
                     } else {
                         let (binding,_) = CatalogBinding::entry(store,&path,Some(&canonical),budget.context,true)?;
-                        let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,binding),symlink };
-                        self.install_edge(&pending,budget)?;
-                        self.commit_edge(pending);
+                        let parent = if symlink.is_none() && binding.issue.is_none() {
+                            CatalogBinding::parent_observation(store,&canonical,&canonical,budget.context)
+                        } else { None };
+                        let resolved = if binding.issue.is_some() { Some(symlink.unwrap_or(true)) }
+                            else { self.authorized_symlink_hint(store,identity,generation,&name,symlink,parent.as_ref()) };
+                        if let Some(symlink) = resolved {
+                            let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,binding),symlink };
+                            self.install_edge(&pending,budget)?;
+                            self.commit_edge(pending);
+                        } else {
+                            self.publish_observed_name(identity,generation,name,&binding,None,None,budget)?;
+                        }
                     }
                 }
                 CatalogNameStep::End => { self.pending.pop(); }
