@@ -24,7 +24,9 @@ impl NativeStore {
         if load.session_id.is_none() {
             load.session_id = chunk.entries.iter().find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
         }
-        load.chunks.push(Arc::new(chunk.rebased(load.count)));
+        let selected = Arc::new(chunk.rebased(load.count));
+        load.fresh_chunk_bytes += selected.metadata_bytes();
+        load.chunks.push(selected);
         load.count += chunk.entries.len();
         load.source_chunks.push(span);
         load.offset = span.end;

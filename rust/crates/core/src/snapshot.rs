@@ -649,6 +649,10 @@ struct SourceChunkSpan {
 }
 
 struct Load {
+    charge_work: Work,
+    fresh_chunk_bytes: usize,
+    activity_from_previous: bool,
+    codex_append_bytes: usize,
     file: File,
     offset: u64,
     pending: Vec<u8>,
@@ -7871,6 +7875,10 @@ impl NativeStore {
                     attached: AtomicBool::new(false),
                     deadline: AtomicU64::new(now + self.config.preparation),
                     work: Mutex::new(Load {
+                        charge_work: Work::default(),
+                        fresh_chunk_bytes: 0,
+                        activity_from_previous: false,
+                        codex_append_bytes: 0,
                         file,
                         offset: 0,
                         pending: Vec::new(),
@@ -8400,52 +8408,20 @@ impl NativeStore {
     }
 
     fn unpublished_load_charge(load: &Load) -> usize {
-        let shared: HashSet<_> = load
-            .previous
-            .as_ref()
-            .into_iter()
-            .flat_map(|snapshot| {
-                snapshot
-                    .chunks
-                    .iter()
-                    .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
-            })
-            .collect();
-        let shared_metadata: HashSet<_> = load
-            .previous
-            .iter()
-            .flat_map(|snapshot| {
-                snapshot
-                    .chunks
-                    .iter()
-                    .map(|chunk| Arc::as_ptr(chunk) as usize)
-            })
-            .collect();
-        let charge = load.pending.capacity()
+        load.charge_work.tick(1);
+        let previous_activity = load.activity_from_previous.then(|| {
+            load.previous.as_ref().expect("inherited activity").activity.as_ref()
+        });
+        load.pending.capacity()
             + load.codex_raw.as_ref().map_or(0, |raw| {
-                if load
-                    .previous
-                    .as_ref()
-                    .and_then(|previous| previous.codex_raw.as_ref())
-                    .is_some_and(|previous| Arc::ptr_eq(previous, raw))
-                {
+                if load.previous.as_ref().and_then(|previous| previous.codex_raw.as_ref())
+                    .is_some_and(|previous| Arc::ptr_eq(previous, raw)) {
                     0
                 } else {
                     arc_bytes::<Vec<u8>>() + raw.capacity()
                 }
             })
-            + load.codex_append.as_ref().map_or(0, |index| {
-                if load
-                    .previous
-                    .as_ref()
-                    .and_then(|previous| previous.codex_append.as_ref())
-                    .is_some_and(|previous| Arc::ptr_eq(previous, index))
-                {
-                    0
-                } else {
-                    index.accounted_bytes()
-                }
-            })
+            + load.codex_append_bytes
             + load.origin_fence.capacity()
             + load.seal_fence.capacity()
             + load.prefix_fence.capacity()
@@ -8453,33 +8429,8 @@ impl NativeStore {
             + load.session_id.as_ref().map_or(0, String::capacity)
             + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
             + load.source_chunks.capacity() * size_of::<SourceChunkSpan>()
-            + load
-                .chunks
-                .iter()
-                .map(|chunk| {
-                    let rows = chunk.rows_charge();
-                    usize::from(!shared_metadata.contains(&(Arc::as_ptr(chunk) as usize)))
-                        * chunk.metadata_bytes()
-                        + if shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)) {
-                            0
-                        } else {
-                            rows.owned_capacity_bytes + rows.opaque_dom_accounted_bytes
-                        }
-                })
-                .sum::<usize>();
-        let prior_indexes: HashSet<_> = load
-            .previous
-            .as_ref()
-            .into_iter()
-            .flat_map(|snapshot| snapshot.activity.heap_allocations().map(|(id, _)| id))
-            .collect();
-        let index_charge: usize = load
-            .activity
-            .heap_allocations()
-            .filter(|(id, _)| !prior_indexes.contains(id))
-            .map(|(_, bytes)| bytes)
-            .sum();
-        charge + index_charge
+            + load.fresh_chunk_bytes
+            + load.activity.heap_bytes_since(previous_activity)
     }
 
     fn restart_unpublished_build(slot: &LoadSlot, load: &mut Load) {
@@ -8488,14 +8439,17 @@ impl NativeStore {
         load.pending_start = 0;
         load.provider = None;
         load.chunks = Vec::new();
+        load.fresh_chunk_bytes = 0;
         load.source_chunks = Vec::new();
         load.published_chunks = None;
         load.reuse_next = None;
         load.reuse_prepared = false;
         load.codex_raw = None;
         load.codex_append = None;
+        load.codex_append_bytes = 0;
         load.count = 0;
         load.activity = ActivityIndex::default();
+        load.activity_from_previous = false;
         load.indexed = 0;
         load.decoded = false;
         load.session_id = None;
@@ -8818,8 +8772,10 @@ impl NativeStore {
                         load.count = previous.event_count;
                         load.codex_raw = previous.codex_raw.clone();
                         load.codex_append = previous.codex_append.clone();
+                        load.codex_append_bytes = 0;
                         if load.previous_index_compatible {
                             load.activity = previous.activity.as_ref().clone();
+                            load.activity_from_previous = true;
                             load.indexed = previous.event_count;
                         }
                     } else {
@@ -8845,6 +8801,7 @@ impl NativeStore {
                         load.session_id = Some(previous.session_id.clone());
                         if !previous.provisional_tail && load.previous_index_compatible {
                             load.activity = previous.activity.as_ref().clone();
+                            load.activity_from_previous = true;
                             load.indexed = previous.event_count;
                         }
                         load.fence = fence;
@@ -9098,8 +9055,10 @@ impl NativeStore {
                         start: load.pending_start,
                         end: load.pending_start + consumed as u64,
                     });
-                    load.chunks
-                        .push(Arc::new(EntryChunk::retaining(load.count, entries, arenas)));
+                    let chunk = Arc::new(EntryChunk::retaining(load.count, entries, arenas));
+                    load.fresh_chunk_bytes += chunk.charge.owned_capacity_bytes
+                        + chunk.charge.opaque_dom_accounted_bytes;
+                    load.chunks.push(chunk);
                     load.count += count;
                 }
                 if consumed > 0 {
@@ -9167,8 +9126,10 @@ impl NativeStore {
                         start: load.pending_start,
                         end: slot.stamp.size,
                     });
-                    load.chunks
-                        .push(Arc::new(EntryChunk::retaining(load.count, tail, arenas)));
+                    let chunk = Arc::new(EntryChunk::retaining(load.count, tail, arenas));
+                    load.fresh_chunk_bytes += chunk.charge.owned_capacity_bytes
+                        + chunk.charge.opaque_dom_accounted_bytes;
+                    load.chunks.push(chunk);
                     load.count += count;
                     load.provisional = true;
                     load.pending.clear();
@@ -9257,6 +9218,7 @@ impl NativeStore {
         }));
         load.pending = Vec::new();
         load.chunks = Vec::new();
+        load.fresh_chunk_bytes = 0;
         load.fence = Vec::new();
         load.origin_fence = Vec::new();
         load.seal_fence = Vec::new();
@@ -21849,4 +21811,7 @@ mod tests {
     include!("snapshot_spine_tests.rs");
     include!("snapshot_cache_tests.rs");
     include!("snapshot_source_cache_index_tests.rs");
+
+    include!("snapshot_load_charge_work_tests.rs");
+    include!("snapshot_load_charge_audit_tests.rs");
 }

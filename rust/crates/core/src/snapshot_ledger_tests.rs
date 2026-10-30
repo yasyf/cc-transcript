@@ -8999,6 +8999,10 @@ fn cold_acquire(fixture: &Fixture) -> bool {
 fn cold_load_walk(slot: &LoadSlot) -> usize {
     let load = slot.work.lock().unwrap();
     let Load {
+        charge_work: _,
+        fresh_chunk_bytes: _,
+        activity_from_previous: _,
+        codex_append_bytes: _,
         file: _,
         offset: _,
         pending,
@@ -9411,11 +9415,12 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         .as_ref()
         .expect("the load extends a published snapshot");
     assert!(load.result.is_none() && load.codex_raw.is_none() && load.codex_append.is_none());
-    let shared: HashSet<usize> = previous
+    let shared_rows: HashSet<usize> = previous
         .chunks
         .iter()
         .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
         .collect();
+    let shared_wrappers: HashSet<usize> = previous.chunks.iter().map(|chunk| Arc::as_ptr(chunk) as usize).collect();
     let prior: HashSet<usize> = previous
         .activity
         .audited_allocations(true)
@@ -9429,11 +9434,23 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         + load.fence.capacity()
         + load.session_id.as_ref().map_or(0, String::capacity)
         + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
+        + load.source_chunks.capacity() * size_of::<SourceChunkSpan>()
         + load
             .chunks
             .iter()
-            .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
-            .map(|chunk| NativeStore::audit_chunk_bytes(chunk))
+            .map(|chunk| {
+                let rows = if shared_rows.contains(&(Arc::as_ptr(&chunk.entries) as usize)) {
+                    0
+                } else {
+                    NativeStore::audit_chunk_rows_bytes(&chunk.entries)
+                };
+                let metadata = if shared_wrappers.contains(&(Arc::as_ptr(chunk) as usize)) {
+                    0
+                } else {
+                    NativeStore::audit_chunk_metadata_bytes(chunk)
+                };
+                rows + metadata
+            })
             .sum::<usize>()
         + load
             .activity
