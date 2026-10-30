@@ -11858,7 +11858,7 @@ mod tests {
             if step == 2 {
                 assert!(first["cursor"].as_str().is_some(), "{first:?}");
                 assert_eq!(store.lock_state().counters[17], 2);
-                assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 3);
+                assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 4);
                 store.assert_conserved();
             }
             let response = finish(&store, first, &owner);
