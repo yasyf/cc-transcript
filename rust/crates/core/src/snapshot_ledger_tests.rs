@@ -11805,7 +11805,7 @@ fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
 
 #[test]
 fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocation() {
-    let scenario = Scenario::new(3, |index| line(&format!("thread-{index:04}")));
+    let scenario = Scenario::new(128, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
         let build = || shared_root_fixture(&scenario, background);
         let control = build();
