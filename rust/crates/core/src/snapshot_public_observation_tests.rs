@@ -19,6 +19,15 @@ fn public_observation_collect(store: &NativeStore, mut response: Value, owner: &
     panic!("public observation cursor did not settle");
 }
 
+fn public_observation_appended_names(store: &NativeStore) -> u64 {
+    let state = store.lock_state();
+    assert_eq!(state.catalogs.len(), 1);
+    let slot = state.catalogs.values().next().unwrap();
+    let cell = slot.cell.lock().unwrap();
+    let CatalogCell::Idle(catalog) = &*cell else { panic!("settled observation catalog"); };
+    catalog.physical_append_work
+}
+
 #[test]
 fn public_catalog_observation_first_result_is_frozen_but_the_next_query_is_fresh() {
     for directory in [false, true] {
@@ -94,12 +103,36 @@ fn public_catalog_observation_foreign_prefetch_spends_the_remaining_private_name
     assert_eq!(entries, 64);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["status"].as_str(), Some("incomplete"));
+    let physical_before = public_observation_appended_names(&store);
     let resumed = public_observation_resume(&store, &cursor, &owner);
     assert_eq!(resumed["status"].as_str(), Some("incomplete"), "{resumed:?}");
     assert!(resumed["cursor"].is_null());
     assert_eq!(resumed["usage"]["discovery_entries_examined"].as_u64(), Some(1));
     assert_eq!(resumed["data"]["sessions"][0]["status"].as_str(), Some("incomplete"));
+    assert_eq!(public_observation_appended_names(&store) - physical_before, 0,
+        "the private view must consume its cached next name, not advance the foreign frontier");
     store.assert_conserved();
+}
+
+#[test]
+fn public_catalog_observation_restricted_allowed_root_reuses_its_physical_facts() {
+    let source = Source::new("");
+    let store = store();
+    let mut owner = context("public-observation-restricted-cache");
+    owner.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let request = public_catalog_request(&source, &["absent"]);
+    let (cold, cold_entries) = public_catalog_finish(&store, &request, &owner);
+    assert_eq!(cold[0]["status"].as_str(), Some("missing"));
+    assert_eq!(cold_entries, 1);
+    let physical = public_observation_appended_names(&store);
+    assert_eq!(physical, 1);
+    for _ in 0..2 {
+        let (warm, warm_entries) = public_catalog_finish(&store, &request, &owner);
+        assert_eq!(warm[0]["status"].as_str(), Some("missing"));
+        assert_eq!(warm_entries, 0);
+        assert_eq!(public_observation_appended_names(&store), physical);
+        store.assert_conserved();
+    }
 }
 
 #[test]
