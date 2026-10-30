@@ -823,3 +823,43 @@ fn registered_catalog_certificate_allows_later_chunk_discovery_after_a_certified
     assert_eq!(membership.members[1].path, std::fs::canonicalize(second).unwrap());
     store.assert_conserved();
 }
+
+#[test]
+fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_discovery() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let later = source.directory.join("later");
+    std::fs::create_dir(&later).unwrap();
+    let left = source.directory.join("left.txt");
+    let right = source.directory.join("right.txt");
+    let alias = source.directory.join("first.jsonl");
+    for path in [&left, &right, &later.join("second.jsonl")] {
+        std::fs::write(path, format!("{}\n", user("member"))).unwrap();
+    }
+    std::os::unix::fs::symlink(&left, &alias).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-prefix-invalidation");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["first".to_owned(), "second".to_owned()]);
+    request.insert("roots", json!([later, alias]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    request["limits"].insert("max_items", json!(1));
+    let retargeted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new({
+        let (alias, right, retargeted) = (alias.clone(), right.clone(), Arc::clone(&retargeted));
+        move || {
+            if !retargeted.swap(true, Ordering::Relaxed) {
+                std::fs::remove_file(&alias).unwrap();
+                std::os::unix::fs::symlink(&right, &alias).unwrap();
+            }
+        }
+    })));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let outcome = store.build_warm_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining);
+    *store.location_metadata_hook.lock().unwrap() = None;
+    assert!(retargeted.load(Ordering::Relaxed));
+    assert!(matches!(outcome, Err(error) if error.status == Status::Changed));
+    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    store.assert_conserved();
+}
