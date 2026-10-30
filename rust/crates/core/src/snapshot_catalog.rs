@@ -4,6 +4,7 @@ struct CatalogBudget<'a, 'b> {
     reservation: &'b mut ProjectionReservation<'a>,
     attempt: u64,
     scratch_bytes: usize,
+    observed_issue: bool,
 }
 
 impl CatalogBudget<'_, '_> {
@@ -23,6 +24,44 @@ impl CatalogBudget<'_, '_> {
 
 #[derive(Clone,Copy,PartialEq,Eq)]
 enum CatalogIssueProvenance { Physical, Authority }
+
+#[derive(Clone,Copy)]
+struct CatalogNameEvidence {
+    inode: u64,
+    kind: Option<u8>,
+}
+
+#[derive(Clone,Copy)]
+struct CatalogChildMetadata {
+    stamp: SourceStamp,
+    directory: bool,
+    regular: bool,
+    symlink: bool,
+}
+
+impl CatalogChildMetadata {
+    fn from_descriptor(metadata: &libc::stat) -> Self {
+        let kind = metadata.st_mode & libc::S_IFMT;
+        Self { stamp:SourceStamp { identity:SourceIdentity { device:metadata.st_dev as u64,inode:metadata.st_ino as u64,window_base:0 },
+            size:metadata.st_size as u64,mtime_ns:metadata.st_mtime as i128 * 1_000_000_000 + metadata.st_mtime_nsec as i128,
+            ctime_ns:metadata.st_ctime as i128 * 1_000_000_000 + metadata.st_ctime_nsec as i128 },
+            directory:kind == libc::S_IFDIR,regular:kind == libc::S_IFREG,symlink:kind == libc::S_IFLNK }
+    }
+
+    fn of(metadata: &Metadata) -> Self {
+        Self { stamp:SourceStamp::of(metadata),directory:metadata.is_dir(),regular:metadata.is_file(),symlink:metadata.is_symlink() }
+    }
+
+    fn matches(&self, binding: &CatalogBinding) -> bool {
+        binding.issue.is_none() && binding.stamp.is_some_and(|stamp| stamp.identity == self.stamp.identity)
+            && binding.directory == self.directory && binding.regular == self.regular && !self.symlink
+    }
+
+    fn binding(self, canonical: PathBuf) -> CatalogBinding {
+        CatalogBinding { canonical:Some(canonical),stamp:Some(self.stamp),directory:self.directory,regular:self.regular,
+            issue:None,issue_provenance:CatalogIssueProvenance::Physical }
+    }
+}
 
 #[derive(Clone)]
 struct CatalogBinding {
@@ -98,11 +137,13 @@ impl CatalogBinding {
     }
 
     fn entry(store: &NativeStore, path: &Path, parent: Option<&Path>, context: &Value,
-        defer_denial: bool) -> Result<(Self,bool),SnapshotError> {
+        defer_denial: bool) -> Result<(Self,bool,Option<CatalogChildMetadata>),SnapshotError> {
+        let mut witness = None;
         if context["authority"]["kind"].as_str() == Some("user") {
             if let Some(parent) = parent {
                 let canonical = catalog_child_path(parent,path.file_name().expect("catalog entry name"));
                 if let Ok(metadata) = std::fs::symlink_metadata(&canonical) {
+                    witness = Some(CatalogChildMetadata::of(&metadata));
                     #[cfg(test)]
                     store.after_location_metadata("canonical_prefilter");
                     if let Ok(raw) = std::fs::symlink_metadata(path) {
@@ -111,7 +152,7 @@ impl CatalogBinding {
                             #[cfg(test)]
                             store.after_location_metadata("prefilter");
                             return Ok((Self { canonical:Some(canonical), stamp:Some(SourceStamp::of(&metadata)),
-                                directory:false, regular:true, issue:None, issue_provenance:CatalogIssueProvenance::Physical },true));
+                                directory:false, regular:true, issue:None, issue_provenance:CatalogIssueProvenance::Physical },true,witness));
                         }
                     }
                 }
@@ -119,7 +160,7 @@ impl CatalogBinding {
         }
         #[cfg(test)]
         store.location_entry_canonicalizations.fetch_add(1,Ordering::Relaxed);
-        Self::inspect_entry(store,path,context,defer_denial).map(|binding| (binding,false))
+        Self::inspect_entry(store,path,context,defer_denial).map(|binding| (binding,false,witness))
     }
 
     fn unchanged(&self, fresh: &Self) -> bool {
@@ -207,7 +248,7 @@ impl CatalogScan {
 struct CatalogDirectory {
     generation: u64,
     lease: Arc<()>,
-    pending_name: Option<(OsString, Option<bool>)>,
+    pending_name: Option<(OsString, CatalogNameEvidence)>,
     stream_identity: Option<SourceIdentity>,
     physical_complete: bool,
     first_unproven: Option<usize>,
@@ -232,7 +273,7 @@ impl CatalogDirectory {
 }
 
 enum CatalogNameStep {
-    Name { name: OsString, symlink: Option<bool>, appended: bool },
+    Name { name: OsString, evidence: CatalogNameEvidence, appended: bool },
     End,
     Issue { status: Status, reason: String },
 }
@@ -465,7 +506,7 @@ impl SourceCatalog {
         store.after_location_metadata("directory_open");
         let (scan,opened_identity) = match OpenDirectory::open(path) {
             Ok(reader) => {
-                let opened = reader.identity();
+                let opened = reader.stamp();
                 #[cfg(test)]
                 store.after_location_metadata("directory_opened");
                 (CatalogScan::Open(reader),Some(opened))
@@ -474,8 +515,11 @@ impl SourceCatalog {
         };
         let node = self.generation_mut(identity,generation);
         node.scan = scan;
-        node.stream_identity = opened_identity;
-        if opened_identity.is_some_and(|opened| opened != identity) {
+        node.stream_identity = opened_identity.map(|stamp| stamp.identity);
+        if let Some(stamp) = opened_identity.filter(|stamp| stamp.identity == identity) {
+            node.observed = CatalogBinding { canonical:Some(node.canonical.clone()),stamp:Some(stamp),directory:true,regular:false,..CatalogBinding::empty() };
+        }
+        if opened_identity.is_some_and(|opened| opened.identity != identity) {
             node.physical_complete = false;
             node.first_unproven = Some(0);
         }
@@ -488,12 +532,13 @@ impl SourceCatalog {
         let node = self.generation(identity,generation);
         if let Some(edge) = node.edges.get(offset) {
             budget.scratch(LOCATE_USER_PATH_SLOTS + edge.name.capacity())?;
-            return Ok(CatalogNameStep::Name { name:edge.name.clone(),symlink:if edge.binding.stamp.is_none() && edge.issue.is_none() { None } else { Some(node.symlinks.binary_search(&offset).is_ok()) },appended:false });
+            return Ok(CatalogNameStep::Name { name:edge.name.clone(),evidence:CatalogNameEvidence { inode:0,kind:if node.symlinks.binary_search(&offset).is_ok() { Some(libc::DT_LNK) }
+                else if edge.binding.directory { Some(libc::DT_DIR) } else if edge.binding.regular { Some(libc::DT_REG) } else { None } },appended:false });
         }
         assert_eq!(offset,node.edges.len(),"generation name offset");
-        if let Some((name,symlink)) = &node.pending_name {
+        if let Some((name,evidence)) = &node.pending_name {
             budget.scratch(LOCATE_USER_PATH_SLOTS + name.capacity())?;
-            return Ok(CatalogNameStep::Name { name:name.clone(),symlink:*symlink,appended:true });
+            return Ok(CatalogNameStep::Name { name:name.clone(),evidence:*evidence,appended:true });
         }
         if let CatalogScan::Issue { status,reason,.. } = &node.scan {
             budget.scratch(LOCATE_USER_PATH_SLOTS + reason.capacity())?;
@@ -506,8 +551,8 @@ impl SourceCatalog {
         let CatalogScan::Open(reader) = &mut node.scan else { unreachable!("opened generation"); };
         let appended = match reader.next() {
             Some(Ok(entry)) => {
-                let symlink = entry.symlink_hint(budget.store);
-                node.pending_name = Some((entry.file_name(),symlink));
+                let evidence = entry.name_evidence(budget.store);
+                node.pending_name = Some((entry.file_name(),evidence));
                 true
             }
             Some(Err(error)) => {
@@ -522,14 +567,67 @@ impl SourceCatalog {
         self.next_generation_name(identity,generation,offset,budget)
     }
 
-    fn authorized_symlink_hint(&self, store: &NativeStore, identity: SourceIdentity, generation: u64,
-        name: &OsStr, hint: Option<bool>, parent: Option<&CatalogParentObservation>) -> Option<bool> {
-        if hint.is_some() { return hint; }
+    fn physical_name_fact(&self, store: &NativeStore, identity: SourceIdentity, generation: u64,
+        name: &OsStr, evidence: CatalogNameEvidence, witness: Option<CatalogChildMetadata>, observation: &CatalogBinding,
+        parent: Option<&CatalogParentObservation>, context: &Value) -> Option<(CatalogBinding,bool)> {
         let node = self.generation(identity,generation);
         let parent = parent?;
         if node.stream_identity != Some(identity) || parent.identity != identity || parent.canonical != node.canonical { return None; }
+        let physical = catalog_child_path(&node.canonical,name);
+        store.authority(context,Some(&physical)).ok()?;
+        let matches_inode = |stamp:SourceStamp| evidence.inode != 0 && stamp.identity.device == identity.device && stamp.identity.inode == evidence.inode;
+        let cheap_type = matches!((evidence.kind,observation.directory,observation.regular),
+            (Some(libc::DT_DIR),true,false) | (Some(libc::DT_REG),false,true));
+        let known_plain = matches!(evidence.kind,Some(libc::DT_REG)|Some(libc::DT_DIR));
+        if known_plain && (observation.issue.is_some() || !cheap_type) { return None; }
+        let symlink = evidence.kind == Some(libc::DT_LNK) || (evidence.kind.is_none()
+            && witness.is_some_and(|child| child.symlink && matches_inode(child.stamp)));
+        // A parent grant licenses entry metadata, never an unknown symlink target. Global user
+        // authority grants the actual target; restricted ambiguous names remain uncertified.
+        if symlink && context["authority"]["kind"].as_str() != Some("user") { return None; }
+        let canonical = if symlink {
+            let path = CatalogBinding::canonical_path(store,&physical).ok();
+            if let Some(path) = &path { store.authority(context,Some(path)).ok()?; }
+            else { store.authority(context,None).ok()?; }
+            path
+        } else { Some(physical) };
         let CatalogScan::Open(reader) = &node.scan else { return None; };
-        reader.entries.descriptor_symlink(name,store).ok()
+        match reader.entries.descriptor_metadata(name,symlink,store) {
+            Ok(child) => {
+                if child.symlink || !child.matches(observation) { return None; }
+                let canonical = canonical?;
+                if symlink {
+                    let path_child = CatalogBinding::metadata(canonical.clone());
+                    if !child.matches(&path_child) || path_child.stamp != Some(child.stamp) { return None; }
+                }
+                let revalidate = symlink || evidence.inode == 0 || child.stamp.identity.device != identity.device
+                    || child.stamp.identity.inode != evidence.inode;
+                Some((child.binding(canonical),revalidate))
+            }
+            Err(error) => {
+                // Descriptor-observed target absence/loop is a physical error. Unresolved logical
+                // and IO errors remain caller observations, never facts copied from an alias.
+                if !symlink || !matches!(error.raw_os_error(),Some(libc::ENOENT)|Some(libc::ENOTDIR)|Some(libc::ELOOP)) { return None; }
+                let error = io_error(error);
+                Some((CatalogBinding { canonical:None,issue:Some((error.status,error.reason)),..CatalogBinding::empty() },true))
+            }
+        }
+    }
+
+    fn append_unproven_name(&mut self, identity: SourceIdentity, generation: u64, name: OsString,
+        budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        let node = self.generation(identity,generation);
+        budget.reserve(vec_growth(&node.edges,1) + name.capacity())?;
+        let before = node.owned_bytes();
+        let node = self.generation_mut(identity,generation);
+        node.payload_bytes += name.capacity();
+        node.first_unproven.get_or_insert(node.edges.len());
+        node.edges.push(CatalogNameRecord::unobserved(name));
+        node.pending_name = None;
+        node.physical_complete = false;
+        self.update_generation_charge(identity,generation,before);
+        self.publication = CatalogCachePublication::Uncertified;
+        Ok(())
     }
 
     fn next_is_root(&self) -> bool {
@@ -997,35 +1095,37 @@ impl SourceCatalog {
                 return Ok(());
             };
             let generation = self.directories.get(&identity).expect("catalog directory").generation;
-            if examined == max_entries { return Ok(()); }
+            if examined == max_entries && self.directories.get(&identity).expect("native pending name").pending_name.is_none() { return Ok(()); }
             let canonical = &self.directories.get(&identity).expect("catalog directory").canonical;
             budget.scratch(LOCATE_USER_PATH_SLOTS + canonical.as_os_str().len())?;
             let canonical = canonical.clone();
             self.open_generation(store,identity,generation,&canonical,budget)?;
             let offset = self.directories.get(&identity).expect("catalog directory").edges.len();
+            let physical_before = self.physical_append_work;
             match self.next_generation_name(identity,generation,offset,budget)? {
-                CatalogNameStep::Name { name,symlink,.. } => {
-                    examined += 1;
-                    usage[17] += 1;
+                CatalogNameStep::Name { name,evidence,.. } => {
+                    let new_name = self.physical_append_work != physical_before;
+                    examined += usize::from(new_name);
+                    usage[17] += u64::from(new_name);
                     #[cfg(test)]
                     store.after_location_metadata("entry");
                     let path = catalog_child_path(&canonical,&name);
-                    if self.directories.get(&identity).expect("physical stream").stream_identity != Some(identity) {
-                        self.publish_observed_name(identity,generation,name,&CatalogBinding::empty(),symlink,None,budget)?;
-                    } else {
-                        let (binding,_) = CatalogBinding::entry(store,&path,Some(&canonical),budget.context,true)?;
-                        let parent = if symlink.is_none() && binding.issue.is_none() {
-                            CatalogBinding::parent_observation(store,&canonical,&canonical,budget.context)
-                        } else { None };
-                        let resolved = if binding.issue.is_some() { Some(symlink.unwrap_or(true)) }
-                            else { self.authorized_symlink_hint(store,identity,generation,&name,symlink,parent.as_ref()) };
-                        if let Some(symlink) = resolved {
-                            let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,binding),symlink };
-                            self.install_edge(&pending,budget)?;
-                            self.commit_edge(pending);
-                        } else {
-                            self.publish_observed_name(identity,generation,name,&binding,None,None,budget)?;
+                    let (binding,_,witness) = CatalogBinding::entry(store,&path,Some(&canonical),budget.context,true)?;
+                    let parent = if budget.context["authority"]["kind"].as_str() == Some("user") {
+                        Some(CatalogParentObservation { canonical:canonical.clone(),identity })
+                    } else { CatalogBinding::parent_observation(store,&canonical,&canonical,budget.context) };
+                    if let Some((physical,symlink)) = self.physical_name_fact(store,identity,generation,&name,evidence,witness,&binding,parent.as_ref(),budget.context) {
+                        let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,physical),symlink };
+                        self.install_edge(&pending,budget)?;
+                        self.commit_edge(pending);
+                    } else if let Some((status,reason)) = &binding.issue {
+                        if *status != Status::Missing {
+                            budget.observed_issue = true;
+                            return Err(SnapshotError::new(*status,reason));
                         }
+                        self.append_unproven_name(identity,generation,name,budget)?;
+                    } else {
+                        self.append_unproven_name(identity,generation,name,budget)?;
                     }
                 }
                 CatalogNameStep::End => { self.pending.pop(); }
@@ -1162,7 +1262,7 @@ impl SourceCatalog {
                 Err(error) => return Err(error),
             };
             let mut dirty = !node.observed.unchanged(&fresh) || !node.physical_complete;
-            for index in &node.symlinks {
+            for index in node.symlinks.iter().chain(node.issues.iter().filter(|index| node.symlinks.binary_search(*index).is_err())) {
                 cancel.check(deadline)?;
                 let edge = &node.edges[*index];
                 let path = catalog_child_path(&node.canonical, &edge.name);
@@ -1392,11 +1492,17 @@ impl SourceCatalog {
             }
             for index in &node.issues {
                 let edge = &node.edges[*index];
-                if let Some((status, reason)) = &edge.issue {
-                    let order = Self::query_order(route, *index, budget)?;
-                    if issue.as_ref().is_none_or(|(old, _, _, _)| &order < old) {
-                        budget.reserve(reason.len())?;
-                        issue = Some((order, *status, reason.clone(), false));
+                if let Some((old_status, old_reason)) = &edge.issue {
+                    let order = Self::query_order(route,*index,budget)?;
+                    if issue.as_ref().is_none_or(|(old,_,_,_)| &order < old) {
+                        let path = catalog_child_path(&node.canonical,&edge.name);
+                        let fresh = CatalogBinding::inspect_entry(store,&path,context,true)?;
+                        let (status,reason,stale) = match fresh.issue {
+                            Some((status,reason)) => (status,reason,status == Status::Missing),
+                            None => (*old_status,old_reason.clone(),true),
+                        };
+                        budget.reserve(reason.capacity())?;
+                        issue = Some((order,status,reason,stale));
                     }
                 }
             }

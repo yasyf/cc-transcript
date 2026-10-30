@@ -57,11 +57,12 @@ impl CatalogObservationFrame {
 
 struct CatalogQueryObservation {
     binding: CatalogBinding,
+    name_witness: Option<CatalogChildMetadata>,
 }
 
 impl CatalogQueryObservation {
     fn classify(store: &NativeStore, path: &Path, parent: Option<&Path>, context: &Value) -> Result<(Self,bool),SnapshotError> {
-        CatalogBinding::entry(store,path,parent,context,false).map(|(binding,shared)| (Self { binding },shared))
+        CatalogBinding::entry(store,path,parent,context,false).map(|(binding,shared,name_witness)| (Self { binding,name_witness },shared))
     }
 }
 
@@ -435,32 +436,17 @@ impl SourceCatalog {
     }
 
     fn publish_observed_name(&mut self, identity: SourceIdentity, generation: u64, name: OsString,
-        binding: &CatalogBinding, symlink: Option<bool>, physical_parent: Option<&CatalogParentObservation>, budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
-        let node = self.generation(identity,generation);
-        // A name lease has no authority or physical-fact provenance. The current raw parent
-        // must name the generation's physical directory before its successful target fact is shared.
-        let proven = binding.issue.is_none() && binding.stamp.is_some() && node.stream_identity == Some(identity)
-            && physical_parent.is_some_and(|parent| parent.canonical == node.canonical && parent.identity == identity);
-        let resolved = if proven { self.authorized_symlink_hint(budget.store,identity,generation,&name,symlink,physical_parent) } else { None };
+        binding: &CatalogBinding, evidence: CatalogNameEvidence, witness: Option<CatalogChildMetadata>, physical_parent: Option<&CatalogParentObservation>, budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
         let current = self.directories.get(&identity).is_some_and(|node| node.generation == generation);
-        if let Some(symlink) = resolved.filter(|_| current && proven) {
-            budget.reserve(name.capacity() + binding.payload_bytes())?;
-            let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,binding.clone()),symlink };
+        let fact = if current { self.physical_name_fact(budget.store,identity,generation,&name,evidence,witness,binding,physical_parent,budget.context) } else { None };
+        if let Some((physical,symlink)) = fact {
+            budget.reserve(name.capacity() + physical.payload_bytes())?;
+            let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,physical),symlink };
             self.install_edge(&pending,budget)?;
             self.commit_edge(pending);
             return Ok(());
         }
-        budget.reserve(vec_growth(&node.edges,1) + name.capacity())?;
-        let before = node.owned_bytes();
-        let node = self.generation_mut(identity,generation);
-        node.payload_bytes += name.capacity();
-        node.first_unproven.get_or_insert(node.edges.len());
-        node.edges.push(CatalogNameRecord::unobserved(name));
-        node.pending_name = None;
-        node.physical_complete = false;
-        self.update_generation_charge(identity,generation,before);
-        self.publication = CatalogCachePublication::Uncertified;
-        Ok(())
+        self.append_unproven_name(identity,generation,name,budget)
     }
 
     fn observe_next(&mut self, store: &NativeStore, context: &Value, cancel: &Cancellation, deadline: u64,
@@ -503,7 +489,7 @@ impl SourceCatalog {
             let frame = query.frames.last().expect("observation frame");
             let (identity,generation,offset) = (frame.identity,frame.generation,frame.next_name);
             let step = self.next_generation_name(identity,generation,offset,budget)?;
-            let (name,symlink,appended) = match step {
+            let (name,evidence,appended) = match step {
                 CatalogNameStep::End => {
                     let ended = query.frames.pop().expect("completed observation frame");
                     query.frame_bytes -= ended.owned_bytes();
@@ -543,7 +529,7 @@ impl SourceCatalog {
                     continue;
                 }
                 CatalogNameStep::Issue { status,reason } => return Err(SnapshotError::new(status,reason)),
-                CatalogNameStep::Name { name,symlink,appended } => (name,symlink,appended),
+                CatalogNameStep::Name { name,evidence,appended } => (name,evidence,appended),
             };
             // Logical discovery is charged to this view even when another caller prefetched the name.
             usage[17] += 1;
@@ -561,13 +547,14 @@ impl SourceCatalog {
             let hint_parent = (context["authority"]["kind"].as_str() == Some("user"))
                 .then(|| proof.map(|proof| proof.canonical.as_path())).flatten();
             let (observation,shared_parent) = CatalogQueryObservation::classify(store,&path,hint_parent,context)?;
+            let name_witness = observation.name_witness;
             let binding = observation.binding;
-            if !shared_parent && binding.issue.is_none() {
+            if !shared_parent && binding.issue.as_ref().is_none_or(|(status,_)| *status == Status::Missing) {
                 let physical = &self.generation(identity,generation).canonical;
                 *parent_proof = Some((generation,CatalogBinding::parent_observation(store,&frame.raw_parent,physical,context)));
             }
             let proof = parent_proof.as_ref().and_then(|(_,proof)| proof.as_ref());
-            if appended { self.publish_observed_name(identity,generation,name,&binding,symlink,proof,budget)?; }
+            if appended { self.publish_observed_name(identity,generation,name,&binding,evidence,name_witness,proof,budget)?; }
             if !shared_parent { *parent_proof = None; }
             if let Some((status,reason)) = &binding.issue {
                 if *status != Status::Missing { return Err(SnapshotError::new(*status,reason)); }

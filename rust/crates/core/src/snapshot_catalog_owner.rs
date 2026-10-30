@@ -265,7 +265,7 @@ impl NativeStore {
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
         let outcome = (|| {
-            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0 };
+            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0, observed_issue:false };
             if catalog.is_none() {
                 catalog = Some(SourceCatalog::new(self, roots, context, &mut budget)?);
             }
@@ -279,7 +279,7 @@ impl NativeStore {
                         self.config.event_step.min(remaining.max_discovery_entries),usage,&mut budget);
                     remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
                     if let Err(error) = advanced {
-                        return if error.status == Status::PermissionDenied { Ok(CatalogWorkResult::Indexed) } else { Err(error) };
+                        return if budget.observed_issue || error.status == Status::PermissionDenied { Ok(CatalogWorkResult::Indexed) } else { Err(error) };
                     }
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }

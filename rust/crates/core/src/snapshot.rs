@@ -1164,7 +1164,7 @@ struct GraphListing {
 struct OpenedDirectory {
     directory: std::ptr::NonNull<libc::DIR>,
     root: PathBuf,
-    identity: SourceIdentity,
+    stamp: SourceStamp,
 }
 
 // Only OpenDirectory owns the iteration capability. Entries share immutable root/name hints;
@@ -1187,21 +1187,29 @@ struct OpenDirectoryEntry {
     directory: Arc<OpenedDirectory>,
     name: OsString,
     kind: u8,
+    inode: u64,
 }
 
 impl OpenDirectoryEntry {
     fn path(&self) -> PathBuf { self.directory.root.join(&self.name) }
     fn file_name(&self) -> OsString { self.name.clone() }
 
-    fn symlink_hint(&self, _store: &NativeStore) -> Option<bool> {
+    fn name_evidence(&self, _store: &NativeStore) -> CatalogNameEvidence {
+        let mut kind = (self.kind != libc::DT_UNKNOWN).then_some(self.kind);
         #[cfg(test)]
-        if _store.directory_force_unknown.load(Ordering::Relaxed) { return None; }
-        (self.kind != libc::DT_UNKNOWN).then_some(self.kind == libc::DT_LNK)
+        if _store.directory_force_unknown.load(Ordering::Relaxed) { kind = None; }
+        #[cfg(test)]
+        if kind == Some(libc::DT_DIR) { _store.directory_known_dir_names.fetch_add(1,Ordering::Relaxed); }
+        CatalogNameEvidence { inode:self.inode,kind }
+    }
+
+    fn symlink_hint(&self, store: &NativeStore) -> Option<bool> {
+        self.name_evidence(store).kind.map(|kind| kind == libc::DT_LNK)
     }
 }
 
 impl OpenedDirectory {
-    fn descriptor_symlink(&self, name: &OsStr, _store: &NativeStore) -> std::io::Result<bool> {
+    fn descriptor_metadata(&self, name: &OsStr, follow: bool, _store: &NativeStore) -> std::io::Result<CatalogChildMetadata> {
         let name = std::ffi::CString::new(name.as_encoded_bytes()).expect("directory name contains no NUL");
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
         #[cfg(test)]
@@ -1210,10 +1218,10 @@ impl OpenedDirectory {
             _store.after_location_metadata("descriptor_metadata");
         }
         let result = unsafe { libc::fstatat(libc::dirfd(self.directory.as_ptr()),name.as_ptr(),
-            metadata.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW) };
+            metadata.as_mut_ptr(),if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW }) };
         if result != 0 { return Err(std::io::Error::last_os_error()); }
         let metadata = unsafe { metadata.assume_init() };
-        Ok(metadata.st_mode & libc::S_IFMT == libc::S_IFLNK)
+        Ok(CatalogChildMetadata::from_descriptor(&metadata))
     }
 }
 
@@ -1230,11 +1238,11 @@ impl OpenDirectory {
             return Err(io_error(error));
         }
         let metadata = unsafe { metadata.assume_init() };
-        let identity = SourceIdentity { device:metadata.st_dev as u64,inode:metadata.st_ino as u64,window_base:0 };
-        Ok(Self { entries:Arc::new(OpenedDirectory { directory,root:path.to_owned(),identity }),end_of_stream:false })
+        let stamp = CatalogChildMetadata::from_descriptor(&metadata).stamp;
+        Ok(Self { entries:Arc::new(OpenedDirectory { directory,root:path.to_owned(),stamp }),end_of_stream:false })
     }
 
-    fn identity(&self) -> SourceIdentity { self.entries.identity }
+    fn stamp(&self) -> SourceStamp { self.entries.stamp }
 
     fn retained_bytes(&self) -> usize {
         READ_DIR_HANDLE_BYTES + self.entries.root.capacity()
@@ -1269,7 +1277,7 @@ impl Iterator for OpenDirectory {
             let name = unsafe { std::ffi::CStr::from_ptr(std::ptr::addr_of!((*entry).d_name).cast()) }.to_bytes();
             if name == b"." || name == b".." { continue; }
             return Some(Ok(OpenDirectoryEntry { directory:Arc::clone(&self.entries),
-                name:OsString::from_vec(name.to_vec()),kind:unsafe { (*entry).d_type } }));
+                name:OsString::from_vec(name.to_vec()),kind:unsafe { (*entry).d_type },inode:unsafe { (*entry).d_ino as u64 } }));
         }
     }
 }
@@ -3322,6 +3330,8 @@ pub struct NativeStore {
     #[cfg(test)]
     directory_logical_type_metadata: AtomicUsize,
     #[cfg(test)]
+    directory_known_dir_names: AtomicUsize,
+    #[cfg(test)]
     pub(crate) audits: Arc<AtomicUsize>,
 }
 
@@ -3826,6 +3836,8 @@ impl NativeStore {
             directory_parent_proof_metadata: AtomicUsize::new(0),
             #[cfg(test)]
             directory_logical_type_metadata: AtomicUsize::new(0),
+            #[cfg(test)]
+            directory_known_dir_names: AtomicUsize::new(0),
             #[cfg(test)]
             audits,
         })
@@ -11158,6 +11170,7 @@ impl NativeStore {
                 reservation: &mut *reservation,
                 attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64,
                 scratch_bytes: 0,
+                observed_issue: false,
             };
             cursor
                 .query
@@ -11668,6 +11681,7 @@ mod tests {
     include!("snapshot_public_zero_hit_tests.rs");
     include!("snapshot_public_observation_tests.rs");
     include!("snapshot_public_unknown_dtype_tests.rs");
+    include!("snapshot_public_child_provenance_tests.rs");
 
     #[test]
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {
