@@ -32,3 +32,25 @@ fn admission_report_checks_do_not_serialize_statistics() {
     assert_eq!(reports.load(Ordering::Relaxed) - before, 1);
     store.assert_conserved();
 }
+
+#[test]
+fn admission_report_spare_reservations_use_the_scalar_total() {
+    let store = NativeStore::new(&json!({
+        "max_retained_bytes": 128 * 1024 * 1024,
+        "reserved_hook_accounted_bytes": 4096
+    })).unwrap();
+    let owner = context("spare-admission-reports");
+    let reports = store.lock_state().gauge_reports.counter();
+    let mut reservation = store.reserve_projection(&owner, 0).unwrap();
+    let before = reports.load(Ordering::Relaxed);
+    for _ in 0..64 {
+        assert!(store.reserve_observers(&mut reservation, &owner, 1));
+    }
+    let report_count = reports.load(Ordering::Relaxed) - before;
+    eprintln!("admission_spare_report_probe reservations=64 reports={report_count}");
+    assert_eq!(report_count, 0);
+    assert_eq!(reservation.bytes, 64);
+    assert_eq!(store.lock_state().transient_bytes, 64);
+    drop(reservation);
+    store.assert_conserved();
+}

@@ -2869,8 +2869,7 @@ impl NativeStore {
     fn admit_spare(&self, context: &Value, bytes: usize) -> bool {
         let mut state = self.lock_state();
         let fits = self.memory_cap(context).is_ok_and(|cap| {
-            number(&Self::gauges(&mut state), "retained_total_accounted_bytes")
-                .is_ok_and(|retained| retained.saturating_add(bytes) <= cap)
+            Self::retained_total(&mut state).saturating_add(bytes) <= cap
         });
         if fits {
             state.ledger.shared.work().admitted(bytes);
