@@ -1819,6 +1819,8 @@ pub(crate) struct StoreState {
     resolutions: Ledgered<String, ResolutionCursor>,
     locations: Ledgered<String, LocatedPath>,
     locates: Ledgered<String, LocateCursor>,
+    catalogs: Ledgered<String, Arc<CatalogSlot>>,
+    registered_builds: Ledgered<String, RegisteredBuild>,
     escaped_chunks: Table<usize, (Weak<ChunkRows>, MemoryCharge)>,
     recent_codex_raw_bytes: usize,
     locations_expiry: ExpiryIndex<String>,
@@ -1882,6 +1884,8 @@ impl StoreState {
             resolutions: Ledgered::new(work.clone()),
             locations: Ledgered::new(work.clone()),
             locates: Ledgered::new(work.clone()),
+            catalogs: Ledgered::new(work.clone()),
+            registered_builds: Ledgered::new(work.clone()),
             escaped_chunks: Table::new(work.clone()),
             recent_codex_raw_bytes: 0,
             locations_expiry: ExpiryIndex::new(work.clone()),
@@ -1903,7 +1907,7 @@ impl StoreState {
     }
 
     #[cfg(test)]
-    fn reservables(&self) -> [&dyn Reserved; 31] {
+    fn reservables(&self) -> [&dyn Reserved; 33] {
         [
             &self.ledger.shared,
             &self.registries,
@@ -1932,6 +1936,8 @@ impl StoreState {
             &self.warm_memberships,
             &self.locations,
             &self.locates,
+            &self.catalogs,
+            &self.registered_builds,
             &self.locations_expiry,
             &self.carried_expiry,
             &self.recent_codex_expiry,
@@ -2714,6 +2720,7 @@ impl StoreState {
         self.labels.consume_pledge(cursor)
             + self.graphs.consume_pledge(cursor)
             + self.prepared_builds.consume_pledge(cursor)
+            + self.registered_builds.consume_pledge(cursor)
             + self.prepared_queries.consume_pledge(cursor)
             + self.projections.consume_pledge(cursor)
             + self.discoveries.consume_pledge(cursor)
@@ -4630,6 +4637,7 @@ impl NativeStore {
                 }
             }
         }
+        state.registered_builds.retain(|_, build| build.expires > now);
         let expired_builds: Vec<_> = state
             .prepared_builds
             .iter()
@@ -4729,7 +4737,9 @@ impl NativeStore {
                 + state.warm_memberships.charged()
                 + state.ledger.shared.warm()
                 + state.locations.charged()
-                + state.locates.charged(),
+                + state.locates.charged()
+                + state.catalogs.charged()
+                + state.registered_builds.charged(),
             live_generations: state.generations.len(),
         }
         .report(state)
@@ -4849,6 +4859,8 @@ impl NativeStore {
                 "warm_memberships",
                 "locations",
                 "locates",
+                "catalogs",
+                "registered_builds",
             ]) + Self::audit_warm_buffer_bytes(state),
             live_generations: snapshots.len(),
         }
@@ -4856,7 +4868,7 @@ impl NativeStore {
     }
 
     #[cfg(test)]
-    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 20] {
+    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 22] {
         [
             (
                 "labels",
@@ -4972,6 +4984,8 @@ impl NativeStore {
                 state.locates.charged(),
                 state.locates.audit_with(Self::audit_locate_bytes),
             ),
+            ("catalogs", state.catalogs.charged(), state.catalogs.audit_with(Self::audit_catalog_bytes)),
+            ("registered_builds", state.registered_builds.charged(), state.registered_builds.audit_with(Self::audit_registered_build_bytes)),
         ]
     }
 
@@ -5616,6 +5630,8 @@ impl NativeStore {
             + state.warm_memberships.capacity_bytes()
             + state.locations.capacity_bytes()
             + state.locates.capacity_bytes()
+            + state.catalogs.capacity_bytes()
+            + state.registered_builds.capacity_bytes()
             + state.locations_expiry.heap_bytes()
             + state.carried_expiry.heap_bytes()
             + state.recent_codex_expiry.heap_bytes()
@@ -6432,7 +6448,8 @@ impl NativeStore {
     fn release_cursor(&self, token: &str, context: &Value) -> Result<bool, SnapshotError> {
         let claimant = str_field(context, "claimant")?;
         let mut state = self.lock_state();
-        let foreign = state
+        let foreign = state.registered_builds.get(token).is_some_and(|build| build.claimant != claimant)
+            || state
             .labels
             .get(token)
             .is_some_and(|slot| slot.preparation.binding().claimant != claimant)
@@ -6479,6 +6496,7 @@ impl NativeStore {
             ));
         }
         let mut released = state.remove_label(token).is_some();
+        released |= state.registered_builds.remove(token).is_some();
         released |= state.projections.remove(token).is_some();
         if let Some(query) = state.prepared_queries.remove(token) {
             if let Some(pending) = query.pending {
@@ -6514,6 +6532,9 @@ impl NativeStore {
             return;
         };
         let mut state = self.lock_state();
+        if state.registered_builds.get(token).is_some_and(|build| build.claimant == claimant) {
+            state.registered_builds.remove(token);
+        }
         if state
             .prepared_queries
             .get(token)
@@ -6742,6 +6763,30 @@ impl NativeStore {
                     }
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
+                }
+                let registered_build = {
+                    let mut state = self.lock_state();
+                    if state.registered_builds.get(cursor).is_some_and(|build| {
+                        build.claimant != str_field(context, "claimant").unwrap_or("")
+                    }) {
+                        return Err(SnapshotError::new(Status::StaleCursor, "prepared build claimant differs"));
+                    }
+                    state.registered_builds.remove(cursor).map(|build| {
+                        let held = build.charge();
+                        state.transient_bytes += held;
+                        (build, ProjectionReservation { store: self, bytes: held })
+                    })
+                };
+                if let Some((mut build, mut reservation)) = registered_build {
+                    if build.context["authority"] != context["authority"]
+                        || build.context["admission"] != context["admission"]
+                        || build.context["registry_generation"] != context["registry_generation"]
+                    {
+                        return Err(SnapshotError::new(Status::StaleCursor, "prepared build context differs"));
+                    }
+                    self.extend_projection_reservation(&mut reservation, context, value_bytes(context))?;
+                    build.context = context.clone();
+                    return self.registered_graph_step(cursor, build, &mut reservation, cancel, usage);
                 }
                 let prepared_build = {
                     let mut state = self.lock_state();
@@ -11169,6 +11214,8 @@ impl NativeStore {
     }
 }
 
+include!("snapshot_catalog.rs");
+include!("snapshot_catalog_owner.rs");
 include!("snapshot_prepared_service.rs");
 include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
@@ -11228,6 +11275,8 @@ mod tests {
             r#"{{"type":"user","uuid":"{id}","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"hello"}}}}"#
         )
     }
+
+    include!("snapshot_catalog_tests.rs");
 
     fn context(claimant: &str) -> Value {
         json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint()})

@@ -1,0 +1,282 @@
+enum CatalogCell {
+    Empty,
+    Idle(SourceCatalog),
+    Busy,
+}
+
+struct CatalogSlot {
+    cell: Mutex<CatalogCell>,
+    released: Condvar,
+    accounted: AtomicUsize,
+}
+
+impl Charge<String> for Arc<CatalogSlot> {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        arc_bytes::<CatalogSlot>() + MUTEX_STORAGE_BYTES + self.accounted.load(Ordering::Acquire)
+    }
+}
+
+enum CatalogMode { Index, Locate }
+
+enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending }
+
+enum CatalogResolution<'a> {
+    Indexed,
+    Ready {
+        paths: HashMap<String, PathBuf>,
+        reservation: ProjectionReservation<'a>,
+    },
+    Pending(Arc<CatalogSlot>),
+}
+
+struct RegisteredBuild {
+    claimant: String,
+    request: Value,
+    context: Value,
+    root: Arc<TranscriptSnapshot>,
+    catalog: Option<Arc<CatalogSlot>>,
+    remaining: WorkLimits,
+    expires: u64,
+}
+
+impl Charge<String> for RegisteredBuild {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        size_of::<Self>() + self.claimant.capacity()
+            + value_bytes(&self.request) + value_bytes(&self.context)
+    }
+}
+
+impl NativeStore {
+    fn catalog_paths<'a>(
+        &'a self,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        remaining: &mut WorkLimits,
+        usage: &mut [u64; 20],
+        mode: CatalogMode,
+    ) -> Result<CatalogResolution<'a>, SnapshotError> {
+        let ids = request["thread_ids"].as_array().ok_or_else(|| invalid("missing registered thread ids"))?;
+        let roots = request["roots"].as_array().ok_or_else(|| invalid("missing registered roots"))?;
+        if ids.is_empty() {
+            return Ok(CatalogResolution::Ready { paths: HashMap::new(), reservation: ProjectionReservation { store: self, bytes: 0 } });
+        }
+        if roots.is_empty() || roots.len() > 64 {
+            return Err(invalid("invalid root count"));
+        }
+        let chunk_size = 1024.min(remaining.max_items);
+        if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
+        for chunk in ids.chunks(chunk_size) {
+            for (index, id) in chunk.iter().enumerate() {
+                let id = id.as_str().ok_or_else(|| invalid("invalid session id"))?;
+                if id.is_empty() || id.len() > 256
+                    || chunk[..index].iter().any(|prior| prior.as_str() == Some(id))
+                {
+                    return Err(invalid("invalid or duplicate session id"));
+                }
+            }
+        }
+        let mut reservation = self.reserve_projection(context,
+            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
+                + 2 * value_bytes(&request["roots"]) + 1024)?;
+        let binding = json!({"authority":context["authority"],"roots":request["roots"]});
+        let binding = crate::ids::canonical_json(&binding).map_err(|error| invalid(error.to_string()))?;
+        let key = format!("{:x}", Sha256::digest(binding.as_bytes()));
+        let slot = {
+            let mut state = self.lock_state();
+            if let Some(slot) = state.catalogs.get(&key) {
+                let slot = Arc::clone(slot);
+                state.touch_catalog_owner(&slot);
+                slot
+            } else {
+                let bytes = key.capacity() + arc_bytes::<CatalogSlot>() + MUTEX_STORAGE_BYTES;
+                let additional = bytes + state.catalogs.growth_for(&key);
+                self.extend_projection_reservation_in(&mut state, &mut reservation, context, additional)?;
+                let slot = Arc::new(CatalogSlot {
+                    cell: Mutex::new(CatalogCell::Empty),
+                    released: Condvar::new(),
+                    accounted: AtomicUsize::new(0),
+                });
+                let owner_growth = state.catalog_owner_growth(&key, &slot);
+                self.extend_projection_reservation_in(&mut state, &mut reservation, context, owner_growth)?;
+                state.catalogs.reserve_for(&key);
+                state.catalogs.insert(key.clone(), Arc::clone(&slot));
+                state.attach_catalog_owner(&key, &slot);
+                state.transient_bytes -= additional + owner_growth;
+                reservation.bytes -= additional + owner_growth;
+                slot
+            }
+        };
+        let mut catalog = {
+            let mut cell = slot.cell.lock().expect("source catalog");
+            while matches!(*cell, CatalogCell::Busy) {
+                cancel.check(remaining.deadline_unix_ms)?;
+                cell = slot.released.wait_timeout(cell, FACT_READ_WAIT_SLICE).expect("source catalog").0;
+            }
+            cancel.check(remaining.deadline_unix_ms)?;
+            match std::mem::replace(&mut *cell, CatalogCell::Busy) {
+                CatalogCell::Empty => None,
+                CatalogCell::Idle(catalog) => Some(catalog),
+                CatalogCell::Busy => unreachable!("claimed source catalog"),
+            }
+        };
+        let old_bytes = slot.accounted.load(Ordering::Acquire);
+        let outcome = (|| {
+            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64 };
+            if catalog.is_none() {
+                catalog = Some(SourceCatalog::new(self, roots, context, &mut budget)?);
+            }
+            let catalog = catalog.as_mut().expect("source catalog");
+            catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+            loop {
+                if catalog.ready_for(self, ids, chunk_size, context, cancel,
+                    remaining.deadline_unix_ms, &mut budget)? { break; }
+                let before = usage[17];
+                catalog.advance(self, cancel, remaining.deadline_unix_ms,
+                    self.config.event_step.min(remaining.max_discovery_entries), usage, &mut budget)?;
+                remaining.max_discovery_entries = remaining.max_discovery_entries
+                    .saturating_sub((usage[17] - before) as usize);
+                catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                if catalog.ready_for(self, ids, chunk_size, context, cancel,
+                    remaining.deadline_unix_ms, &mut budget)? { break; }
+                if remaining.max_discovery_entries == 0 {
+                    return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete"));
+                }
+                if matches!(mode, CatalogMode::Index) {
+                    return Ok(CatalogWorkResult::Pending);
+                }
+            }
+            if matches!(mode, CatalogMode::Index) { return Ok(CatalogWorkResult::Indexed); }
+            let mut paths = HashMap::new();
+            for chunk in ids.chunks(chunk_size) {
+                let located = catalog.locate(self, chunk, context, cancel,
+                    remaining.deadline_unix_ms, &mut budget)?;
+                budget.reserve(map_growth(&paths, located.len()))?;
+                paths.extend(located);
+            }
+            cancel.check(remaining.deadline_unix_ms)?;
+            Ok(CatalogWorkResult::Paths(paths))
+        })();
+        {
+            let mut state = self.lock_state();
+            let new_bytes = catalog.as_ref().map_or(0, |catalog| catalog.charge() - size_of::<SourceCatalog>());
+            let added = new_bytes.saturating_sub(old_bytes);
+            assert!(added <= reservation.bytes, "source catalog outgrew its admitted allocation");
+            state.transient_bytes -= added;
+            reservation.bytes -= added;
+            let record = state.catalogs.get_mut(&key).expect("source catalog owner");
+            record.accounted.store(new_bytes, Ordering::Release);
+            drop(record);
+            *slot.cell.lock().expect("source catalog") = match catalog {
+                Some(catalog) => CatalogCell::Idle(catalog),
+                None => CatalogCell::Empty,
+            };
+        }
+        slot.released.notify_all();
+        match outcome? {
+            CatalogWorkResult::Paths(paths) => Ok(CatalogResolution::Ready { paths, reservation }),
+            CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
+            CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
+        }
+    }
+}
+
+impl NativeStore {
+    #[cfg(test)]
+    fn audit_catalog_bytes(key: &String, slot: &Arc<CatalogSlot>) -> usize {
+        let cell = slot.cell.lock().expect("source catalog");
+        let heap = match &*cell {
+            CatalogCell::Empty => 0,
+            CatalogCell::Idle(catalog) => catalog.audit_charge() - size_of::<SourceCatalog>(),
+            CatalogCell::Busy => panic!("catalog ownership audit requires a settled request"),
+        };
+        key.capacity() + arc_mirror::<CatalogSlot>() + MUTEX_STORAGE_MIRROR + heap
+    }
+
+    #[cfg(test)]
+    fn audit_registered_build_bytes(key: &String, build: &RegisteredBuild) -> usize {
+        key.capacity() + size_of::<RegisteredBuild>() + build.claimant.capacity()
+            + value_bytes(&build.request) + value_bytes(&build.context)
+    }
+
+    fn prepare_graph(
+        &self, request: &Value, context: &Value, cancel: &Cancellation, usage: &mut [u64; 20],
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let remaining = limits(request)?;
+        let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
+        if !view["attachments"].as_array().is_some_and(|attachments| attachments.is_empty()) {
+            return Err(invalid("prepare_graph accepts registry identities, not attachments"));
+        }
+        let handle = view.get("handle").ok_or_else(|| invalid("missing root handle"))?;
+        let scope = self.renew_scope_for_work(handle, context, remaining.deadline_unix_ms)?;
+        if !classifier_eq(&view["classifier"], &scope.classifier)? {
+            return Err(invalid("prepared graph classifier differs from root"));
+        }
+        let ids = request.get("thread_ids").and_then(Value::as_array).ok_or_else(|| invalid("missing thread_ids"))?;
+        let roots = request.get("roots").and_then(Value::as_array).ok_or_else(|| invalid("missing roots"))?;
+        request.get("direct_paths").and_then(Value::as_array).ok_or_else(|| invalid("missing direct_paths"))?;
+        if roots.len() > 64 { return Err(invalid("prepared registry input exceeds its bound")); }
+        if ids.is_empty() { return self.prepare_graph_ready(request, context, cancel, usage); }
+        let mut reservation = self.reserve_projection(context,
+            size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
+                + str_field(context, "claimant")?.len())?;
+        let build = RegisteredBuild {
+            claimant: str_field(context, "claimant")?.to_owned(),
+            request: request.clone(), context: context.clone(), root: scope.snapshot, catalog: None,
+            remaining, expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
+        };
+        self.registered_graph_step(&self.token("registered-build"), build, &mut reservation, cancel, usage)
+    }
+
+    fn registered_graph_step(
+        &self, token: &str, mut build: RegisteredBuild,
+        reservation: &mut ProjectionReservation<'_>, cancel: &Cancellation, usage: &mut [u64; 20],
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        cancel.check(build.remaining.deadline_unix_ms)?;
+        let scope = self.renew_scope_for_work(&build.request["view"]["handle"],
+            &build.context, build.remaining.deadline_unix_ms)?;
+        if scope.snapshot.stamp != build.root.stamp
+            || !classifier_eq(&build.request["view"]["classifier"], &scope.classifier)?
+        {
+            return Err(SnapshotError::new(Status::Changed, "prepared graph root generation changed"));
+        }
+        match self.catalog_paths(&build.request, &build.context, cancel,
+            &mut build.remaining, usage, CatalogMode::Index)?
+        {
+            CatalogResolution::Indexed => {
+                self.extend_projection_reservation(reservation, &build.context,
+                    value_bytes(&build.request["limits"]))?;
+                build.request.insert("limits", build.remaining.to_json());
+                self.prepare_graph_ready(&build.request, &build.context, cancel, usage)
+            }
+            CatalogResolution::Ready { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Pending(slot) => {
+                build.catalog = Some(slot);
+                let mut state = self.lock_state();
+                if state.registered_builds.len() + state.prepared_builds.len() >= self.lease_cap(&build.context)? {
+                    return Err(SnapshotError::new(Status::LeaseLimit, "prepared build admission exhausted"));
+                }
+                build.expires = (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms);
+                let token = token.to_owned();
+                let pledge = Delivery::cursor_pledge(&build.claimant, &token);
+                let additional = charged_bytes(&token, &build) + state.registered_builds.growth_for(&token) + pledge;
+                let covered = additional.min(reservation.bytes);
+                self.admit_memory(&mut state, &build.context, additional - covered)?;
+                state.transient_bytes -= covered;
+                reservation.bytes -= covered;
+                state.registered_builds.reserve_for(&token);
+                state.registered_builds.insert(token.clone(), build);
+                state.registered_builds.pledge(&token, pledge);
+                Ok((Value::new_null(), Some(token), Some("prepared graph work incomplete".to_owned())))
+            }
+        }
+    }
+}
