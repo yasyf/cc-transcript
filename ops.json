@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"fix/sdk17-window-alignment-baseline"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"add_comment","body":"Draft diagnostic PR94 head85cde13 and source PR95 head899acc0 both explicitly base main; baselineRED and final fullCI pending. Independent exact source review requested. No local tests/builds/runtime queries; no release tag, publish or merge authorized yet."}]}
