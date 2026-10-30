@@ -293,10 +293,18 @@ fn registered_catalog_key_admits_escaped_capacity_before_encoding() {
 
 fn catalog_finish_positive(store: &NativeStore, request: &Value, owner: &Value, entry_limit: u64) -> (Value, u64) {
     let mut entries = 0;
-    for _ in 0..20 {
+    for attempt in 0..20 {
         let mut request = request.clone();
         request.insert("deadline_unix_ms", json!(now_ms() + 750));
+        let comparisons = store.catalog_id_comparisons.load(Ordering::Relaxed);
+        let canonicalizations = store.location_canonicalizations.load(Ordering::Relaxed);
+        let member_checks = store.membership_metadata_checks.load(Ordering::Relaxed);
         let (response, read) = catalog_counted_request(store, &request, owner, &Cancellation::default());
+        eprintln!("catalog_positive attempt={attempt} status={:?} reason={:?} entries={read} id_comparisons={} canonicalizations={} member_checks={}",
+            response["status"].as_str(), response["reason"].as_str(),
+            store.catalog_id_comparisons.load(Ordering::Relaxed) - comparisons,
+            store.location_canonicalizations.load(Ordering::Relaxed) - canonicalizations,
+            store.membership_metadata_checks.load(Ordering::Relaxed) - member_checks);
         entries += read;
         assert!(entries <= entry_limit, "positive entries={entries} limit={entry_limit} status={:?}", response["status"].as_str());
         if response["status"].as_str() == Some("deadline") { continue; }
