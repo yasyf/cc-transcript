@@ -953,14 +953,14 @@ impl NativeStore {
         dirs.hold(|| cancel.check(deadline))
     }
 
-    fn prepare_graph(
+    fn prepare_graph_ready(
         &self,
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
+        remaining: WorkLimits,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let remaining = limits(request)?;
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
         if !view["attachments"]
             .as_array()
@@ -1596,7 +1596,7 @@ impl NativeStore {
         reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut state = self.lock_state();
-        if state.prepared_builds.len() >= self.lease_cap(&build.context)? {
+        if state.prepared_builds.len() + state.registered_builds.len() >= self.lease_cap(&build.context)? {
             return Err(SnapshotError::new(
                 Status::LeaseLimit,
                 "prepared build admission exhausted",
@@ -1621,32 +1621,23 @@ impl NativeStore {
         ))
     }
 
-    fn collect_located(
-        page: &Value,
-        located: &mut HashMap<String, PathBuf>,
-    ) -> Result<(), SnapshotError> {
-        for item in page["sessions"]
-            .as_array()
-            .ok_or_else(|| invalid("invalid registered location result"))?
+    fn catalog_membership_valid(
+        &self,
+        certificate: Option<CatalogCertificate>,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        remaining: &mut WorkLimits,
+    ) -> Result<bool, SnapshotError> {
+        let Some(certificate) = certificate else { return Ok(true); };
+        let ids = request["thread_ids"].as_array().ok_or_else(|| invalid("missing registered thread ids"))?;
+        let roots = request["roots"].as_array().ok_or_else(|| invalid("missing registered roots"))?;
+        match self.catalog_access(CatalogInput { ids, roots }, context, cancel, remaining,
+            &mut [0; 20], CatalogMode::Check(certificate))?
         {
-            match str_field(item, "status")? {
-                "ok" => {
-                    located.insert(
-                        str_field(item, "session_id")?.to_owned(),
-                        PathBuf::from(str_field(item, "path")?),
-                    );
-                }
-                "missing" => {}
-                "incomplete" => {
-                    return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "registered location incomplete",
-                    ));
-                }
-                _ => return Err(invalid("invalid registered location status")),
-            }
+            CatalogResolution::Checked(valid) => Ok(valid),
+            _ => unreachable!("catalog certificate validation"),
         }
-        Ok(())
     }
 
     fn registered_membership(
@@ -1661,22 +1652,28 @@ impl NativeStore {
     ) -> Result<(WarmMembership, Option<ProjectionReservation<'_>>), SnapshotError> {
         let cached = self.lock_state().warm_memberships.get(key).cloned();
         if let Some(cached) = cached {
-            if !revalidate
+            let namespace_valid = self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)?;
+            if namespace_valid && (!revalidate
                 || self.validate_warm_membership(
                     &cached.members,
                     &cached.sidechain_dirs,
                     context,
                     cancel,
                     remaining.deadline_unix_ms,
-                )?
+                )?)
             {
+                if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)? {
+                    return Err(SnapshotError::new(Status::Changed, "registered catalog changed during member validation"));
+                }
                 return Ok((cached, None));
             }
             self.lock_state().remove_warm_membership(key);
-            if let Some((membership, reservation)) =
-                self.refreshed_warm_membership(key, &cached, request, context, cancel, remaining)?
-            {
-                return Ok((membership, Some(reservation)));
+            if namespace_valid {
+                if let Some((membership, reservation)) =
+                    self.refreshed_warm_membership(key, &cached, request, context, cancel, remaining)?
+                {
+                    return Ok((membership, Some(reservation)));
+                }
             }
         }
         let (membership, reservation) =
@@ -1697,9 +1694,10 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        remaining: &WorkLimits,
+        remaining: &mut WorkLimits,
     ) -> Result<Option<(WarmMembership, ProjectionReservation<'_>)>, SnapshotError> {
-        if cached.expires <= now_ms()
+        if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)?
+            || cached.expires <= now_ms()
             || !self.validate_sidechain_dirs(
                 &cached.sidechain_dirs,
                 context,
@@ -1754,6 +1752,9 @@ impl NativeStore {
         {
             return Ok(None);
         }
+        if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)? {
+            return Ok(None);
+        }
         self.extend_projection_reservation(
             &mut reservation,
             context,
@@ -1761,6 +1762,7 @@ impl NativeStore {
         )?;
         Ok(Some((
             WarmMembership {
+                catalog: cached.catalog,
                 revision: Self::warm_membership_revision(&members),
                 members: members.into(),
                 positions: Arc::clone(&cached.positions),
@@ -1813,45 +1815,16 @@ impl NativeStore {
         #[cfg(test)]
         self.warm_records.fetch_add(1, Ordering::Relaxed);
         let since = active_since_ns(request)?;
-        let mut located = HashMap::new();
-        for chunk in ids.chunks(1024.min(remaining.max_items)) {
-            let mut bounds = *remaining;
-            bounds.max_sources = chunk.len();
-            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":chunk,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":bounds.to_json()});
-            let before = usage[17];
-            let mut outcome = self.locate(&location, context, cancel, usage)?;
-            loop {
-                let page = Self::collect_located(&outcome.0, &mut located);
-                let Some(cursor) = outcome.1.take() else {
-                    page?;
-                    if outcome.2.is_some() {
-                        return Err(SnapshotError::new(
-                            Status::Incomplete,
-                            "registered location incomplete",
-                        ));
-                    }
-                    break;
-                };
-                let resumed = page.and_then(|()| {
-                    self.dispatch(
-                        &json!({"schema":SCHEMA,"id":"warm-registered-locate-resume","operation":"resume","cursor":&cursor}),
-                        context,
-                        cancel,
-                        usage,
-                    )
-                });
-                outcome = match resumed {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        self.lock_state().locates.remove(&cursor);
-                        return Err(error);
-                    }
-                };
+        let (located, _catalog_reservation, certificate) = if ids.is_empty() {
+            (HashMap::new(), None, None)
+        } else {
+            match self.catalog_access(
+                CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
+            )? {
+                CatalogResolution::Ready { paths, reservation, certificate } => (paths, Some(reservation), certificate),
+                CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Checked(_) => unreachable!("synchronous catalog lookup"),
             }
-            remaining.max_discovery_entries = remaining
-                .max_discovery_entries
-                .saturating_sub((usage[17] - before) as usize);
-        }
+        };
         let mut members = Vec::new();
         let mut seen = HashSet::new();
         for path in ids
@@ -1861,9 +1834,10 @@ impl NativeStore {
             .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
         {
             cancel.check(remaining.deadline_unix_ms)?;
-            let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+            let canonical = self.canonical_path(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
             let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+            self.after_source_resolved(&path);
             if !metadata.is_file() {
                 return Err(invalid("registered source must be a file"));
             }
@@ -1968,6 +1942,9 @@ impl NativeStore {
             }
             examined += 1;
         }
+        if !self.catalog_membership_valid(certificate, request, context, cancel, remaining)? {
+            return Err(SnapshotError::new(Status::Changed, "registered catalog changed during member preparation"));
+        }
         if members.iter().filter(|member| active(member, since)).count() > remaining.max_sources {
             return Err(SnapshotError::new(
                 Status::Incomplete,
@@ -1983,6 +1960,7 @@ impl NativeStore {
         )?;
         Ok((
             WarmMembership {
+                catalog: certificate,
                 revision: Self::warm_membership_revision(&members),
                 positions: member_positions(&members),
                 members: members.into(),
@@ -2003,6 +1981,17 @@ impl NativeStore {
     ) -> Result<(), SnapshotError> {
         let mut state = self.lock_state();
         Self::prune(&mut state);
+        let _catalog_pin = membership.catalog.map(|certificate| {
+            let slot = state.catalogs.get(certificate.key()).ok_or_else(||
+                SnapshotError::new(Status::Changed, "registered catalog was evicted before publication"))?;
+            let slot = Arc::clone(slot);
+            let cell = slot.cell.lock().expect("source catalog");
+            if !matches!(&*cell, CatalogCell::Idle(catalog) if certificate.matches(catalog)) {
+                return Err(SnapshotError::new(Status::Changed, "registered catalog changed before publication"));
+            }
+            drop(cell);
+            Ok(slot)
+        }).transpose()?;
         if state.warm_memberships.contains_key(key) {
             return Ok(());
         }
@@ -2926,8 +2915,7 @@ impl NativeStore {
     fn admit_spare(&self, context: &Value, bytes: usize) -> bool {
         let mut state = self.lock_state();
         let fits = self.memory_cap(context).is_ok_and(|cap| {
-            number(&Self::gauges(&mut state), "retained_total_accounted_bytes")
-                .is_ok_and(|retained| retained.saturating_add(bytes) <= cap)
+            Self::retained_total(&mut state).saturating_add(bytes) <= cap
         });
         if fits {
             state.ledger.shared.work().admitted(bytes);

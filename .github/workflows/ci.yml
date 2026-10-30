@@ -65,11 +65,25 @@ jobs:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: cargo test -p cc-transcript-py --lib
 
+      - name: Test scalar admission work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- admission_report_ --nocapture
+
       - name: Test prepared-facts disk cache on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- snapshot_prepared_disk restarted_owner_reuses_prepared_facts
 
       - name: Test location traversal on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- location_
+
+      - name: Test source cache ownership on Linux
+        run: |
+          cargo test -p cc-transcript-core --no-default-features --lib -- pressure_ --nocapture
+          cargo test -p cc-transcript-core --no-default-features --lib -- cache_ --nocapture
+
+      - name: Test shared source-spine work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- source_spine_ --nocapture
+
+      - name: Test owned transcript catalog operation counts on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
 
       - name: Generate native type stubs
         env:
@@ -105,6 +119,15 @@ jobs:
         with:
           name: cc-transcript-linux-${{ github.sha }}
           path: dist/*.whl
+
+  snapshot-catalog-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test owned transcript catalog operation counts on macOS
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
 
   snapshot-wheel:
     runs-on: macos-15

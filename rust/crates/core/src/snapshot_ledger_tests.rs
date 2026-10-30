@@ -687,7 +687,7 @@ fn remembered(fixture: &Fixture) -> bool {
     let path = PathBuf::from(fixture.request["path"].as_str().unwrap());
     fixture
         .store
-        .remember_locations(&[(id.clone(), path)], &fixture.owner);
+        .remember_locations(std::iter::once((&id, &path)), &fixture.owner);
     fixture.store.lock_state().locations.contains_key(&id)
 }
 
@@ -727,10 +727,8 @@ fn location_fixture(source: &LedgerSource, background: bool) -> Fixture {
         if len == reserved && len > 0 {
             break;
         }
-        store.remember_locations(
-            &[(format!("session-{index:04}"), source.path.clone())],
-            &owner,
-        );
+        let id = format!("session-{index:04}");
+        store.remember_locations(std::iter::once((&id, &source.path)), &owner);
     }
     {
         let state = store.lock_state();
@@ -1517,7 +1515,7 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
     let owner = context_for("escaped", false);
     let (handle, snapshot) = acquired(&store, &source.path, &owner);
     assert_eq!(snapshot.chunks.len(), 1);
-    let charge = chunk_charge(&snapshot.chunks[0]);
+    let charge = NativeStore::audit_chunk_rows_bytes(&snapshot.chunks[0].entries);
     let rows = Arc::clone(&snapshot.chunks[0].entries);
     assert_eq!(rows.len(), 1);
     assert!(matches!(&rows[0], Entry::User(user) if user.meta.uuid == "escaped"));
@@ -1535,12 +1533,146 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
 }
 
 #[test]
+fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocation() {
+    let source = LedgerSource::new(&lines(0..200));
+    let store = store_with(1024, 4096, &[]);
+    let owner = context_for("spine-wrapper-escape", false);
+    let (whole_handle, full) = acquired(&store, &source.path, &owner);
+    let mut request = acquire(&source.path);
+    request.insert("tail_bytes", json!(4096));
+    let response = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    let tail_handle = ok_handle(&response);
+    let tail = store.pin(&tail_handle, &owner).unwrap();
+    let (original, selected) = tail
+        .chunks
+        .iter()
+        .find_map(|selected| {
+            full.chunks
+                .iter()
+                .find(|original| Arc::ptr_eq(&original.entries, &selected.entries))
+                .map(|original| (Arc::clone(original), Arc::clone(selected)))
+        })
+        .expect("the overlapping views share rows");
+    assert!(!Arc::ptr_eq(&original, &selected));
+    let rows = Arc::clone(&original.entries);
+    let rows_bytes = NativeStore::audit_chunk_rows_bytes(&original.entries);
+    let original_metadata = NativeStore::audit_chunk_metadata_bytes(&original);
+    let selected_metadata = NativeStore::audit_chunk_metadata_bytes(&selected);
+    release_lease(&store, &whole_handle, &owner);
+    release_lease(&store, &tail_handle, &owner);
+    drop(full);
+    drop(tail);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    assert_eq!(
+        ledger(&store)[ENTRIES],
+        rows_bytes + original_metadata + selected_metadata
+    );
+    drop(original);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], rows_bytes + selected_metadata);
+    drop(selected);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], rows_bytes);
+    drop(rows);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], 0);
+}
+
+#[test]
+fn source_spine_escaped_allocation_audit_reads_live_fields() {
+    let source = LedgerSource::new(&line("audit-escape"));
+    let store = fast_store();
+    let owner = context_for("spine-escape-audit", false);
+    let (handle, snapshot) = acquired(&store, &source.path, &owner);
+    let chunk = Arc::clone(&snapshot.chunks[0]);
+    let rows = Arc::clone(&chunk.entries);
+    let expected = NativeStore::audit_chunk_rows_bytes(&rows)
+        + NativeStore::audit_chunk_metadata_bytes(&chunk);
+    release_lease(&store, &handle, &owner);
+    drop(snapshot);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    let keys = [Arc::as_ptr(&rows) as usize, Arc::as_ptr(&chunk) as usize];
+    {
+        let mut state = store.lock_state();
+        for key in keys {
+            state
+                .escaped_chunks
+                .get_mut(&key)
+                .unwrap()
+                .1
+                .owned_capacity_bytes += 4096;
+        }
+    }
+    assert_eq!(audited(&store)[ENTRIES], expected);
+    {
+        let mut state = store.lock_state();
+        for key in keys {
+            state
+                .escaped_chunks
+                .get_mut(&key)
+                .unwrap()
+                .1
+                .owned_capacity_bytes -= 4096;
+        }
+    }
+    store.assert_conserved();
+    drop(chunk);
+    store.assert_conserved();
+    assert_eq!(
+        ledger(&store)[ENTRIES],
+        NativeStore::audit_chunk_rows_bytes(&rows)
+    );
+    drop(rows);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], 0);
+}
+
+#[test]
+fn source_spine_rewrite_discards_the_prior_byte_provenance_and_keeps_its_old_view_immutable() {
+    let source = LedgerSource::new(&lines(0..200));
+    let store = fast_store();
+    let owner = context_for("spine-rewrite", false);
+    let (_, original) = acquired(&store, &source.path, &owner);
+    let prior_first = original.entry(0).meta().unwrap().uuid.clone();
+    std::fs::write(&source.path, lines(200..400)).unwrap();
+    let mut request = acquire(&source.path);
+    request.insert("tail_bytes", json!(4096));
+    let response = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    let selected = store.pin(&ok_handle(&response), &owner).unwrap();
+    assert_eq!(original.entry(0).meta().unwrap().uuid, prior_first);
+    assert!(selected.entries().iter().all(|entry| entry
+        .meta()
+        .unwrap()
+        .uuid
+        .strip_prefix("event-")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap()
+        >= 200));
+    assert!(selected.chunks.iter().all(|fresh| original
+        .chunks
+        .iter()
+        .all(|old| !Arc::ptr_eq(&fresh.entries, &old.entries))));
+    store.assert_conserved();
+}
+
+#[test]
 fn observations_under_one_guard_drain_deaths_after_the_lock() {
     let source = LedgerSource::new(&line("guarded"));
     let store = fast_store();
     let owner = context_for("guarded", false);
     let (orphan, replacement) = orphaned(&store, &source, &owner);
-    let charge = chunk_charge(&orphan.chunks[0]);
+    let charge = NativeStore::audit_chunk_rows_bytes(&orphan.chunks[0].entries);
     let rows = Arc::clone(&orphan.chunks[0].entries);
     let mut state = store.lock_state();
     drop(orphan);
@@ -3814,10 +3946,10 @@ fn refused_publication_keeps_the_parsed_result_unpublished_until_the_retry_admit
         {
             let state = refused.store.lock_state();
             assert!(state.generations.contains_key(&snapshot_key(&parsed)));
-            assert_eq!(state.escaped_chunks.len(), parsed.chunks.len());
+            assert_eq!(state.escaped_chunks.len(), 2 * parsed.chunks.len());
             assert_eq!(slot.ledgered_bytes(), 0);
         }
-        let charge = chunk_charge(&parsed.chunks[0]);
+        let charge = NativeStore::audit_chunk_rows_bytes(&parsed.chunks[0].entries);
         let rows = Arc::clone(&parsed.chunks[0].entries);
         release_lease(&refused.store, &handle, &refused.owner);
         drop(pinned);
@@ -3855,31 +3987,34 @@ fn published_follower(path: &Path, background: bool, requests: usize) -> Fixture
             state.loads.get(&slot.stamp.identity).expect("pinned load"),
             &slot
         ));
-        for inode in 1u64.. {
-            if state.latest.len() == state.latest.reserved() {
-                break;
-            }
-            state.insert_latest(
-                SourceIdentity {
-                    device: 0,
-                    inode,
-                    window_base: 0,
-                },
-                Arc::clone(&snapshot),
-            );
-        }
-        assert!(state.latest.growth(1) > 0);
     }
+    let mut pins = vec![snapshot];
+    let mut padding = Vec::new();
+    loop {
+        let padded = {
+            let state = parked.store.lock_state();
+            state.latest.len() == state.latest.reserved()
+        };
+        if padded {
+            break;
+        }
+        let source = LedgerSource::new(&line(&format!("cache-padding-{}", padding.len())));
+        let (handle, snapshot) = acquired(&parked.store, &source.path, &parked.owner);
+        release_lease(&parked.store, &handle, &parked.owner);
+        pins.push(snapshot);
+        padding.push(source);
+    }
+    assert!(parked.store.lock_state().latest.growth(1) > 0);
     Fixture {
         store: parked.store,
         owner: parked.owner,
         request: acquire(path),
-        pins: vec![snapshot],
+        pins,
     }
 }
 
 #[test]
-fn latest_cache_write_is_skipped_when_only_its_table_growth_does_not_fit() {
+fn latest_cache_write_is_skipped_when_its_index_growth_does_not_fit() {
     let source = LedgerSource::new(&line("anchor"));
     let deep = deep_source(&source, &line("latest"));
     let identity = SourceStamp::of(&std::fs::metadata(&deep).unwrap()).identity;
@@ -3903,12 +4038,15 @@ fn latest_cache_write_is_skipped_when_only_its_table_growth_does_not_fit() {
         let skipped = build();
         let (growth, reserved) = {
             let state = skipped.store.lock_state();
-            (state.latest.growth(1), state.latest.reserved())
+            (
+                state.latest_growth(&identity, &skipped.pins[0]),
+                state.latest.reserved(),
+            )
         };
         assert!(growth > 0);
         assert!(
             exact < with_cache && with_cache <= exact + growth,
-            "the cache write costs its table growth: exact={exact} with_cache={with_cache} growth={growth}"
+            "the cache write costs its index growth: exact={exact} with_cache={with_cache} growth={growth}"
         );
         {
             let _filler = fill_to(&skipped.store, &skipped.owner, with_cache - 1);
@@ -4953,32 +5091,45 @@ fn failed_prepared_source_pin_releases_its_internal_lease() {
 }
 
 #[test]
-fn cancelled_registered_warming_releases_its_location_cursor() {
+fn cancelled_registered_warming_releases_its_location_work() {
     let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
     let store = cursor_store();
     let owner = context_for("warming", true);
     let cancel = Cancellation::default();
     let armed = cancel.clone();
-    *store.locate_hook.lock().unwrap() = Some(Arc::new(move || armed.cancel()));
+    let observed = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::clone(&observed);
+    *store.location_metadata_hook.lock().unwrap() = Some((
+        "entry",
+        Arc::new(move || {
+            entered.fetch_add(1, Ordering::Relaxed);
+            armed.cancel();
+        }),
+    ));
     let response = store.request(&warm_request(&scenario), &owner, &cancel);
+    *store.location_metadata_hook.lock().unwrap() = None;
     assert_eq!(
         response["status"].as_str(),
         Some("cancelled"),
         "{response:?}"
     );
-    assert!(
-        store.locate_hook.lock().unwrap().is_none(),
-        "the location page never parked"
-    );
+    assert_eq!(observed.load(Ordering::Relaxed), 1);
     assert_eq!(
         response["usage"]["discovery_entries_examined"].as_u64(),
-        Some(2),
+        Some(1),
         "{response:?}"
     );
-    assert!(
-        store.lock_state().locates.is_empty(),
-        "the cancelled warm left its location cursor behind"
-    );
+    {
+        let state = store.lock_state();
+        assert!(state.locates.is_empty());
+        assert!(state.registered_builds.is_empty());
+        assert_eq!(state.transient_bytes, 0);
+        assert_eq!(state.catalogs.len(), 1);
+        for slot in state.catalogs.values() {
+            assert_eq!(Arc::strong_count(slot), 1);
+            assert!(matches!(*slot.cell.lock().unwrap(), CatalogCell::Idle(_)));
+        }
+    }
     store.assert_conserved();
 }
 
@@ -7964,7 +8115,7 @@ fn exact_fill_refuses_one_more_byte_and_reuses_released_capacity() {
 }
 
 #[test]
-fn pressure_eviction_frees_unleased_latest_within_the_cap() {
+fn pressure_eviction_reclaims_one_unleased_generation_within_the_cap() {
     let sources: Vec<_> = (0..6)
         .map(|index| LedgerSource::new(&lines(index * 3..index * 3 + 3)))
         .collect();
@@ -7975,6 +8126,7 @@ fn pressure_eviction_frees_unleased_latest_within_the_cap() {
             .iter()
             .map(|source| acquired(&store, &source.path, &owner))
             .collect();
+        let victim_entries = entry_bytes(&[&retained[2].1]);
         for (handle, snapshot) in retained.split_off(2) {
             release_lease(&store, &handle, &owner);
             drop(snapshot);
@@ -7989,11 +8141,11 @@ fn pressure_eviction_frees_unleased_latest_within_the_cap() {
             .unwrap();
         let after = ledger(&store);
         store.assert_conserved();
-        assert_eq!(after[GENERATIONS], 2);
+        assert_eq!(after[GENERATIONS], before[GENERATIONS] - 1);
+        assert_eq!(after[LEASES], before[LEASES]);
         assert!(after[TOTAL] <= cap);
         assert!(audited(&store)[TOTAL] <= cap);
-        let kept: Vec<_> = retained.iter().map(|(_, snapshot)| snapshot).collect();
-        assert_eq!(after[ENTRIES], entry_bytes(&kept));
+        assert_eq!(after[ENTRIES], before[ENTRIES] - victim_entries);
         drop(pressure);
         store.assert_conserved();
         assert_eq!(
@@ -8594,7 +8746,7 @@ fn location_parked(fixture: &Fixture) -> bool {
 fn open_directory_reservation(cursor: &LocateCursor, root: &Path) -> usize {
     cursor.seen_directories.capacity() * size_of::<SourceIdentity>()
         + cursor.directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>()
         + root.as_os_str().len()
 }
 
@@ -8871,6 +9023,11 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
         pending_start: _,
         provider: _,
         chunks,
+        source_chunks,
+        previous_chunks: _,
+        published_chunks: _,
+        reuse_next: _,
+        reuse_prepared: _,
         codex_raw,
         codex_append,
         count: _,
@@ -8900,6 +9057,7 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
     );
     assert!(codex_raw.is_none() && codex_append.is_none());
     pending.capacity()
+        + source_chunks.capacity() * size_of::<SourceChunkSpan>()
         + origin_fence.capacity()
         + seal_fence.capacity()
         + prefix_fence.capacity()
@@ -9271,10 +9429,15 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         .as_ref()
         .expect("the load extends a published snapshot");
     assert!(load.result.is_none() && load.codex_raw.is_none() && load.codex_append.is_none());
-    let shared: HashSet<usize> = previous
+    let shared_rows: HashSet<usize> = previous
         .chunks
         .iter()
         .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
+        .collect();
+    let shared_wrappers: HashSet<usize> = previous
+        .chunks
+        .iter()
+        .map(|chunk| Arc::as_ptr(chunk) as usize)
         .collect();
     let prior: HashSet<usize> = previous
         .activity
@@ -9289,11 +9452,23 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         + load.fence.capacity()
         + load.session_id.as_ref().map_or(0, String::capacity)
         + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
+        + load.source_chunks.capacity() * size_of::<SourceChunkSpan>()
         + load
             .chunks
             .iter()
-            .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
-            .map(|chunk| NativeStore::audit_chunk_bytes(chunk))
+            .map(|chunk| {
+                let rows = if shared_rows.contains(&(Arc::as_ptr(&chunk.entries) as usize)) {
+                    0
+                } else {
+                    NativeStore::audit_chunk_rows_bytes(&chunk.entries)
+                };
+                let metadata = if shared_wrappers.contains(&(Arc::as_ptr(chunk) as usize)) {
+                    0
+                } else {
+                    NativeStore::audit_chunk_metadata_bytes(chunk)
+                };
+                rows + metadata
+            })
             .sum::<usize>()
         + load
             .activity
@@ -9772,7 +9947,7 @@ fn location_cursor_charges_its_open_directory_root_copy() {
             let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
             assert_eq!(cursor.directories.len(), 1);
             assert_eq!(
-                cursor.directories[0].root_capacity,
+                cursor.directories[0].entries.root.capacity(),
                 root.as_os_str().len(),
                 "{site}: the open directory does not record its root copy"
             );
@@ -10960,8 +11135,8 @@ fn fresh_graph_cursor_admits_its_record_before_constructing_it() {
         .unwrap()
         .join("s")
         .join("subagents");
-    let listed_directory =
-        2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
+    let listed_directory = 2 * directory.as_os_str().len()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
     for background in [false, true] {
         let build = || graph_fixture(&source, background, json!([]));
         let control = build();
@@ -11614,12 +11789,11 @@ fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
     );
     assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
     let mut pins = vec![root_snapshot];
-    pins.extend(
-        scenario
-            .sidechains
-            .iter()
-            .map(|path| acquired(&store, path, &owner).1),
-    );
+    pins.extend(scenario.sidechains.iter().map(|path| {
+        let (handle, snapshot) = acquired(&store, path, &owner);
+        release_lease(&store, &handle, &owner);
+        snapshot
+    }));
     Fixture {
         store,
         owner,
@@ -11630,7 +11804,7 @@ fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
 
 #[test]
 fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocation() {
-    let scenario = Scenario::new(3, |index| line(&format!("thread-{index:04}")));
+    let scenario = Scenario::new(128, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
         let build = || shared_root_fixture(&scenario, background);
         let control = build();
@@ -11669,7 +11843,18 @@ fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocatio
         };
         let site = reached(
             |store| store.registered_sources.load(Ordering::Relaxed),
-            |fixture| settled_or_refused(&submit(fixture)),
+            |fixture| {
+                let catalog_pins: Vec<_> = fixture
+                    .store
+                    .lock_state()
+                    .catalogs
+                    .values()
+                    .map(Arc::clone)
+                    .collect();
+                assert_eq!(catalog_pins.len(), 1);
+                settled_or_refused(&submit(fixture));
+                drop(catalog_pins);
+            },
         );
         let exact = exact_headroom(&build, &site);
         assert_eq!(
@@ -12273,7 +12458,7 @@ fn discovery_step_peak(token: &String, scan: &DiscoveryCursor, root: &Path) -> u
 fn discovery_directory_reservation(scan: &DiscoveryCursor, root: &Path) -> usize {
     scan.seen_directories.capacity() * size_of::<SourceIdentity>()
         + scan.directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>()
         + std::fs::canonicalize(root).unwrap().as_os_str().len()
 }
 
@@ -12375,7 +12560,7 @@ fn first_directory_reservation(root: &Path, root_len: usize) -> usize {
     directories.push([0; size_of::<OpenDirectory>()]);
     seen.capacity() * size_of::<SourceIdentity>()
         + directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>()
         + root_len
 }
 
@@ -12494,7 +12679,8 @@ fn denied_graph_listing_admission_opens_nothing_and_retries() {
         .unwrap()
         .join("s")
         .join("subagents");
-    let listed = 2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
+    let listed = 2 * directory.as_os_str().len()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
     for background in [false, true] {
         assert_denied_directory_admission_opens_nothing(
             "graph listing",
@@ -14023,7 +14209,7 @@ fn retained_line_arenas_are_charged_whole_until_their_rows_drop() {
     let charged: usize = snapshot
         .chunks
         .iter()
-        .map(|chunk| chunk_charge(chunk))
+        .map(|chunk| NativeStore::audit_chunk_rows_bytes(&chunk.entries))
         .sum();
     let rows: Vec<_> = snapshot
         .chunks
@@ -14035,7 +14221,7 @@ fn retained_line_arenas_are_charged_whole_until_their_rows_drop() {
     evict_unpinned(&store, &owner);
     store.assert_conserved();
     let escaped = ledger(&store)[ENTRIES];
-    assert!(escaped >= charged, "{escaped} < {charged}");
+    assert_eq!(escaped, charged);
     assert!(
         rows.iter().all(|rows| Arc::strong_count(rows) == 1),
         "the escaped rows are held past their last clone"

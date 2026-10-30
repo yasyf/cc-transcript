@@ -43,7 +43,7 @@ const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
 const FILESYSTEM_PATH_BYTES: usize = 2 * (libc::PATH_MAX as usize + size_of::<libc::dirent>());
 const LOCATE_PATH_SLOTS: usize = 2 * FILESYSTEM_PATH_BYTES;
 const LOCATE_USER_PATH_SLOTS: usize = 3 * FILESYSTEM_PATH_BYTES;
-const READ_DIR_HANDLE_BYTES: usize = arc_bytes::<(*mut libc::DIR, PathBuf)>();
+const READ_DIR_HANDLE_BYTES: usize = arc_bytes::<OpenedDirectory>();
 const LOAD_SLOT_BYTES: usize = arc_bytes::<LoadSlot>() + MUTEX_STORAGE_BYTES;
 const CLASSIFIER_SLOT_BYTES: usize = arc_bytes::<ClassifierSlot>() + MUTEX_STORAGE_BYTES;
 const PREPARED_GRAPH_BYTES: usize = arc_bytes::<Mutex<PreparedGraph>>() + MUTEX_STORAGE_BYTES;
@@ -266,6 +266,7 @@ impl std::ops::Deref for ChunkRows {
 
 #[derive(Debug)]
 pub struct EntryChunk {
+    ledger: LedgerHook,
     pub entries: Arc<ChunkRows>,
     pub start: usize,
     pub charge: MemoryCharge,
@@ -277,6 +278,35 @@ pub struct EntryChunk {
 impl EntryChunk {
     pub fn new(start: usize, entries: Vec<Entry>) -> Self {
         Self::retaining(start, entries, Vec::new())
+    }
+
+    fn metadata_bytes(&self) -> usize {
+        arc_bytes::<Self>() + self.entry_charges.capacity() * size_of::<MemoryCharge>()
+    }
+
+    fn rows_charge(&self) -> MemoryCharge {
+        MemoryCharge {
+            owned_capacity_bytes: self.charge.owned_capacity_bytes - self.metadata_bytes(),
+            opaque_dom_accounted_bytes: self.charge.opaque_dom_accounted_bytes,
+        }
+    }
+
+    fn rebased(&self, start: usize) -> Self {
+        let entry_charges = self.entry_charges.clone();
+        Self {
+            ledger: LedgerHook::default(),
+            entries: Arc::clone(&self.entries),
+            start,
+            charge: MemoryCharge {
+                owned_capacity_bytes: self.rows_charge().owned_capacity_bytes
+                    + arc_bytes::<Self>()
+                    + entry_charges.capacity() * size_of::<MemoryCharge>(),
+                opaque_dom_accounted_bytes: self.charge.opaque_dom_accounted_bytes,
+            },
+            entry_charges,
+            user_count: self.user_count,
+            sidechain_user_count: self.sidechain_user_count,
+        }
     }
 
     pub(crate) fn retaining(
@@ -308,6 +338,7 @@ impl EntryChunk {
             .filter(|entry| matches!(entry,Entry::User(user) if user.meta.is_sidechain))
             .count();
         Self {
+            ledger: LedgerHook::default(),
             entries: Arc::new(ChunkRows::retaining(entries, arenas)),
             start,
             charge,
@@ -422,11 +453,18 @@ impl TranscriptSnapshot {
                 opaque_dom_accounted_bytes: 0,
             },
         )];
-        entries.extend(
-            self.chunks
-                .iter()
-                .map(|chunk| (Arc::as_ptr(&chunk.entries) as usize, chunk.charge)),
-        );
+        entries.extend(self.chunks.iter().flat_map(|chunk| {
+            [
+                (
+                    Arc::as_ptr(chunk) as usize,
+                    MemoryCharge {
+                        owned_capacity_bytes: chunk.metadata_bytes(),
+                        opaque_dom_accounted_bytes: 0,
+                    },
+                ),
+                (Arc::as_ptr(&chunk.entries) as usize, chunk.rows_charge()),
+            ]
+        }));
         if let Some(raw) = &self.codex_raw {
             entries.push((
                 Arc::as_ptr(raw) as usize,
@@ -590,6 +628,26 @@ impl LoadSlot {
     }
 }
 
+enum ChunkAllocationOwner {
+    Rows(Weak<ChunkRows>),
+    Metadata(Weak<EntryChunk>),
+}
+
+impl ChunkAllocationOwner {
+    fn strong_count(&self) -> usize {
+        match self {
+            Self::Rows(rows) => rows.strong_count(),
+            Self::Metadata(chunk) => chunk.strong_count(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SourceChunkSpan {
+    start: u64,
+    end: u64,
+}
+
 struct Load {
     file: File,
     offset: u64,
@@ -597,6 +655,11 @@ struct Load {
     pending_start: u64,
     provider: Option<Provider>,
     chunks: Vec<Arc<EntryChunk>>,
+    source_chunks: Vec<SourceChunkSpan>,
+    previous_chunks: Option<Arc<Vec<SourceChunkSpan>>>,
+    published_chunks: Option<Arc<Vec<SourceChunkSpan>>>,
+    reuse_next: Option<usize>,
+    reuse_prepared: bool,
     codex_raw: Option<Arc<Vec<u8>>>,
     codex_append: Option<Arc<CodexAppendIndex>>,
     count: usize,
@@ -897,6 +960,7 @@ struct PreparedSourceRef {
 
 #[derive(Clone)]
 struct WarmMembership {
+    catalog: Option<CatalogCertificate>,
     members: Arc<[PreparedSourceRef]>,
     positions: Arc<[(SourceIdentity, usize)]>,
     sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
@@ -1132,29 +1196,203 @@ struct GraphListing {
     depth: usize,
 }
 
+struct OpenedDirectory {
+    directory: std::ptr::NonNull<libc::DIR>,
+    root: PathBuf,
+    stamp: SourceStamp,
+    #[cfg(test)]
+    parent_metadata_attempts: AtomicUsize,
+}
+
+// Only OpenDirectory owns iteration. Shared entry metadata operations do not mutate iteration state.
+unsafe impl Send for OpenedDirectory {}
+unsafe impl Sync for OpenedDirectory {}
+
+impl Drop for OpenedDirectory {
+    fn drop(&mut self) {
+        unsafe {
+            libc::closedir(self.directory.as_ptr());
+        }
+    }
+}
+
 struct OpenDirectory {
-    entries: std::fs::ReadDir,
-    root_capacity: usize,
+    entries: Arc<OpenedDirectory>,
+    end_of_stream: bool,
+}
+
+struct OpenDirectoryEntry {
+    directory: Arc<OpenedDirectory>,
+    name: OsString,
+    kind: u8,
+    inode: u64,
+}
+
+impl OpenDirectoryEntry {
+    fn path(&self) -> PathBuf {
+        self.directory.root.join(&self.name)
+    }
+    fn file_name(&self) -> OsString {
+        self.name.clone()
+    }
+
+    fn name_evidence(&self, _store: &NativeStore) -> CatalogNameEvidence {
+        let mut kind = (self.kind != libc::DT_UNKNOWN).then_some(self.kind);
+        #[cfg(test)]
+        if _store.directory_force_unknown.load(Ordering::Relaxed) {
+            kind = None;
+        }
+        CatalogNameEvidence {
+            inode: self.inode,
+            kind,
+        }
+    }
+
+    fn symlink_hint(&self, store: &NativeStore) -> Option<bool> {
+        self.name_evidence(store)
+            .kind
+            .map(|kind| kind == libc::DT_LNK)
+    }
+}
+
+impl OpenedDirectory {
+    fn current_stamp(&self) -> std::io::Result<SourceStamp> {
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        #[cfg(test)]
+        self.parent_metadata_attempts
+            .fetch_add(1, Ordering::Relaxed);
+        if unsafe { libc::fstat(libc::dirfd(self.directory.as_ptr()), metadata.as_mut_ptr()) } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(CatalogChildMetadata::from_descriptor(&unsafe { metadata.assume_init() }).stamp)
+    }
+
+    fn object_metadata(
+        &self,
+        name: &OsStr,
+        _store: &NativeStore,
+    ) -> std::io::Result<CatalogChildMetadata> {
+        let name = std::ffi::CString::new(name.as_encoded_bytes())
+            .expect("directory name contains no NUL");
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        #[cfg(test)]
+        {
+            _store
+                .directory_descriptor_metadata
+                .fetch_add(1, Ordering::Relaxed);
+            _store.after_location_metadata("descriptor_metadata");
+        }
+        let result = unsafe {
+            libc::fstatat(
+                libc::dirfd(self.directory.as_ptr()),
+                name.as_ptr(),
+                metadata.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let metadata = unsafe { metadata.assume_init() };
+        Ok(CatalogChildMetadata::from_descriptor(&metadata))
+    }
 }
 
 impl OpenDirectory {
     fn open(path: &Path) -> Result<Self, SnapshotError> {
+        let encoded =
+            std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| {
+                io_error(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "file name contained an unexpected NUL byte",
+                ))
+            })?;
+        let directory = std::ptr::NonNull::new(unsafe { libc::opendir(encoded.as_ptr()) })
+            .ok_or_else(|| io_error(std::io::Error::last_os_error()))?;
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(libc::dirfd(directory.as_ptr()), metadata.as_mut_ptr()) } != 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                libc::closedir(directory.as_ptr());
+            }
+            return Err(io_error(error));
+        }
+        let metadata = unsafe { metadata.assume_init() };
+        let stamp = CatalogChildMetadata::from_descriptor(&metadata).stamp;
         Ok(Self {
-            entries: std::fs::read_dir(path).map_err(io_error)?,
-            root_capacity: path.as_os_str().len(),
+            entries: Arc::new(OpenedDirectory {
+                directory,
+                root: path.to_owned(),
+                stamp,
+                #[cfg(test)]
+                parent_metadata_attempts: AtomicUsize::new(0),
+            }),
+            end_of_stream: false,
         })
     }
 
+    fn stamp(&self) -> SourceStamp {
+        self.entries.stamp
+    }
+
     fn retained_bytes(&self) -> usize {
-        READ_DIR_HANDLE_BYTES + self.root_capacity
+        READ_DIR_HANDLE_BYTES + self.entries.root.capacity()
+    }
+}
+
+fn directory_errno() -> *mut libc::c_int {
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+    unsafe {
+        libc::__error()
+    }
+    #[cfg(any(target_os = "android", target_os = "openbsd", target_os = "netbsd"))]
+    unsafe {
+        libc::__errno()
+    }
+    #[cfg(not(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "android",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )))]
+    unsafe {
+        libc::__errno_location()
     }
 }
 
 impl Iterator for OpenDirectory {
-    type Item = std::io::Result<std::fs::DirEntry>;
+    type Item = std::io::Result<OpenDirectoryEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.entries.next()
+        if self.end_of_stream {
+            return None;
+        }
+        loop {
+            let entry = unsafe {
+                *directory_errno() = 0;
+                libc::readdir(self.entries.directory.as_ptr())
+            };
+            if entry.is_null() {
+                self.end_of_stream = true;
+                let error = std::io::Error::last_os_error();
+                return (error.raw_os_error() != Some(0)).then_some(Err(error));
+            }
+            // dirent may have a dynamically sized trailing name; never form a reference to its full layout.
+            let name =
+                unsafe { std::ffi::CStr::from_ptr(std::ptr::addr_of!((*entry).d_name).cast()) }
+                    .to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            return Some(Ok(OpenDirectoryEntry {
+                directory: Arc::clone(&self.entries),
+                name: OsString::from_vec(name.to_vec()),
+                kind: unsafe { (*entry).d_type },
+                inode: unsafe { (*entry).d_ino as u64 },
+            }));
+        }
     }
 }
 
@@ -1464,18 +1702,22 @@ impl LabelSlot {
 
 struct GenerationRecord {
     snapshot: Weak<TranscriptSnapshot>,
+    cached: Option<CachedSnapshot>,
     registry_generation: String,
     entries: Vec<(usize, MemoryCharge)>,
     indexes: Vec<(usize, usize)>,
+    source_chunks: Option<Arc<Vec<SourceChunkSpan>>>,
 }
 
 impl GenerationRecord {
     fn new(snapshot: &Arc<TranscriptSnapshot>, registry_generation: &str) -> Self {
         Self {
             snapshot: Arc::downgrade(snapshot),
+            cached: None,
             registry_generation: registry_generation.to_owned(),
             entries: snapshot.accounted_allocations(),
             indexes: snapshot.activity.shared_allocations(),
+            source_chunks: None,
         }
     }
 
@@ -1489,9 +1731,83 @@ impl GenerationRecord {
 
 impl Charge<usize> for GenerationRecord {
     fn charge(&self) -> usize {
-        self.registry_generation.capacity()
+        self.source_chunks.as_ref().map_or(0, |chunks| {
+            arc_bytes::<Vec<SourceChunkSpan>>() + chunks.capacity() * size_of::<SourceChunkSpan>()
+        }) + self.registry_generation.capacity()
+            + self.cached.as_ref().map_or(0, |cached| {
+                cached.classified.as_ref().map_or(0, String::capacity)
+            })
             + self.entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + self.indexes.capacity() * size_of::<(usize, usize)>()
+    }
+}
+
+struct CachedSnapshot {
+    snapshot: Arc<TranscriptSnapshot>,
+    latest: Option<SourceIdentity>,
+    spine: Option<SourceIdentity>,
+    classified: Option<String>,
+    touched: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CacheOwner {
+    Generation(usize),
+    Carried(usize),
+    Catalog(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SourceView {
+    window_start: u64,
+    size: std::cmp::Reverse<u64>,
+    generation: usize,
+}
+
+impl SourceView {
+    fn of(snapshot: &Arc<TranscriptSnapshot>) -> Self {
+        Self {
+            window_start: snapshot.window_start,
+            size: std::cmp::Reverse(snapshot.stamp.size),
+            generation: snapshot_key(snapshot),
+        }
+    }
+}
+
+struct CarriedOwner {
+    lineages: Vec<(SourceIdentity, String)>,
+    touched: u64,
+}
+
+struct CatalogOwner {
+    key: Arc<str>,
+    touched: u64,
+}
+
+impl Charge<usize> for CatalogOwner {
+    fn charge(&self) -> usize {
+        arc_slice_bytes::<u8>(self.key.len())
+    }
+}
+
+impl Charge<usize> for CarriedOwner {
+    fn charge(&self) -> usize {
+        self.lineages.capacity() * size_of::<(SourceIdentity, String)>()
+            + self
+                .lineages
+                .iter()
+                .map(|(_, key)| key.capacity())
+                .sum::<usize>()
+    }
+}
+
+impl Charge<String> for usize {
+    fn key_charge(key: &String) -> usize {
+        key.capacity()
+    }
+
+    fn charge(&self) -> usize {
+        0
     }
 }
 
@@ -1509,10 +1825,6 @@ fn facts_anchor(facts: &Arc<crate::snapshot_prepared::PreparedFacts>) -> Anchor 
 
 fn chunk_key(chunk: &EntryChunk) -> usize {
     Arc::as_ptr(&chunk.entries) as usize
-}
-
-fn chunk_anchor(chunk: &Arc<EntryChunk>) -> Anchor {
-    Anchor::entries(chunk_key(chunk), chunk.charge)
 }
 
 fn entry_bytes(snapshot: &TranscriptSnapshot) -> usize {
@@ -1793,7 +2105,16 @@ impl Delivery {
 }
 
 pub(crate) struct StoreState {
-    latest: Table<SourceIdentity, Arc<TranscriptSnapshot>>,
+    gauge_reports: Work,
+    latest: Table<SourceIdentity, usize>,
+    source_spines: Table<SourceIdentity, BTreeSet<SourceView>>,
+    source_view_nodes: usize,
+    source_view_checks: Work,
+    classified: Ledgered<String, usize>,
+    cache_order: BTreeSet<(u64, CacheOwner)>,
+    cache_clock: u64,
+    carried_owners: Ledgered<usize, CarriedOwner>,
+    catalog_owners: Ledgered<usize, CatalogOwner>,
     recent_codex: Table<SourceIdentity, u64>,
     loads: Table<SourceIdentity, Arc<LoadSlot>>,
     prepared_loads: Table<SourceIdentity, (Arc<LoadSlot>, u64)>,
@@ -1819,7 +2140,9 @@ pub(crate) struct StoreState {
     resolutions: Ledgered<String, ResolutionCursor>,
     locations: Ledgered<String, LocatedPath>,
     locates: Ledgered<String, LocateCursor>,
-    escaped_chunks: Table<usize, (Weak<ChunkRows>, MemoryCharge)>,
+    catalogs: Ledgered<String, Arc<CatalogSlot>>,
+    registered_builds: Ledgered<String, RegisteredBuild>,
+    escaped_chunks: Table<usize, (ChunkAllocationOwner, MemoryCharge)>,
     recent_codex_raw_bytes: usize,
     locations_expiry: ExpiryIndex<String>,
     carried_expiry: ExpiryIndex<(SourceIdentity, String)>,
@@ -1856,7 +2179,16 @@ fn carried_deadline(carried: &CarriedClassification) -> u64 {
 impl StoreState {
     fn new(work: Work) -> Self {
         Self {
+            gauge_reports: Work::default(),
             latest: Table::new(work.clone()),
+            source_spines: Table::new(work.clone()),
+            source_view_nodes: 0,
+            source_view_checks: Work::default(),
+            classified: Ledgered::new(work.clone()),
+            cache_order: BTreeSet::new(),
+            cache_clock: 0,
+            carried_owners: Ledgered::new(work.clone()),
+            catalog_owners: Ledgered::new(work.clone()),
             recent_codex: Table::new(work.clone()),
             loads: Table::new(work.clone()),
             prepared_loads: Table::new(work.clone()),
@@ -1882,6 +2214,8 @@ impl StoreState {
             resolutions: Ledgered::new(work.clone()),
             locations: Ledgered::new(work.clone()),
             locates: Ledgered::new(work.clone()),
+            catalogs: Ledgered::new(work.clone()),
+            registered_builds: Ledgered::new(work.clone()),
             escaped_chunks: Table::new(work.clone()),
             recent_codex_raw_bytes: 0,
             locations_expiry: ExpiryIndex::new(work.clone()),
@@ -1903,7 +2237,7 @@ impl StoreState {
     }
 
     #[cfg(test)]
-    fn reservables(&self) -> [&dyn Reserved; 31] {
+    fn reservables(&self) -> [&dyn Reserved; 37] {
         [
             &self.ledger.shared,
             &self.registries,
@@ -1926,12 +2260,18 @@ impl StoreState {
             &self.loads,
             &self.classifier_stages,
             &self.latest,
+            &self.source_spines,
+            &self.classified,
+            &self.carried_owners,
+            &self.catalog_owners,
             &self.escaped_chunks,
             &self.prepared_loads,
             &self.recent_codex,
             &self.warm_memberships,
             &self.locations,
             &self.locates,
+            &self.catalogs,
+            &self.registered_builds,
             &self.locations_expiry,
             &self.carried_expiry,
             &self.recent_codex_expiry,
@@ -1967,9 +2307,12 @@ impl StoreState {
     fn register_generation(
         &mut self,
         snapshot: &Arc<TranscriptSnapshot>,
-        record: GenerationRecord,
+        mut record: GenerationRecord,
     ) {
         let key = snapshot_key(snapshot);
+        if let Some(mut previous) = self.generations.get_mut(&key) {
+            record.cached = previous.cached.take();
+        }
         self.generations.reserve_for(&key);
         self.ledger.shared.reserve(record.anchors());
         snapshot
@@ -1987,48 +2330,80 @@ impl StoreState {
 
     fn unregister_generation(&mut self, snapshot: usize) {
         if let Some(record) = self.generations.remove(&snapshot) {
+            assert!(
+                record.cached.is_none(),
+                "generation cache owner is still live"
+            );
             for anchor in record.anchors() {
                 self.ledger.shared.release(anchor.id);
             }
         }
     }
 
-    fn escaping<'a>(
-        &'a self,
-        chunks: &'a [Arc<EntryChunk>],
-    ) -> impl Iterator<Item = &'a Arc<EntryChunk>> + 'a {
+    fn escaping<'a>(&'a self, chunks: &'a [Arc<EntryChunk>]) -> impl Iterator<Item = Anchor> + 'a {
         chunks
             .iter()
-            .filter(move |chunk| !self.escaped_chunks.contains_key(&chunk_key(chunk)))
+            .flat_map(|chunk| {
+                [
+                    Anchor::entries(chunk_key(chunk), chunk.rows_charge()),
+                    Anchor::entries(
+                        Arc::as_ptr(chunk) as usize,
+                        MemoryCharge {
+                            owned_capacity_bytes: chunk.metadata_bytes(),
+                            opaque_dom_accounted_bytes: 0,
+                        },
+                    ),
+                ]
+            })
+            .filter(|anchor| !self.escaped_chunks.contains_key(&anchor.id))
     }
 
     fn escape_growth(&self, chunks: &[Arc<EntryChunk>]) -> usize {
         self.escaped_chunks.growth(self.escaping(chunks).count())
-            + self
-                .ledger
-                .shared
-                .admission(self.escaping(chunks).map(chunk_anchor))
+            + self.ledger.shared.admission(self.escaping(chunks))
     }
 
     fn escape_chunks(&mut self, chunks: &[Arc<EntryChunk>]) {
-        let additional = self.escaping(chunks).count();
-        let anchors: Vec<_> = self.escaping(chunks).map(chunk_anchor).collect();
-        self.escaped_chunks.reserve(additional);
+        let anchors: Vec<_> = self.escaping(chunks).collect();
+        self.escaped_chunks.reserve(anchors.len());
         self.ledger.shared.reserve(anchors);
         for chunk in chunks {
-            let key = chunk_key(chunk);
-            if self.escaped_chunks.contains_key(&key) {
-                continue;
+            let rows = chunk_key(chunk);
+            if !self.escaped_chunks.contains_key(&rows) {
+                chunk
+                    .entries
+                    .ledger
+                    .arm(&self.ledger.queue, LedgerEvent::Chunk(rows));
+                let charge = chunk.rows_charge();
+                self.escaped_chunks.insert(
+                    rows,
+                    (
+                        ChunkAllocationOwner::Rows(Arc::downgrade(&chunk.entries)),
+                        charge,
+                    ),
+                );
+                self.ledger.shared.acquire(Anchor::entries(rows, charge));
             }
-            chunk
-                .entries
-                .ledger
-                .arm(&self.ledger.queue, LedgerEvent::Chunk(key));
-            self.escaped_chunks
-                .insert(key, (Arc::downgrade(&chunk.entries), chunk.charge));
-            self.ledger
-                .shared
-                .acquire(Anchor::entries(key, chunk.charge));
+            let metadata = Arc::as_ptr(chunk) as usize;
+            if !self.escaped_chunks.contains_key(&metadata) {
+                chunk
+                    .ledger
+                    .arm(&self.ledger.queue, LedgerEvent::Chunk(metadata));
+                let charge = MemoryCharge {
+                    owned_capacity_bytes: chunk.metadata_bytes(),
+                    opaque_dom_accounted_bytes: 0,
+                };
+                self.escaped_chunks.insert(
+                    metadata,
+                    (
+                        ChunkAllocationOwner::Metadata(Arc::downgrade(chunk)),
+                        charge,
+                    ),
+                );
+                self.ledger
+                    .shared
+                    .acquire(Anchor::entries(metadata, charge));
+            }
         }
     }
 
@@ -2060,8 +2435,13 @@ impl StoreState {
         charged_bytes(key, value) + self.ledger.shared.admission(anchors)
     }
 
-    fn carried_growth(&self, lineage: &(SourceIdentity, String)) -> usize {
-        self.carried_classifications.growth_for(lineage)
+    fn carried_growth(
+        &self,
+        lineage: &(SourceIdentity, String),
+        carried: &Arc<CarriedClassification>,
+    ) -> usize {
+        self.carried_owner_growth(lineage, carried)
+            + self.carried_classifications.growth_for(lineage)
             + self.carried_expiry.growth(1)
             + lineage.owned_bytes()
     }
@@ -2108,16 +2488,19 @@ impl StoreState {
         self.carried_classifications.reserve_for(&lineage);
         self.carried_expiry.reserve(1);
         self.ledger.shared.reserve(carried.anchors());
+        if let Some(previous) = self.carried_classifications.get(&lineage).cloned() {
+            self.detach_carried_owner(&lineage, &previous);
+            for anchor in previous.anchors() {
+                self.ledger.shared.release(anchor.id);
+            }
+        }
         for anchor in carried.anchors() {
             self.ledger.shared.acquire(anchor);
         }
         self.carried_expiry
             .push(carried_deadline(&carried), lineage.clone());
-        if let Some(displaced) = self.carried_classifications.insert(lineage, carried) {
-            for anchor in displaced.anchors() {
-                self.ledger.shared.release(anchor.id);
-            }
-        }
+        self.attach_carried_owner(&lineage, &carried);
+        self.carried_classifications.insert(lineage, carried);
         if self
             .carried_expiry
             .crowded(self.carried_classifications.len())
@@ -2133,6 +2516,7 @@ impl StoreState {
 
     fn remove_carried(&mut self, lineage: &(SourceIdentity, String)) {
         if let Some(carried) = self.carried_classifications.remove(lineage) {
+            self.detach_carried_owner(lineage, &carried);
             for anchor in carried.anchors() {
                 self.ledger.shared.release(anchor.id);
             }
@@ -2151,7 +2535,7 @@ impl StoreState {
     fn holds_latest(&self, identity: &SourceIdentity, snapshot: &TranscriptSnapshot) -> bool {
         self.latest
             .get(identity)
-            .is_some_and(|old| old.id == snapshot.id)
+            .is_some_and(|key| *key == snapshot as *const TranscriptSnapshot as usize)
     }
 
     fn insert_latest(
@@ -2159,39 +2543,144 @@ impl StoreState {
         identity: SourceIdentity,
         snapshot: Arc<TranscriptSnapshot>,
     ) -> Option<Arc<TranscriptSnapshot>> {
-        let added = codex_raw_len(&snapshot);
+        let key = snapshot_key(&snapshot);
+        let previous = self.latest.get(&identity).copied();
+        let displaced = previous.map(|old| {
+            Arc::clone(
+                &self
+                    .generations
+                    .get(&old)
+                    .expect("latest generation")
+                    .cached
+                    .as_ref()
+                    .expect("cached owner")
+                    .snapshot,
+            )
+        });
+        if let Some(old) = previous.filter(|old| *old != key) {
+            self.generations
+                .get_mut(&old)
+                .expect("latest generation")
+                .cached
+                .as_mut()
+                .expect("cached owner")
+                .latest = None;
+            self.forget_source_spine(&identity, displaced.as_ref().expect("displaced source"));
+            self.release_unused_cached_generation(old);
+        }
+        let physical = identity.file();
+        self.cache_generation(Arc::clone(&snapshot));
         self.latest.reserve_for(&identity);
-        let displaced = self.latest.insert(identity, snapshot);
+        self.latest.insert(identity, key);
+        self.generations
+            .get_mut(&key)
+            .expect("latest generation")
+            .cached
+            .as_mut()
+            .expect("cached owner")
+            .latest = Some(identity);
+        self.retire_incompatible_source_views(&snapshot);
+        let indexed = self
+            .generations
+            .get(&key)
+            .expect("source generation")
+            .cached
+            .as_ref()
+            .expect("cached owner")
+            .spine
+            .is_some();
+        if !indexed {
+            self.source_spines.reserve_for(&physical);
+            if !self.source_spines.contains_key(&physical) {
+                self.source_spines.insert(physical, BTreeSet::new());
+            }
+            assert!(self
+                .source_spines
+                .get_mut(&physical)
+                .expect("source views")
+                .insert(SourceView::of(&snapshot)));
+            self.source_view_nodes += 1;
+            self.generations
+                .get_mut(&key)
+                .expect("source generation")
+                .cached
+                .as_mut()
+                .expect("cached owner")
+                .spine = Some(physical);
+        }
         if self.recent_codex.contains_key(&identity) {
             self.recent_codex_raw_bytes -= displaced.as_ref().map_or(0, codex_raw_len);
-            self.recent_codex_raw_bytes += added;
+            self.recent_codex_raw_bytes += codex_raw_len(&snapshot);
         }
         displaced
     }
 
     fn remove_latest(&mut self, identity: &SourceIdentity) -> Option<Arc<TranscriptSnapshot>> {
-        let removed = self.latest.remove(identity)?;
+        let key = self.latest.remove(identity)?;
+        let removed = Arc::clone(
+            &self
+                .generations
+                .get(&key)
+                .expect("latest generation")
+                .cached
+                .as_ref()
+                .expect("cached owner")
+                .snapshot,
+        );
+        let mut generation = self.generations.get_mut(&key).expect("latest generation");
+        let cached = generation.cached.as_mut().expect("cached owner");
+        cached.latest = None;
+        let indexed = cached.spine.take().is_some();
+        drop(generation);
+        if indexed {
+            self.remove_source_view(&removed);
+        }
+        self.release_unused_cached_generation(key);
         if self.recent_codex.contains_key(identity) {
             self.recent_codex_raw_bytes -= codex_raw_len(&removed);
         }
         Some(removed)
     }
 
+    #[cfg(test)]
     fn retain_latest(
         &mut self,
         mut keep: impl FnMut(&SourceIdentity, &Arc<TranscriptSnapshot>) -> bool,
     ) {
-        let recent = &self.recent_codex;
-        let raw_bytes = &mut self.recent_codex_raw_bytes;
-        let work = self.ledger.shared.work();
-        self.latest.retain(|identity, snapshot| {
-            work.tick(1);
-            let kept = keep(identity, snapshot);
-            if !kept && recent.contains_key(identity) {
-                *raw_bytes -= codex_raw_len(snapshot);
-            }
-            kept
-        });
+        let removed: Vec<_> = self
+            .latest
+            .iter()
+            .filter_map(|(identity, key)| {
+                self.ledger.shared.work().tick(1);
+                let snapshot = &self
+                    .generations
+                    .get(key)
+                    .expect("latest generation")
+                    .cached
+                    .as_ref()
+                    .expect("cached owner")
+                    .snapshot;
+                (!keep(identity, snapshot)).then_some(*identity)
+            })
+            .collect();
+        for identity in removed {
+            self.remove_latest(&identity);
+        }
+    }
+
+    fn latest_raw_bytes(&self, identity: &SourceIdentity) -> usize {
+        self.latest.get(identity).map_or(0, |key| {
+            codex_raw_len(
+                &self
+                    .generations
+                    .get(key)
+                    .expect("latest generation")
+                    .cached
+                    .as_ref()
+                    .expect("cached owner")
+                    .snapshot,
+            )
+        })
     }
 
     fn insert_recent_codex(&mut self, identity: SourceIdentity, now: u64) {
@@ -2202,7 +2691,7 @@ impl StoreState {
         if self.recent_codex.insert(identity, now).is_some() {
             return;
         }
-        self.recent_codex_raw_bytes += self.latest.get(&identity).map_or(0, codex_raw_len);
+        self.recent_codex_raw_bytes += self.latest_raw_bytes(&identity);
         self.recent_codex_expiry
             .push(now.saturating_add(TOUCH_TTL_MS), identity);
         if self.recent_codex_expiry.crowded(self.recent_codex.len()) {
@@ -2217,7 +2706,7 @@ impl StoreState {
 
     fn remove_recent_codex(&mut self, identity: &SourceIdentity) {
         if self.recent_codex.remove(identity).is_some() {
-            self.recent_codex_raw_bytes -= self.latest.get(identity).map_or(0, codex_raw_len);
+            self.recent_codex_raw_bytes -= self.latest_raw_bytes(identity);
         }
     }
 
@@ -2291,20 +2780,18 @@ impl StoreState {
             .expired(now, |id| locations.get(id).map(|location| location.expires))
     }
 
+    #[cfg(test)]
     fn retain_carried(
         &mut self,
         mut keep: impl FnMut(&(SourceIdentity, String), &Arc<CarriedClassification>) -> bool,
     ) {
-        let mut released = Vec::new();
-        self.carried_classifications.retain(|lineage, carried| {
-            let kept = keep(lineage, carried);
-            if !kept {
-                released.extend(carried.anchors());
-            }
-            kept
-        });
-        for anchor in released {
-            self.ledger.shared.release(anchor.id);
+        let removed: Vec<_> = self
+            .carried_classifications
+            .iter()
+            .filter_map(|(lineage, carried)| (!keep(lineage, carried)).then(|| lineage.clone()))
+            .collect();
+        for lineage in removed {
+            self.remove_carried(&lineage);
         }
     }
 
@@ -2714,6 +3201,7 @@ impl StoreState {
         self.labels.consume_pledge(cursor)
             + self.graphs.consume_pledge(cursor)
             + self.prepared_builds.consume_pledge(cursor)
+            + self.registered_builds.consume_pledge(cursor)
             + self.prepared_queries.consume_pledge(cursor)
             + self.projections.consume_pledge(cursor)
             + self.discoveries.consume_pledge(cursor)
@@ -2808,12 +3296,32 @@ struct GaugeTerms {
 }
 
 impl GaugeTerms {
-    fn report(&self, state: &StoreState) -> Value {
+    fn totals(&self, state: &StoreState) -> (usize, usize, usize) {
         let metadata = self.metadata + NativeStore::fixed_metadata_bytes(state);
         let owned = state.owned.accounted_bytes();
+        (
+            self.projections + self.discovery + self.graph + metadata + owned,
+            self.pending + self.classifier + self.label + state.transient_bytes,
+            self.entries
+                + self.indexes
+                + self.pending
+                + self.classifier
+                + self.label
+                + self.projections
+                + self.discovery
+                + self.graph
+                + metadata
+                + state.transient_bytes
+                + owned,
+        )
+    }
+
+    fn report(&self, state: &StoreState) -> Value {
+        state.gauge_reports.tick(1);
+        let (projections, pending, total) = self.totals(state);
         json!({"retained_entry_capacity_bytes": self.entries, "retained_index_capacity_bytes": self.indexes,
-            "retained_projection_bytes": self.projections + self.discovery + self.graph + metadata + owned, "pending_input_capacity_bytes": self.pending + self.classifier + self.label + state.transient_bytes,
-            "retained_total_accounted_bytes": self.entries + self.indexes + self.pending + self.classifier + self.label + self.projections + self.discovery + self.graph + metadata + state.transient_bytes + owned,
+            "retained_projection_bytes": projections, "pending_input_capacity_bytes": pending,
+            "retained_total_accounted_bytes": total,
             "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": self.live_generations})
     }
 }
@@ -2841,9 +3349,10 @@ pub struct NativeStore {
     transport_bytes: AtomicU64,
     state: Mutex<StoreState>,
     fact_read_released: Condvar,
+    #[cfg(test)]
+    catalog_wait_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     classifiers: Mutex<HashMap<String, Arc<ClassifierCallback>>>,
     policies: Mutex<HashMap<String, Arc<PolicyCallback>>>,
-    classified: Mutex<HashMap<String, Arc<TranscriptSnapshot>>>,
     #[cfg(test)]
     read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -2855,9 +3364,15 @@ pub struct NativeStore {
     #[cfg(test)]
     location_metadata_hook: Mutex<Option<(&'static str, Arc<dyn Fn() + Send + Sync>)>>,
     #[cfg(test)]
+    directory_force_unknown: AtomicBool,
+    #[cfg(test)]
+    directory_descriptor_metadata: AtomicUsize,
+    #[cfg(test)]
     location_entry_canonicalizations: AtomicUsize,
     #[cfg(test)]
     location_canonicalizations: AtomicUsize,
+    #[cfg(test)]
+    catalog_id_comparisons: AtomicUsize,
     #[cfg(test)]
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
@@ -3300,7 +3815,7 @@ impl NativeStore {
                 );
             }
         }
-        let footprint = number(&Self::gauges(&mut state), "retained_total_accounted_bytes")?;
+        let footprint = Self::retained_total(&mut state);
         if footprint > config.retained {
             return Err(invalid("retained cap below startup footprint"));
         }
@@ -3332,9 +3847,10 @@ impl NativeStore {
             transport_bytes: AtomicU64::new(0),
             state: Mutex::new(state),
             fact_read_released: Condvar::new(),
+            #[cfg(test)]
+            catalog_wait_hook: Mutex::new(None),
             classifiers: Mutex::new(HashMap::new()),
             policies: Mutex::new(HashMap::new()),
-            classified: Mutex::new(HashMap::new()),
             #[cfg(test)]
             read_hook: Mutex::new(None),
             #[cfg(test)]
@@ -3346,9 +3862,15 @@ impl NativeStore {
             #[cfg(test)]
             location_metadata_hook: Mutex::new(None),
             #[cfg(test)]
+            directory_force_unknown: AtomicBool::new(false),
+            #[cfg(test)]
+            directory_descriptor_metadata: AtomicUsize::new(0),
+            #[cfg(test)]
             location_entry_canonicalizations: AtomicUsize::new(0),
             #[cfg(test)]
             location_canonicalizations: AtomicUsize::new(0),
+            #[cfg(test)]
+            catalog_id_comparisons: AtomicUsize::new(0),
             #[cfg(test)]
             release_hook: Mutex::new(None),
             #[cfg(test)]
@@ -3662,7 +4184,7 @@ impl NativeStore {
         let additional = required - reservation.bytes;
         self.admit_memory(&mut state, context, additional)?;
         let cap = self.memory_cap(context)?;
-        let used = number(&Self::gauges(&mut state), "retained_total_accounted_bytes")?;
+        let used = Self::retained_total(&mut state);
         let available = cap.saturating_sub(used);
         let preferred_growth = preferred.saturating_sub(reservation.bytes);
         let growth = preferred_growth.min(available);
@@ -3885,7 +4407,7 @@ impl NativeStore {
             + state.ledger.shared.growth(anchors())
             + carried.as_ref().map_or(0, |(lineage, candidate)| {
                 charged_bytes(lineage, candidate)
-                    + state.carried_growth(lineage)
+                    + state.carried_growth(lineage, candidate)
                     + state.ledger.shared.unowned_bytes(
                         candidate
                             .anchors()
@@ -4266,13 +4788,7 @@ impl NativeStore {
         let slot = {
             let mut state = self.lock_state();
             Self::prune(&mut state);
-            if let Some(derived) = self
-                .classified
-                .lock()
-                .expect("classified snapshots")
-                .get(&key)
-                .cloned()
-            {
+            if let Some(derived) = state.classified_source(&key) {
                 return Ok(ClassifierProgress {
                     snapshot: Some(derived),
                     stage: None,
@@ -4482,16 +4998,17 @@ impl NativeStore {
         {
             let mut state = self.lock_state();
             let carried = carried.filter(|candidate| state.carries(&lineage, candidate));
-            let key = snapshot_key(&derived);
+            let generation_key = snapshot_key(&derived);
             let anchors = || {
                 generation
                     .anchors()
                     .chain(carried.iter().flat_map(|candidate| candidate.anchors()))
             };
-            let additional = state.admission(&key, &generation, anchors())
-                + state.generations.growth_for(&key)
+            let additional = state.admission(&generation_key, &generation, anchors())
+                + state.generations.growth_for(&generation_key)
+                + state.classified_growth(&key, &derived)
                 + carried.as_ref().map_or(0, |candidate| {
-                    charged_bytes(&lineage, candidate) + state.carried_growth(&lineage)
+                    charged_bytes(&lineage, candidate) + state.carried_growth(&lineage, candidate)
                 });
             self.admit_memory(
                 &mut state,
@@ -4504,14 +5021,11 @@ impl NativeStore {
             if let Some(candidate) = carried {
                 state.insert_carried(lineage, candidate);
             }
+            state.insert_classified(key, Arc::clone(&derived));
         }
         stage.activity = ActivityIndex::default();
         stage.committed = None;
         stage.result = Some(Arc::clone(&derived));
-        self.classified
-            .lock()
-            .expect("classified snapshots")
-            .insert(key, Arc::clone(&derived));
         slot.complete.store(true, Ordering::Release);
         Ok(ClassifierProgress {
             snapshot: Some(derived),
@@ -4580,7 +5094,9 @@ impl NativeStore {
             .get(lineage)
             .filter(|carried| carried.extends(chunks))?;
         carried.touched.store(now_ms(), Ordering::Release);
-        Some(Arc::clone(carried))
+        let carried = Arc::clone(carried);
+        state.touch_carried_owner(&carried);
+        Some(carried)
     }
 
     fn prune(state: &mut StoreState) {
@@ -4630,6 +5146,9 @@ impl NativeStore {
                 }
             }
         }
+        state
+            .registered_builds
+            .retain(|_, build| build.expires > now);
         let expired_builds: Vec<_> = state
             .prepared_builds
             .iter()
@@ -4702,7 +5221,7 @@ impl NativeStore {
         "live_generations",
     ];
 
-    fn gauges(state: &mut StoreState) -> Value {
+    fn gauge_terms(state: &mut StoreState) -> GaugeTerms {
         state.drain();
         GaugeTerms {
             entries: state.ledger.shared.entries(),
@@ -4722,6 +5241,9 @@ impl NativeStore {
             metadata: state.deliveries.charged()
                 + state.registries.charged()
                 + state.generations.charged()
+                + state.classified.charged()
+                + state.carried_owners.charged()
+                + state.catalog_owners.charged()
                 + state.carried_classifications.charged()
                 + state.leases.charged()
                 + state.waiters.charged()
@@ -4729,10 +5251,20 @@ impl NativeStore {
                 + state.warm_memberships.charged()
                 + state.ledger.shared.warm()
                 + state.locations.charged()
-                + state.locates.charged(),
+                + state.locates.charged()
+                + state.catalogs.charged()
+                + state.registered_builds.charged(),
             live_generations: state.generations.len(),
         }
-        .report(state)
+    }
+
+    fn retained_total(state: &mut StoreState) -> usize {
+        let (_, _, total) = Self::gauge_terms(state).totals(state);
+        total
+    }
+
+    fn gauges(state: &mut StoreState) -> Value {
+        Self::gauge_terms(state).report(state)
     }
 
     #[cfg(test)]
@@ -4799,10 +5331,18 @@ impl NativeStore {
                 }
             }
         }
-        for (chunk, charge) in state.escaped_chunks.values() {
-            if let Some(chunk) = chunk.upgrade() {
-                if allocations.insert(Arc::as_ptr(&chunk) as usize) {
-                    entries += charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
+        for (id, (owner, _)) in state.escaped_chunks.iter() {
+            let bytes = match owner {
+                ChunkAllocationOwner::Rows(rows) => rows
+                    .upgrade()
+                    .map(|rows| Self::audit_chunk_rows_bytes(&rows)),
+                ChunkAllocationOwner::Metadata(chunk) => chunk
+                    .upgrade()
+                    .map(|chunk| Self::audit_chunk_metadata_bytes(&chunk)),
+            };
+            if let Some(bytes) = bytes {
+                if allocations.insert(*id) {
+                    entries += bytes;
                 }
             }
         }
@@ -4842,6 +5382,9 @@ impl NativeStore {
                 "deliveries",
                 "registries",
                 "generations",
+                "classified",
+                "carried_owners",
+                "catalog_owners",
                 "carried_classifications",
                 "leases",
                 "waiters",
@@ -4849,6 +5392,8 @@ impl NativeStore {
                 "warm_memberships",
                 "locations",
                 "locates",
+                "catalogs",
+                "registered_builds",
             ]) + Self::audit_warm_buffer_bytes(state),
             live_generations: snapshots.len(),
         }
@@ -4856,8 +5401,32 @@ impl NativeStore {
     }
 
     #[cfg(test)]
-    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 20] {
+    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 25] {
         [
+            (
+                "catalog_owners",
+                state.catalog_owners.charged(),
+                state
+                    .catalog_owners
+                    .audit_with(|_, record| arc_slice_mirror::<u8>(record.key.len())),
+            ),
+            (
+                "classified",
+                state.classified.charged(),
+                state.classified.audit_with(|key, _| key.capacity()),
+            ),
+            (
+                "carried_owners",
+                state.carried_owners.charged(),
+                state.carried_owners.audit_with(|_, record| {
+                    record.lineages.capacity() * size_of::<(SourceIdentity, String)>()
+                        + record
+                            .lineages
+                            .iter()
+                            .map(|(_, key)| key.capacity())
+                            .sum::<usize>()
+                }),
+            ),
             (
                 "labels",
                 state.labels.charged(),
@@ -4972,6 +5541,18 @@ impl NativeStore {
                 state.locates.charged(),
                 state.locates.audit_with(Self::audit_locate_bytes),
             ),
+            (
+                "catalogs",
+                state.catalogs.charged(),
+                state.catalogs.audit_with(Self::audit_catalog_bytes),
+            ),
+            (
+                "registered_builds",
+                state.registered_builds.charged(),
+                state
+                    .registered_builds
+                    .audit_with(Self::audit_registered_build_bytes),
+            ),
         ]
     }
 
@@ -5026,11 +5607,16 @@ impl NativeStore {
                 + chunks.capacity() * size_of::<Arc<EntryChunk>>()
                 + fence.capacity(),
         ))
-        .chain(chunks.iter().map(|chunk| {
-            (
-                Arc::as_ptr(&chunk.entries) as usize,
-                Self::audit_chunk_bytes(chunk),
-            )
+        .chain(chunks.iter().flat_map(|chunk| {
+            let metadata = arc_mirror::<EntryChunk>()
+                + chunk.entry_charges.capacity() * size_of::<MemoryCharge>();
+            [
+                (Arc::as_ptr(chunk) as usize, metadata),
+                (
+                    Arc::as_ptr(&chunk.entries) as usize,
+                    Self::audit_chunk_bytes(chunk) - metadata,
+                ),
+            ]
         }))
         .chain(codex_raw.iter().map(|raw| {
             (
@@ -5049,27 +5635,27 @@ impl NativeStore {
 
     #[cfg(test)]
     fn audit_chunk_bytes(chunk: &EntryChunk) -> usize {
-        let EntryChunk {
-            entries,
-            start: _,
-            charge: _,
-            entry_charges,
-            user_count: _,
-            sidechain_user_count: _,
-        } = chunk;
-        arc_mirror::<EntryChunk>()
-            + arc_mirror::<ChunkRows>()
-            + entries.capacity() * size_of::<Entry>()
-            + entry_charges.capacity() * size_of::<MemoryCharge>()
-            + entries.arenas().capacity() * size_of::<(usize, SourceArena)>()
-            + entries
+        Self::audit_chunk_metadata_bytes(chunk) + Self::audit_chunk_rows_bytes(&chunk.entries)
+    }
+
+    #[cfg(test)]
+    fn audit_chunk_metadata_bytes(chunk: &EntryChunk) -> usize {
+        arc_mirror::<EntryChunk>() + chunk.entry_charges.capacity() * size_of::<MemoryCharge>()
+    }
+
+    #[cfg(test)]
+    fn audit_chunk_rows_bytes(rows: &ChunkRows) -> usize {
+        arc_mirror::<ChunkRows>()
+            + rows.capacity() * size_of::<Entry>()
+            + rows.arenas().capacity() * size_of::<(usize, SourceArena)>()
+            + rows
                 .iter()
                 .map(|entry| {
                     let charge = entry_charge(entry);
                     charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
                 })
                 .sum::<usize>()
-            + entries
+            + rows
                 .arenas()
                 .iter()
                 .map(|(_, arena)| Self::audit_arena_bytes(arena))
@@ -5144,10 +5730,16 @@ impl NativeStore {
     #[cfg(test)]
     fn audit_open_directory_bytes(directory: &OpenDirectory) -> usize {
         let OpenDirectory {
-            entries: _,
-            root_capacity,
+            entries,
+            end_of_stream: _,
         } = directory;
-        arc_mirror::<(*mut libc::DIR, PathBuf)>() + root_capacity
+        let OpenedDirectory {
+            directory: _,
+            root,
+            stamp: _,
+            parent_metadata_attempts: _,
+        } = entries.as_ref();
+        arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>() + root.capacity()
     }
 
     #[cfg(test)]
@@ -5213,11 +5805,18 @@ impl NativeStore {
     fn audit_generation_bytes(_: &usize, record: &GenerationRecord) -> usize {
         let GenerationRecord {
             snapshot: _,
+            cached,
             registry_generation,
             entries,
             indexes,
+            source_chunks,
         } = record;
-        registry_generation.capacity()
+        source_chunks.as_ref().map_or(0, |chunks| {
+            arc_mirror::<Vec<SourceChunkSpan>>() + chunks.capacity() * size_of::<SourceChunkSpan>()
+        }) + registry_generation.capacity()
+            + cached.as_ref().map_or(0, |owner| {
+                owner.classified.as_ref().map_or(0, String::capacity)
+            })
             + entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + indexes.capacity() * size_of::<(usize, usize)>()
     }
@@ -5384,6 +5983,7 @@ impl NativeStore {
     #[cfg(test)]
     fn audit_warm_membership_bytes(key: &String, membership: &WarmMembership) -> usize {
         let WarmMembership {
+            catalog: _,
             members: _,
             positions: _,
             sidechain_dirs: _,
@@ -5610,12 +6210,20 @@ impl NativeStore {
             + state.loads.reserved_bytes()
             + state.classifier_stages.reserved_bytes()
             + state.latest.reserved_bytes()
+            + state.source_spines.reserved_bytes()
+            + state.classified.capacity_bytes()
+            + state.carried_owners.capacity_bytes()
+            + state.catalog_owners.capacity_bytes()
+            + state.cache_order.len() * size_of::<(u64, CacheOwner)>()
+            + state.source_view_nodes * size_of::<SourceView>()
             + state.escaped_chunks.reserved_bytes()
             + state.prepared_loads.reserved_bytes()
             + state.recent_codex.reserved_bytes()
             + state.warm_memberships.capacity_bytes()
             + state.locations.capacity_bytes()
             + state.locates.capacity_bytes()
+            + state.catalogs.capacity_bytes()
+            + state.registered_builds.capacity_bytes()
             + state.locations_expiry.heap_bytes()
             + state.carried_expiry.heap_bytes()
             + state.recent_codex_expiry.heap_bytes()
@@ -5630,15 +6238,14 @@ impl NativeStore {
         state
             .recent_codex
             .keys()
-            .filter_map(|identity| state.latest.get(identity))
-            .map(codex_raw_len)
+            .map(|identity| state.latest_raw_bytes(identity))
             .sum()
     }
 
     #[cfg(test)]
     pub(crate) fn retained_accounted_bytes(&self) -> usize {
         let mut state = self.lock_state();
-        number(&Self::gauges(&mut state), "retained_total_accounted_bytes").unwrap()
+        Self::retained_total(&mut state)
     }
 
     #[cfg(test)]
@@ -5722,6 +6329,7 @@ impl NativeStore {
             state.deliveries.len(),
             "delivery deadline index diverges from the deliveries"
         );
+        state.assert_cache_owners();
         for (key, delivery) in state.deliveries.iter() {
             assert!(
                 state.deliveries_expiry.contains(delivery.expires, key),
@@ -5751,34 +6359,20 @@ impl NativeStore {
     ) -> Result<(), SnapshotError> {
         let cap = self.memory_cap(context)?;
         let bookkeeping = cfg!(debug_assertions).then(|| Self::bookkeeping_bytes(state));
-        if number(&Self::gauges(state), "retained_total_accounted_bytes")?
-            .saturating_add(additional)
-            <= cap
-        {
+        if Self::retained_total(state).saturating_add(additional) <= cap {
             state.ledger.shared.work().admitted(additional);
             return Ok(());
         }
-        self.classified
-            .lock()
-            .expect("classified snapshots")
-            .retain(|_, snapshot| Arc::strong_count(snapshot) > 1);
-        let leased: HashSet<_> = state
-            .leases
-            .values()
-            .map(|lease| lease.snapshot.id.clone())
-            .collect();
-        state.retain_latest(|_, snapshot| {
-            leased.contains(&snapshot.id) || Arc::strong_count(snapshot) > 1
-        });
-        state.retain_carried(|_, carried| Arc::strong_count(carried) > 1);
-        if number(&Self::gauges(state), "retained_total_accounted_bytes")?
-            .saturating_add(additional)
-            > cap
-        {
-            debug_assert_eq!(
-                bookkeeping,
-                Some(Self::bookkeeping_bytes(state)),
-                "a refused admission moved retained bookkeeping"
+        while Self::retained_total(state).saturating_add(additional) > cap {
+            let Some(owner) = state.next_cache_victim() else {
+                break;
+            };
+            state.evict_cache_owner(owner);
+        }
+        if Self::retained_total(state).saturating_add(additional) > cap {
+            debug_assert!(
+                bookkeeping.is_some_and(|before| Self::bookkeeping_bytes(state) <= before),
+                "a refused admission grew retained bookkeeping"
             );
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
@@ -6433,9 +7027,13 @@ impl NativeStore {
         let claimant = str_field(context, "claimant")?;
         let mut state = self.lock_state();
         let foreign = state
-            .labels
+            .registered_builds
             .get(token)
-            .is_some_and(|slot| slot.preparation.binding().claimant != claimant)
+            .is_some_and(|build| build.claimant != claimant)
+            || state
+                .labels
+                .get(token)
+                .is_some_and(|slot| slot.preparation.binding().claimant != claimant)
             || state
                 .graphs
                 .get(token)
@@ -6479,6 +7077,7 @@ impl NativeStore {
             ));
         }
         let mut released = state.remove_label(token).is_some();
+        released |= state.registered_builds.remove(token).is_some();
         released |= state.projections.remove(token).is_some();
         if let Some(query) = state.prepared_queries.remove(token) {
             if let Some(pending) = query.pending {
@@ -6514,6 +7113,13 @@ impl NativeStore {
             return;
         };
         let mut state = self.lock_state();
+        if state
+            .registered_builds
+            .get(token)
+            .is_some_and(|build| build.claimant == claimant)
+        {
+            state.registered_builds.remove(token);
+        }
         if state
             .prepared_queries
             .get(token)
@@ -6742,6 +7348,53 @@ impl NativeStore {
                     }
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
+                }
+                let registered_build = {
+                    let mut state = self.lock_state();
+                    if state.registered_builds.get(cursor).is_some_and(|build| {
+                        build.claimant != str_field(context, "claimant").unwrap_or("")
+                    }) {
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "prepared build claimant differs",
+                        ));
+                    }
+                    state.registered_builds.remove(cursor).map(|build| {
+                        let held = build.charge();
+                        state.transient_bytes += held;
+                        (
+                            build,
+                            ProjectionReservation {
+                                store: self,
+                                bytes: held,
+                            },
+                        )
+                    })
+                };
+                if let Some((mut build, mut reservation)) = registered_build {
+                    if build.context["authority"] != context["authority"]
+                        || build.context["admission"] != context["admission"]
+                        || build.context["registry_generation"] != context["registry_generation"]
+                    {
+                        return Err(SnapshotError::new(
+                            Status::StaleCursor,
+                            "prepared build context differs",
+                        ));
+                    }
+                    self.extend_projection_reservation(
+                        &mut reservation,
+                        context,
+                        value_bytes(context),
+                    )?;
+                    build.context = context.clone();
+                    build.context_bytes = value_bytes(&build.context);
+                    return self.registered_graph_step(
+                        cursor,
+                        build,
+                        &mut reservation,
+                        cancel,
+                        usage,
+                    );
                 }
                 let prepared_build = {
                     let mut state = self.lock_state();
@@ -7356,10 +8009,8 @@ impl NativeStore {
             let mut state = self.lock_state();
             Self::prune(&mut state);
             let cached = state
-                .latest
-                .get(&stamp.identity)
-                .filter(|snapshot| snapshot.stamp == stamp)
-                .cloned();
+                .latest_source(&stamp.identity)
+                .filter(|snapshot| snapshot.stamp == stamp);
             if cached.is_some() {
                 usage[7] += 1;
             }
@@ -7400,16 +8051,13 @@ impl NativeStore {
                         self.config.read_step.min(stamp.size as usize)
                     };
                 self.admit_memory(&mut state, context, additional)?;
-                let previous = state
-                    .latest
-                    .get(&stamp.identity)
-                    .filter(|old| {
-                        old.event_count > 0
-                            && old.stamp.size < stamp.size
-                            && (old.provider == Provider::Claude
-                                || old.provider == Provider::Codex && old.codex_raw.is_some())
-                    })
-                    .cloned();
+                let previous = state.source_spine(stamp);
+                let previous_chunks = previous.as_ref().and_then(|previous| {
+                    state
+                        .generations
+                        .get(&snapshot_key(previous))
+                        .and_then(|generation| generation.source_chunks.clone())
+                });
                 let previous_index_compatible = previous.as_ref().is_some_and(|previous| {
                     state
                         .generations
@@ -7420,7 +8068,11 @@ impl NativeStore {
                         })
                 });
                 if cached.is_none() {
-                    usage[if previous.is_some() { 5 } else { 4 }] += 1;
+                    usage[match previous.as_ref() {
+                        Some(previous) if previous.stamp.size < stamp.size => 5,
+                        Some(_) => 7,
+                        None => 4,
+                    }] += 1;
                 }
                 let slot = Arc::new(LoadSlot {
                     id: self.token("load"),
@@ -7438,6 +8090,11 @@ impl NativeStore {
                         pending_start: 0,
                         provider: None,
                         chunks: Vec::new(),
+                        source_chunks: Vec::new(),
+                        previous_chunks,
+                        published_chunks: None,
+                        reuse_next: None,
+                        reuse_prepared: false,
                         codex_raw: None,
                         codex_append: None,
                         count: 0,
@@ -7654,10 +8311,11 @@ impl NativeStore {
                 .contains_key(&snapshot_key(snapshot))
         });
         if stepped.is_some() || unpublished {
-            let generation = load
-                .result
-                .as_ref()
-                .map(|snapshot| GenerationRecord::new(snapshot, &slot.registry_generation));
+            let generation = load.result.as_ref().map(|snapshot| {
+                let mut record = GenerationRecord::new(snapshot, &slot.registry_generation);
+                record.source_chunks = load.published_chunks.clone();
+                record
+            });
             let publishing = generation.is_some();
             let pending_charge = if publishing {
                 0
@@ -7811,7 +8469,7 @@ impl NativeStore {
                 pledge.bytes = 0;
             }
             if fresh && !state.holds_latest(&slot.stamp.identity, &source) {
-                let latest = state.latest.growth_for(&slot.stamp.identity);
+                let latest = state.latest_growth(&slot.stamp.identity, &source);
                 if self
                     .admit_memory(&mut state, &waiter.context, latest)
                     .is_ok()
@@ -7966,6 +8624,16 @@ impl NativeStore {
                     .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
             })
             .collect();
+        let shared_metadata: HashSet<_> = load
+            .previous
+            .iter()
+            .flat_map(|snapshot| {
+                snapshot
+                    .chunks
+                    .iter()
+                    .map(|chunk| Arc::as_ptr(chunk) as usize)
+            })
+            .collect();
         let charge = load.pending.capacity()
             + load.codex_raw.as_ref().map_or(0, |raw| {
                 if load
@@ -7997,12 +8665,19 @@ impl NativeStore {
             + load.fence.capacity()
             + load.session_id.as_ref().map_or(0, String::capacity)
             + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
+            + load.source_chunks.capacity() * size_of::<SourceChunkSpan>()
             + load
                 .chunks
                 .iter()
-                .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
                 .map(|chunk| {
-                    chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
+                    let rows = chunk.rows_charge();
+                    usize::from(!shared_metadata.contains(&(Arc::as_ptr(chunk) as usize)))
+                        * chunk.metadata_bytes()
+                        + if shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)) {
+                            0
+                        } else {
+                            rows.owned_capacity_bytes + rows.opaque_dom_accounted_bytes
+                        }
                 })
                 .sum::<usize>();
         let prior_indexes: HashSet<_> = load
@@ -8026,6 +8701,10 @@ impl NativeStore {
         load.pending_start = 0;
         load.provider = None;
         load.chunks = Vec::new();
+        load.source_chunks = Vec::new();
+        load.published_chunks = None;
+        load.reuse_next = None;
+        load.reuse_prepared = false;
         load.codex_raw = None;
         load.codex_append = None;
         load.count = 0;
@@ -8337,6 +9016,14 @@ impl NativeStore {
                 }
                 let fence = std::mem::take(&mut load.prefix_fence);
                 if fence == prior_fence {
+                    if previous.stamp.identity.window_base != slot.stamp.identity.window_base {
+                        load.file
+                            .seek(SeekFrom::Start(load.offset))
+                            .map_err(io_error)?;
+                        load.prefix_checked = true;
+                        return Ok(());
+                    }
+                    load.reuse_prepared = true;
                     if previous.provider == Provider::Codex {
                         load.pending = Vec::new();
                         load.offset = previous.stamp.size;
@@ -8357,6 +9044,14 @@ impl NativeStore {
                             .len()
                             .saturating_sub(usize::from(previous.provisional_tail));
                         load.chunks = previous.chunks[..keep].to_vec();
+                        if let Some(spans) = &load.previous_chunks {
+                            self.extend_load_reservation(
+                                slot,
+                                context,
+                                keep * size_of::<SourceChunkSpan>(),
+                            )?;
+                            load.source_chunks = spans[..keep].to_vec();
+                        }
                         load.count = load.chunks.iter().map(|chunk| chunk.entries.len()).sum();
                         load.committed = previous.committed_bytes;
                         load.offset = previous.committed_bytes;
@@ -8373,16 +9068,35 @@ impl NativeStore {
                     load.prefix_checked = true;
                 } else {
                     load.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+                    self.lock_state()
+                        .forget_source_spine(&previous.stamp.identity, previous);
                     load.previous = None;
+                    load.previous_chunks = None;
                     usage[4] += 1;
                 }
                 return Ok(());
             }
         }
         if load.window_start.is_none() {
-            let unscanned = slot.stamp.identity.window_base - load.window_scanned;
-            let located = if unscanned == 0 {
-                Some(0)
+            let base = slot.stamp.identity.window_base;
+            let floor = load
+                .previous_chunks
+                .as_ref()
+                .and_then(|spans| {
+                    let at = spans
+                        .partition_point(|span| span.start <= base)
+                        .checked_sub(1)?;
+                    let span = spans[at];
+                    (base <= span.end).then_some(if base == span.end {
+                        span.end
+                    } else {
+                        span.start
+                    })
+                })
+                .unwrap_or(0);
+            let unscanned = base - load.window_scanned;
+            let located = if unscanned == floor {
+                Some(floor)
             } else {
                 if load.window_scanned > self.config.entry as u64 {
                     return Err(SnapshotError::new(
@@ -8392,7 +9106,7 @@ impl NativeStore {
                 }
                 let count = (read_bound as u64)
                     .min((64 * 1024u64).saturating_add(load.window_scanned))
-                    .min(unscanned);
+                    .min(unscanned - floor);
                 if count == 0 {
                     return Err(source_read_limit());
                 }
@@ -8445,13 +9159,19 @@ impl NativeStore {
             usage[6] += 1;
             return Ok(());
         }
+        if self.reuse_source_chunk(slot, load, context)? {
+            return Ok(());
+        }
         if !load.decoded {
             if load.offset < slot.stamp.size
                 && (load.pending.is_empty()
                     || load.provider == Some(Provider::Codex)
                     || !load.pending.contains(&b'\n'))
             {
-                let count = (slot.stamp.size - load.offset).min(read_bound as u64) as usize;
+                let stop = load.reuse_next.map_or(slot.stamp.size, |index| {
+                    load.previous_chunks.as_ref().unwrap()[index].start
+                });
+                let count = (stop - load.offset).min(read_bound as u64) as usize;
                 let growth = vec_growth(&load.pending, count);
                 if growth > read_bound {
                     self.extend_load_reservation(slot, context, growth - read_bound)?;
@@ -8585,11 +9305,22 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
+                    let source_growth = vec_growth(&load.source_chunks, 1);
+                    if source_growth > 0 {
+                        self.extend_load_reservation(slot, context, source_growth)?;
+                    }
+                    load.source_chunks.push(SourceChunkSpan {
+                        start: load.pending_start,
+                        end: load.pending_start + consumed as u64,
+                    });
                     load.chunks
                         .push(Arc::new(EntryChunk::retaining(load.count, entries, arenas)));
                     load.count += count;
                 }
                 if consumed > 0 {
+                    if let Some(span) = load.source_chunks.last_mut() {
+                        span.end = load.pending_start + consumed as u64;
+                    }
                     load.pending.drain(..consumed);
                     load.pending_start += consumed as u64;
                     load.committed = load.pending_start;
@@ -8642,6 +9373,14 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
+                    let source_growth = vec_growth(&load.source_chunks, 1);
+                    if source_growth > 0 {
+                        self.extend_load_reservation(slot, context, source_growth)?;
+                    }
+                    load.source_chunks.push(SourceChunkSpan {
+                        start: load.pending_start,
+                        end: slot.stamp.size,
+                    });
                     load.chunks
                         .push(Arc::new(EntryChunk::retaining(load.count, tail, arenas)));
                     load.count += count;
@@ -8708,6 +9447,11 @@ impl NativeStore {
                 .to_string_lossy()
                 .into_owned()
         });
+        if load.provider == Some(Provider::Claude) && load.source_chunks.len() == load.chunks.len()
+        {
+            self.extend_load_reservation(slot, context, arc_bytes::<Vec<SourceChunkSpan>>())?;
+            load.published_chunks = Some(Arc::new(std::mem::take(&mut load.source_chunks)));
+        }
         load.result = Some(Arc::new(TranscriptSnapshot {
             ledger: LedgerHook::default(),
             id: self.token("snapshot"),
@@ -10005,7 +10749,16 @@ impl NativeStore {
                 scan.examined += 1;
                 usage[17] += 1;
                 let path = entry.path();
-                let symlink = entry.file_type().map_err(io_error)?.is_symlink();
+                let symlink = match entry.symlink_hint(self) {
+                    Some(symlink) => symlink,
+                    None => {
+                        entry
+                            .directory
+                            .object_metadata(&entry.name, self)
+                            .map_err(io_error)?
+                            .symlink
+                    }
+                };
                 let canonical = if symlink {
                     std::fs::canonicalize(&path).map_err(io_error)?
                 } else {
@@ -10293,15 +11046,19 @@ impl NativeStore {
         Ok(metadata.is_file().then(|| SourceStamp::of(&metadata)))
     }
 
-    fn remember_locations(&self, entries: &[(String, PathBuf)], context: &Value) {
-        if entries.is_empty() {
+    fn remember_locations<'a>(
+        &self,
+        entries: impl Clone + ExactSizeIterator<Item = (&'a String, &'a PathBuf)>,
+        context: &Value,
+    ) {
+        if entries.len() == 0 {
             return;
         }
         let mut state = self.lock_state();
         Self::prune(&mut state);
         let remembered = || {
             entries
-                .iter()
+                .clone()
                 .filter(|(id, path)| id.len() + path.as_os_str().len() <= 8192)
         };
         let added = remembered()
@@ -10488,7 +11245,7 @@ impl NativeStore {
             }
         }
         cancel.check(bound.deadline_unix_ms)?;
-        self.remember_locations(&refreshed, context);
+        self.remember_locations(refreshed.iter().map(|(id, path)| (id, path)), context);
         drop(refreshed);
         let token = self.token("location");
         let cursor = LocateCursor {
@@ -10770,7 +11527,7 @@ impl NativeStore {
             self.queue_unfound_locations(&mut cursor, reservation, status)?;
         }
         cancel.check(cursor.limits.deadline_unix_ms)?;
-        self.remember_locations(&updates, &cursor.context);
+        self.remember_locations(updates.iter().map(|(id, path)| (id, path)), &cursor.context);
         drop(updates);
         cancel.check(cursor.limits.deadline_unix_ms)?;
         let complete = cursor.finished && cursor.pending.is_empty();
@@ -11169,9 +11926,14 @@ impl NativeStore {
     }
 }
 
+include!("snapshot_catalog.rs");
+include!("snapshot_symlink_proof.rs");
+include!("snapshot_catalog_owner.rs");
 include!("snapshot_prepared_service.rs");
+include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
+include!("snapshot_spine.rs");
 
 #[cfg(test)]
 #[path = "snapshot_regressions.rs"]
@@ -11186,6 +11948,8 @@ mod tests {
     use super::*;
     use crate::snapshot_prepared::TextState;
     use std::io::Write;
+
+    include!("snapshot_admission_report_tests.rs");
 
     struct Source {
         directory: PathBuf,
@@ -11228,6 +11992,9 @@ mod tests {
             r#"{{"type":"user","uuid":"{id}","sessionId":"s","timestamp":"2026-01-02T03:04:05Z","message":{{"content":"hello"}}}}"#
         )
     }
+
+    include!("snapshot_catalog_tests.rs");
+    include!("snapshot_common_borrowed_parent_tests.rs");
 
     fn context(claimant: &str) -> Value {
         json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint()})
@@ -13623,7 +14390,7 @@ mod tests {
             handle(&whole)["snapshot_id"].as_str(),
             handle(&window)["snapshot_id"].as_str()
         );
-        let before = store.state.lock().unwrap().counters[1];
+        let before = store.state.lock().unwrap().counters;
         let whole_again = finish(
             &store,
             store.request(&acquire(&source.path), &owner, &Cancellation::default()),
@@ -13640,8 +14407,8 @@ mod tests {
         );
         {
             let state = store.state.lock().unwrap();
-            assert_eq!(state.counters[1], before);
-            assert_eq!(state.counters[7], 2);
+            assert_eq!(state.counters[1], before[1]);
+            assert_eq!(state.counters[7] - before[7], 2);
             assert_eq!(state.latest.len(), 2);
         }
         let covering = finish(
@@ -20617,8 +21384,8 @@ mod tests {
         );
         let snapshot = store.pin(handle(&response), &owner).unwrap();
         let rows = Arc::clone(&snapshot.chunks[0].entries);
-        let rows_bytes = snapshot.chunks[0].charge.owned_capacity_bytes
-            + snapshot.chunks[0].charge.opaque_dom_accounted_bytes;
+        let rows_charge = snapshot.chunks[0].rows_charge();
+        let rows_bytes = rows_charge.owned_capacity_bytes + rows_charge.opaque_dom_accounted_bytes;
         release_lease(&store, handle(&response), &owner);
         store.lock_state().retain_latest(|_, _| false);
         drop(snapshot);
@@ -20661,7 +21428,7 @@ mod tests {
         store.assert_conserved();
         release_lease(&store, handle(&response), &owner);
         store.lock_state().retain_latest(|_, _| false);
-        store.classified.lock().unwrap().clear();
+        store.lock_state().clear_classified();
         store.assert_conserved();
         store.lock_state().retain_carried(|_, _| false);
         store.assert_conserved();
@@ -21012,7 +21779,9 @@ mod tests {
         }
         let before = store.retained_work.load(Ordering::Relaxed);
         store.remember_locations(
-            &[("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))],
+            [("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))]
+                .iter()
+                .map(|(id, path)| (id, path)),
             &owner,
         );
         {
@@ -21310,4 +22079,7 @@ mod tests {
         assert_eq!(merged[14] - before[14], 128);
         assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
+    include!("snapshot_spine_tests.rs");
+    include!("snapshot_cache_tests.rs");
+    include!("snapshot_source_cache_index_tests.rs");
 }
