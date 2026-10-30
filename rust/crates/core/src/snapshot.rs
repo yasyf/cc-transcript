@@ -42,6 +42,7 @@ pub const MAX_REPLY_BYTES: usize = 1_044_480;
 const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
 const FILESYSTEM_PATH_BYTES: usize = 2 * (libc::PATH_MAX as usize + size_of::<libc::dirent>());
 const LOCATE_PATH_SLOTS: usize = 2 * FILESYSTEM_PATH_BYTES;
+const LOCATE_USER_PATH_SLOTS: usize = 3 * FILESYSTEM_PATH_BYTES;
 const READ_DIR_HANDLE_BYTES: usize = arc_bytes::<(*mut libc::DIR, PathBuf)>();
 const LOAD_SLOT_BYTES: usize = arc_bytes::<LoadSlot>() + MUTEX_STORAGE_BYTES;
 const CLASSIFIER_SLOT_BYTES: usize = arc_bytes::<ClassifierSlot>() + MUTEX_STORAGE_BYTES;
@@ -6729,7 +6730,12 @@ impl NativeStore {
                     if let Err(error) = self.extend_projection_reservation(
                         &mut reservation,
                         context,
-                        value_bytes(context) + LOCATE_PATH_SLOTS,
+                        value_bytes(context)
+                            + if context["authority"]["kind"].as_str() == Some("user") {
+                                LOCATE_USER_PATH_SLOTS
+                            } else {
+                                LOCATE_PATH_SLOTS
+                            },
                     ) {
                         drop(locate);
                         return Err(error);
@@ -10399,7 +10405,15 @@ impl NativeStore {
             (ids.capacity(), wanted.capacity()),
             (requested.len(), wanted_capacity)
         );
-        self.extend_projection_reservation(&mut reservation, context, LOCATE_PATH_SLOTS)?;
+        self.extend_projection_reservation(
+            &mut reservation,
+            context,
+            if context["authority"]["kind"].as_str() == Some("user") {
+                LOCATE_USER_PATH_SLOTS
+            } else {
+                LOCATE_PATH_SLOTS
+            },
+        )?;
         let mut scope = Vec::with_capacity(roots.len());
         for root in roots.iter() {
             cancel.check(bound.deadline_unix_ms)?;
@@ -10605,12 +10619,22 @@ impl NativeStore {
                                         path.capacity()
                                             + _raw.capacity()
                                             + child.capacity()
+                                            + (path.as_os_str().len() + 1)
+                                                .max(child.as_os_str().len() + 1)
                                             + size_of::<libc::dirent>()
-                                            <= LOCATE_PATH_SLOTS
+                                            <= LOCATE_USER_PATH_SLOTS
                                     );
                                     let metadata = std::fs::symlink_metadata(&*child).ok();
                                     child.pop();
-                                    metadata
+                                    let metadata = metadata?;
+                                    #[cfg(test)]
+                                    self.after_location_metadata("canonical_prefilter");
+                                    let raw_metadata = std::fs::symlink_metadata(&path).ok()?;
+                                    (metadata.is_file()
+                                        && raw_metadata.is_file()
+                                        && SourceStamp::of(&metadata).identity
+                                            == SourceStamp::of(&raw_metadata).identity)
+                                        .then_some(metadata)
                                 });
                                 if let Some(metadata) = metadata {
                                     #[cfg(test)]
@@ -11632,6 +11656,142 @@ mod tests {
         store.assert_conserved();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn location_preserves_oversized_raw_alias_entry_errors() {
+        let source = Source::new("");
+        std::fs::remove_file(&source.path).unwrap();
+        let physical_entry = source.directory.join("unrelated.txt");
+        std::fs::write(&physical_entry, b"").unwrap();
+        let target_bytes = libc::PATH_MAX as usize - 8;
+        let mut spelling = source.directory.to_string_lossy().into_owned();
+        spelling.push_str(&"/".repeat(target_bytes - spelling.len()));
+        let root = PathBuf::from(spelling);
+        assert_eq!(root.as_os_str().len(), target_bytes);
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let entry = std::fs::read_dir(&root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(entry.as_os_str().len() >= libc::PATH_MAX as usize);
+        assert!(
+            std::fs::symlink_metadata(canonical_root.join("unrelated.txt"))
+                .unwrap()
+                .is_file()
+        );
+        assert_eq!(
+            std::fs::symlink_metadata(&entry)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+        assert_eq!(
+            std::fs::canonicalize(&entry).unwrap_err().raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate-raw-pathmax","operation":"locate","session_ids":["wanted"],"roots":[root],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("changed"), "{response:?}");
+        store.assert_conserved();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn location_dual_proof_admits_long_path_scratch() {
+        let source = Source::new("");
+        let mut root = source.directory.clone();
+        let target = libc::PATH_MAX as usize - 96;
+        while root.as_os_str().len() < target {
+            let remaining = target - root.as_os_str().len();
+            let width = if remaining > 256 { 240 } else { remaining - 1 };
+            root.push("d".repeat(width));
+            std::fs::create_dir(&root).unwrap();
+        }
+        assert_eq!(root.as_os_str().len(), target);
+        let name = "n".repeat(20);
+        std::fs::write(root.join(&name), b"").unwrap();
+        let entry = std::fs::read_dir(&root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let mut child = std::fs::canonicalize(&root).unwrap();
+        child.reserve_exact(1 + name.len());
+        child.push(&name);
+        let c_path = std::ffi::CString::new(child.as_os_str().as_encoded_bytes()).unwrap();
+        let peak = entry.capacity()
+            + root.as_os_str().len()
+            + child.capacity()
+            + c_path.as_bytes_with_nul().len()
+            + size_of::<libc::dirent>();
+        assert!(peak > LOCATE_PATH_SLOTS);
+        assert!(peak <= LOCATE_USER_PATH_SLOTS);
+        drop(c_path);
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate-long-scratch","operation":"locate","session_ids":["wanted"],"roots":[root],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
+        assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 3);
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn location_dual_proof_rejects_different_file_identities() {
+        let source = Source::new("");
+        let old = source.directory.join("old");
+        let new = source.directory.join("new");
+        let alias = source.directory.join("alias");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&new).unwrap();
+        for parent in [&old, &new] {
+            std::fs::write(parent.join("unrelated.txt"), b"").unwrap();
+        }
+        std::os::unix::fs::symlink(&old, &alias).unwrap();
+        let store = store();
+        let switched = alias.clone();
+        *store.location_metadata_hook.lock().unwrap() = Some((
+            "canonical_prefilter",
+            Arc::new(move || {
+                std::fs::remove_file(&switched).unwrap();
+                std::os::unix::fs::symlink(&new, &switched).unwrap();
+            }),
+        ));
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["wanted"],"roots":[alias],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
+        assert_eq!(
+            store
+                .location_entry_canonicalizations
+                .load(Ordering::Relaxed),
+            1
+        );
+        store.assert_conserved();
+    }
+
     #[test]
     fn location_nonmatching_regular_files_share_parent_canonicalization() {
         let source = Source::new("");
@@ -11667,7 +11827,8 @@ mod tests {
 
     #[test]
     fn location_parent_hint_refreshes_between_pages() {
-        for (step, expected) in [(2, "ok"), (64, "missing")] {
+        for step in [2, 64] {
+            let expected = "ok";
             let source = Source::new("");
             let old = source.directory.join("old");
             let new = source.directory.join("new");
