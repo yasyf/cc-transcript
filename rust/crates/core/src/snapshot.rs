@@ -10829,14 +10829,19 @@ impl NativeStore {
         Ok(metadata.is_file().then(|| SourceStamp::of(&metadata)))
     }
 
-    fn remember_locations<'a>(&self, entries: impl Clone + ExactSizeIterator<Item = (&'a String, &'a PathBuf)>, context: &Value) {
+    fn remember_locations<'a>(
+        &self,
+        entries: impl Clone + ExactSizeIterator<Item = (&'a String, &'a PathBuf)>,
+        context: &Value,
+    ) {
         if entries.len() == 0 {
             return;
         }
         let mut state = self.lock_state();
         Self::prune(&mut state);
         let remembered = || {
-            entries.clone()
+            entries
+                .clone()
                 .filter(|(id, path)| id.len() + path.as_os_str().len() <= 8192)
         };
         let added = remembered()
@@ -21553,7 +21558,9 @@ mod tests {
         }
         let before = store.retained_work.load(Ordering::Relaxed);
         store.remember_locations(
-            [("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))].iter().map(|(id, path)| (id, path)),
+            [("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))]
+                .iter()
+                .map(|(id, path)| (id, path)),
             &owner,
         );
         {
