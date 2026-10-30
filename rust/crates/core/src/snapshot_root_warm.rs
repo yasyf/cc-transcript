@@ -783,15 +783,11 @@ mod root_warm_tests {
                 break;
             }
         }
-        let physical = store
-            .state
-            .lock()
-            .unwrap()
-            .latest
-            .values()
-            .next()
-            .cloned()
-            .unwrap();
+        let physical = {
+            let mut state = store.lock_state();
+            let identity = *state.latest.keys().next().unwrap();
+            state.latest_source(&identity).unwrap()
+        };
         let called = Arc::new(AtomicUsize::new(0));
         let callback_calls = Arc::clone(&called);
         store
@@ -820,7 +816,7 @@ mod root_warm_tests {
         assert!(called.load(Ordering::Relaxed) > 0);
         let state = store.state.lock().unwrap();
         assert!(Arc::ptr_eq(
-            state.latest.values().next().unwrap(),
+            &state.generations.get(state.latest.values().next().unwrap()).unwrap().cached.as_ref().unwrap().snapshot,
             &physical
         ));
         let custom_key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
