@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"perf/wheel-embedded-model-only"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_criterion_status","id":"8b0a6656c0273fee2dd47e3e57a10cfa","status":"met","note":"Independent source/public-contract review PASS for ac556201d6e51d8386d8f3da42b38ddc7fc9cfa1 tree01d86e4da38a1be69ca5f77332c0be3740df362c; sdk-model-packaging-source-review.json binds primary Maturin/uv semantics and installed API proof design."}]}
