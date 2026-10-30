@@ -6,7 +6,6 @@ enum CatalogCell {
 
 struct CatalogSlot {
     cell: Mutex<CatalogCell>,
-    released: Condvar,
     accounted: AtomicUsize,
 }
 
@@ -102,7 +101,6 @@ impl NativeStore {
                 self.extend_projection_reservation_in(&mut state, &mut reservation, context, additional)?;
                 let slot = Arc::new(CatalogSlot {
                     cell: Mutex::new(CatalogCell::Empty),
-                    released: Condvar::new(),
                     accounted: AtomicUsize::new(0),
                 });
                 let owner_growth = state.catalog_owner_growth(&key, &slot);
@@ -116,16 +114,25 @@ impl NativeStore {
             }
         };
         let mut catalog = {
-            let mut cell = slot.cell.lock().expect("source catalog");
-            while matches!(*cell, CatalogCell::Busy) {
+            let mut state = self.lock_state();
+            loop {
                 cancel.check(remaining.deadline_unix_ms)?;
-                cell = slot.released.wait_timeout(cell, FACT_READ_WAIT_SLICE).expect("source catalog").0;
-            }
-            cancel.check(remaining.deadline_unix_ms)?;
-            match std::mem::replace(&mut *cell, CatalogCell::Busy) {
-                CatalogCell::Empty => None,
-                CatalogCell::Idle(catalog) => Some(catalog),
-                CatalogCell::Busy => unreachable!("claimed source catalog"),
+                let mut cell = slot.cell.lock().expect("source catalog");
+                if matches!(*cell, CatalogCell::Busy) {
+                    drop(cell);
+                    #[cfg(test)]
+                    {
+                        let hook = self.catalog_wait_hook.lock().expect("catalog wait hook").clone();
+                        if let Some(hook) = hook { hook(); }
+                    }
+                    state = self.fact_read_released.wait_timeout(state, FACT_READ_WAIT_SLICE).expect("source catalog").0;
+                    continue;
+                }
+                break match std::mem::replace(&mut *cell, CatalogCell::Busy) {
+                    CatalogCell::Empty => None,
+                    CatalogCell::Idle(catalog) => Some(catalog),
+                    CatalogCell::Busy => unreachable!("claimed source catalog"),
+                };
             }
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
@@ -159,6 +166,7 @@ impl NativeStore {
             for chunk in ids.chunks(chunk_size) {
                 let located = catalog.locate(self, chunk, context, cancel,
                     remaining.deadline_unix_ms, &mut budget)?;
+                self.remember_locations(located.iter(), context);
                 budget.reserve(map_growth(&paths, located.len()))?;
                 paths.extend(located);
             }
@@ -180,7 +188,7 @@ impl NativeStore {
                 None => CatalogCell::Empty,
             };
         }
-        slot.released.notify_all();
+        self.fact_read_released.notify_all();
         match outcome? {
             CatalogWorkResult::Paths(paths) => Ok(CatalogResolution::Ready { paths, reservation }),
             CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
