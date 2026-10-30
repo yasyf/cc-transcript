@@ -113,13 +113,6 @@ fn catalog_prove_name_object(request: &CatalogProofRequest<'_>, input: CatalogNa
             return Ok(CatalogNameObjectProof::CurrentRefusal { stage:CatalogProofStage::LogicalTarget,error });
         }
     }
-    let parent_stamp = match input.reader.current_stamp() {
-        Ok(stamp) => stamp,
-        Err(error) => return Ok(CatalogNameObjectProof::ObjectError(io_error(error))),
-    };
-    if parent_stamp != input.expected_parent || input.reader.stamp.identity != parent_stamp.identity {
-        return Ok(CatalogNameObjectProof::Unproven(CatalogUnprovenReason::ParentIdentityChanged));
-    }
     let canonical = match CatalogBinding::canonical_path(request.store,input.physical_parent) {
         Ok(path) => path,
         Err(error) => return Ok(CatalogNameObjectProof::ObjectError(error)),
@@ -134,8 +127,19 @@ fn catalog_prove_name_object(request: &CatalogProofRequest<'_>, input: CatalogNa
         Ok(metadata) => SourceStamp::of(&metadata),
         Err(error) => return Ok(CatalogNameObjectProof::ObjectError(io_error(error))),
     };
-    if parent != parent_stamp {
+    // Cached path text may now authorize a replacement B while the borrowed descriptor still
+    // names forbidden A. Correlate the CURRENT authorized path with cached generation data
+    // before attempting even parent metadata through that descriptor.
+    if parent != input.expected_parent || input.reader.stamp != input.expected_parent {
         return Ok(CatalogNameObjectProof::Unproven(CatalogUnprovenReason::ParentNamespaceChanged));
+    }
+    request.check()?;
+    let parent_stamp = match input.reader.current_stamp() {
+        Ok(stamp) => stamp,
+        Err(error) => return Ok(CatalogNameObjectProof::ObjectError(io_error(error))),
+    };
+    if parent_stamp != parent {
+        return Ok(CatalogNameObjectProof::Unproven(CatalogUnprovenReason::ParentIdentityChanged));
     }
     let metadata = match input.reader.object_metadata(input.name,request.store) {
         Ok(metadata) => metadata,
