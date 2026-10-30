@@ -11701,6 +11701,7 @@ mod tests {
     include!("snapshot_common_borrowed_parent_tests.rs");
     include!("snapshot_public_restricted_symlink_tests.rs");
     include!("snapshot_public_conditional_target_tests.rs");
+    include!("snapshot_public_frame_projection_tests.rs");
 
     #[test]
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {
