@@ -21,10 +21,13 @@ struct CatalogLocateQuery {
     capabilities: BTreeMap<Vec<usize>,CatalogCapability>,
     capability_bytes: usize,
     generation_seen: Option<u64>,
+    catalog_owner: Option<usize>,
 }
 
 struct CatalogCapability {
     canonical_digest: [u8;32],
+    route_digest: [u8;32],
+    directory_generation: u64,
     stamp: SourceStamp,
     authority_epoch: u64,
 }
@@ -101,10 +104,11 @@ impl CatalogLocateQuery {
         Ok(())
     }
 
-    fn remember_capability(&mut self, order: Vec<usize>, binding: &CatalogBinding,
+    fn remember_capability(&mut self, order: Vec<usize>, path: &Path, generation: u64, binding: &CatalogBinding,
         budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
         let Some((canonical,stamp)) = binding.canonical.as_ref().zip(binding.stamp) else { return Ok(()); };
         let capability = CatalogCapability { canonical_digest:Sha256::digest(canonical.as_os_str().as_encoded_bytes()).into(),
+            route_digest:Sha256::digest(path.as_os_str().as_encoded_bytes()).into(), directory_generation:generation,
             stamp, authority_epoch:self.authority_epoch };
         if let Some(previous) = self.capabilities.get_mut(order.as_slice()) { *previous = capability; }
         else {
@@ -115,9 +119,11 @@ impl CatalogLocateQuery {
         Ok(())
     }
 
-    fn reuses_capability(&self, order: &[usize], canonical: &Path, binding: &CatalogBinding) -> bool {
+    fn reuses_capability(&self, order: &[usize], path: &Path, generation: u64, canonical: &Path, binding: &CatalogBinding) -> bool {
         self.capabilities.get(order).is_some_and(|capability|
             capability.authority_epoch < self.authority_epoch
+                && capability.directory_generation == generation
+                && capability.route_digest == <[u8;32]>::from(Sha256::digest(path.as_os_str().as_encoded_bytes()))
                 && binding.stamp.is_some_and(|stamp| stamp.identity == capability.stamp.identity
                     && (!binding.directory || stamp == capability.stamp))
                 && capability.canonical_digest == <[u8;32]>::from(Sha256::digest(canonical.as_os_str().as_encoded_bytes())))
@@ -128,12 +134,17 @@ impl CatalogLocateQuery {
         self.choices_ready = false; self.final_hold = false;
     }
 
-    fn rewind_parent(&mut self, parent: &[usize], budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
-        while self.capabilities.last_key_value().is_some_and(|(order,_)| order.as_slice() >= parent) {
-            let (order,_) = self.capabilities.pop_last().expect("invalidated capability");
-            self.capability_bytes -= size_of::<(Vec<usize>,CatalogCapability)>() + order.capacity() * size_of::<usize>();
-        }
-        let previous = if let Some((order,_)) = self.capabilities.last_key_value() {
+    fn rewind_parent(&mut self, parent: &Vec<usize>, budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
+        let mut removed = 0;
+        self.capabilities.retain(|order,_| {
+            if order.starts_with(parent) {
+                removed += size_of::<(Vec<usize>,CatalogCapability)>() + order.capacity() * size_of::<usize>();
+                false
+            } else { true }
+        });
+        self.capability_bytes -= removed;
+        let previous = if let Some((order,_)) = self.capabilities.range::<Vec<usize>,_>(
+            (std::ops::Bound::Unbounded,std::ops::Bound::Excluded(parent))).next_back() {
             budget.reserve(order.len() * size_of::<usize>())?;
             Some(order.clone())
         } else { None };

@@ -467,7 +467,11 @@ impl NativeStore {
 
     fn canonical_path(&self, path: &Path) -> std::io::Result<PathBuf> {
         #[cfg(test)]
-        self.source_resolutions.fetch_add(1, Ordering::Relaxed);
+        {
+            self.source_resolutions.fetch_add(1,Ordering::Relaxed);
+            let hook = self.canonical_error_hook.lock().expect("canonical error hook").clone();
+            if let Some(error) = hook.and_then(|hook| hook(path)) { return Err(error); }
+        }
         std::fs::canonicalize(path)
     }
 

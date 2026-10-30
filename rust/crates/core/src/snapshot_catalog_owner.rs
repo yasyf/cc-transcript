@@ -130,13 +130,13 @@ impl NativeStore {
         context: &Value,
     ) -> Result<(String, ProjectionReservation<'a>), SnapshotError> {
         self.authority(context,None)?;
-        let uid = &context["authority"]["effective_uid"];
+        let uid = json!(unsafe { libc::geteuid() });
         let wrapper_scratch = map_growth(&HashMap::<&str, &Value>::new(), 2)
             + 2 * size_of::<(&str, &Value)>();
-        let scratch = wrapper_scratch + catalog_canonical_scratch(uid)
+        let scratch = wrapper_scratch + catalog_canonical_scratch(&uid)
             .max(roots.iter().map(catalog_canonical_scratch).max().unwrap_or(0));
         let mut reservation = self.reserve_projection(context,
-            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(uid)
+            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&uid)
                 + 2 * (roots.len() * size_of::<Value>() + roots.iter().map(value_bytes).sum::<usize>()) + 1024 + scratch)?;
         let binding = json!({"effective_uid":uid,"roots":roots});
         let bytes = crate::ids::canonical_json_size(&binding).map_err(invalid)?;
@@ -193,6 +193,13 @@ impl NativeStore {
                 slot
             }
         };
+        if let CatalogMode::Public(query) = &mut mode {
+            let owner = Arc::as_ptr(&slot) as usize;
+            if query.catalog_owner.is_some_and(|prior| prior != owner) {
+                return Err(SnapshotError::new(Status::StaleCursor,"location catalog owner changed"));
+            }
+            query.catalog_owner = Some(owner);
+        }
         let mut catalog = {
             let mut state = self.lock_state();
             loop {
@@ -227,9 +234,12 @@ impl NativeStore {
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     let before = usage[17];
-                    catalog.advance(self, cancel, remaining.deadline_unix_ms,
-                        self.config.event_step.min(remaining.max_discovery_entries), usage, &mut budget)?;
+                    let advanced = catalog.advance(self,cancel,remaining.deadline_unix_ms,
+                        self.config.event_step.min(remaining.max_discovery_entries),usage,&mut budget);
                     remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
+                    if let Err(error) = advanced {
+                        return if error.status == Status::PermissionDenied { Ok(CatalogWorkResult::Indexed) } else { Err(error) };
+                    }
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }

@@ -255,7 +255,7 @@ fn registered_catalog_key_admits_escaped_capacity_before_encoding() {
         let control = store();
         let (key, reservation) = control.catalog_key(request["roots"].as_array().unwrap(), &owner).unwrap();
         let bound = reservation.bytes;
-        let binding = json!({"effective_uid":owner["authority"]["effective_uid"],"roots":request["roots"]});
+        let binding = json!({"effective_uid":unsafe { libc::geteuid() },"roots":request["roots"]});
         let expected = crate::ids::canonical_json(&binding).unwrap();
         let old_bound = LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&owner["authority"])
             + 2 * value_bytes(&request["roots"]) + 1024;
@@ -394,9 +394,12 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
     let store = store();
     let owner = context("catalog-retry-order");
     let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
-    let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 2 };
+    let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 2, scratch_bytes:0 };
     let roots = [json!(late),json!(early)];
+    let deadline = now_ms() + 750;
     let mut catalog = SourceCatalog::new(&store, &roots, &owner, &mut budget).unwrap();
+    catalog.check_roots(&store,&Cancellation::default(),deadline,&mut budget).unwrap();
+    catalog.sync_routes(&mut budget).unwrap();
     catalog.pending.clear();
     for directory in [&early, &late] {
         let identity = SourceStamp::of(&std::fs::metadata(directory).unwrap()).identity;
@@ -409,9 +412,8 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
         catalog.record_issue(identity, 0);
     }
     let mut usage = [0;20];
-    let deadline = now_ms() + 750;
     catalog.advance(&store, &Cancellation::default(), deadline, 1, &mut usage, &mut budget).unwrap();
-    let plan = catalog.read_plan(&Cancellation::default(), deadline, &mut budget).unwrap();
+    let plan = catalog.read_plan(&store,&owner,&Cancellation::default(),deadline,&mut budget).unwrap();
     let paths = catalog.try_locate(&store, &[json!("wanted")], &owner, &Cancellation::default(), deadline, &plan, &mut budget).unwrap().expect("earliest closed prefix");
     assert_eq!(paths.get("wanted"), Some(&early.join("wanted.jsonl")));
     assert_eq!(catalog.charge(), catalog.audit_charge());

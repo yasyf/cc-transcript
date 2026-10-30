@@ -3127,6 +3127,8 @@ pub struct NativeStore {
     #[cfg(test)]
     locate_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    canonical_error_hook: Mutex<Option<Arc<dyn Fn(&Path) -> Option<std::io::Error> + Send + Sync>>>,
+    #[cfg(test)]
     location_metadata_hook: Mutex<Option<(&'static str, Arc<dyn Fn() + Send + Sync>)>>,
     #[cfg(test)]
     location_entry_canonicalizations: AtomicUsize,
@@ -3618,6 +3620,8 @@ impl NativeStore {
             pin_hook: Mutex::new(None),
             #[cfg(test)]
             locate_hook: Mutex::new(None),
+            #[cfg(test)]
+            canonical_error_hook: Mutex::new(None),
             #[cfg(test)]
             location_metadata_hook: Mutex::new(None),
             #[cfg(test)]
@@ -10935,7 +10939,7 @@ impl NativeStore {
                 ids, wanted, found, scope, pending, output:Vec::new(), page_bytes:64,
                 choices:BinaryHeap::new(), choice_bytes:0, choices_ready:false, choice_version:0,
                 floor:None, validated_after:None, final_hold:false, authority_epoch:0,
-                capabilities:BTreeMap::new(), capability_bytes:0, generation_seen:None,
+                capabilities:BTreeMap::new(), capability_bytes:0, generation_seen:None, catalog_owner:None,
                 emitted: 0, output_bytes: 0, finished: false, exhausted: false,
             },
             catalog: None,
