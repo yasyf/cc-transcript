@@ -108,3 +108,55 @@ fn source_spine_expands_a_tail_view_to_complete_history() {
     assert_eq!(handle(&repeated)["snapshot_id"], handle(&window)["snapshot_id"]);
     store.assert_conserved();
 }
+
+#[test]
+fn source_spine_prefers_matching_and_overlapping_views_over_an_older_full_source() {
+    let source = Source::new(&users(0..200));
+    let store = windowed_store();
+    let owner = context("spine-predecessor-coverage");
+    let whole = finish_prepared(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let full = store.pin(handle(&whole), &owner).unwrap();
+    source.append(&users(200..230));
+    let response = windowed(&store, &source.path, 4096, &owner);
+    let prior = store.pin(handle(&response), &owner).unwrap();
+    let base = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).windowed(Some(4096)).identity.window_base;
+    let appended = users(230..231);
+    source.append(&appended);
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).windowed(Some(4096)).identity.window_base, base);
+    let (before, views, checks) = {
+        let state = store.lock_state();
+        (state.counters, state.source_view_nodes, state.source_view_checks.counter())
+    };
+    let prior_checks = checks.load(Ordering::Relaxed);
+    windowed(&store, &source.path, 4096, &owner);
+    let after = store.lock_state().counters;
+    let candidate_checks = checks.load(Ordering::Relaxed) - prior_checks;
+    eprintln!("source_predecessor_probe matching {}", json!({"source_bytes":after[1]-before[1],"appended_bytes":appended.len(),"cold_parses":after[4]-before[4],"candidate_checks":candidate_checks}));
+    assert!(candidate_checks <= 2 * views + 1);
+    assert!(after[1] - before[1] <= appended.len() as u64 + 192);
+    assert_eq!(after[4], before[4]);
+    let appended = users(231..250);
+    source.append(&appended);
+    let base = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).windowed(Some(4096)).identity.window_base;
+    assert!(full.committed_bytes <= base);
+    assert!(prior.window_start <= base && base < prior.committed_bytes);
+    let (before, views, checks) = {
+        let state = store.lock_state();
+        (state.counters, state.source_view_nodes, state.source_view_checks.counter())
+    };
+    let prior_checks = checks.load(Ordering::Relaxed);
+    let response = windowed(&store, &source.path, 4096, &owner);
+    let selected = store.pin(handle(&response), &owner).unwrap();
+    let after = store.lock_state().counters;
+    let candidate_checks = checks.load(Ordering::Relaxed) - prior_checks;
+    let shared = selected.chunks.iter().any(|chunk| prior.chunks.iter().any(|old| Arc::ptr_eq(&chunk.entries, &old.entries)));
+    eprintln!("source_predecessor_probe overlapping {}", json!({"source_bytes":after[1]-before[1],"appended_bytes":appended.len(),"cold_parses":after[4]-before[4],"shared_rows":shared,"candidate_checks":candidate_checks}));
+    assert!(candidate_checks <= 2 * views + 1);
+    assert!(after[1] - before[1] <= appended.len() as u64 + 4096);
+    assert_eq!(after[4], before[4]);
+    assert!(shared);
+    let (_, _, first) = expected_window(&source.path, 4096);
+    assert_eq!(uuids(&selected), (first..250).collect::<Vec<_>>());
+    assert_eq!(uuids(&full), (0..200).collect::<Vec<_>>());
+    store.assert_conserved();
+}

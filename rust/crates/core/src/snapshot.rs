@@ -7836,14 +7836,7 @@ impl NativeStore {
                         self.config.read_step.min(stamp.size as usize)
                     };
                 self.admit_memory(&mut state, context, additional)?;
-                let previous = state.source_spine(&stamp.identity).filter(|old| {
-                    old.event_count > 0
-                        && Self::matches_prefix(stamp, old.stamp)
-                        && (old.provider == Provider::Claude
-                            || old.provider == Provider::Codex
-                                && old.codex_raw.is_some()
-                                && old.stamp.size < stamp.size)
-                });
+                let previous = state.source_spine(stamp);
                 let previous_chunks = previous.as_ref().and_then(|previous| {
                     state
                         .generations
@@ -14171,7 +14164,7 @@ mod tests {
             handle(&whole)["snapshot_id"].as_str(),
             handle(&window)["snapshot_id"].as_str()
         );
-        let before = store.state.lock().unwrap().counters[1];
+        let before = store.state.lock().unwrap().counters;
         let whole_again = finish(
             &store,
             store.request(&acquire(&source.path), &owner, &Cancellation::default()),
@@ -14188,8 +14181,8 @@ mod tests {
         );
         {
             let state = store.state.lock().unwrap();
-            assert_eq!(state.counters[1], before);
-            assert_eq!(state.counters[7], 2);
+            assert_eq!(state.counters[1], before[1]);
+            assert_eq!(state.counters[7] - before[7], 2);
             assert_eq!(state.latest.len(), 2);
         }
         let covering = finish(

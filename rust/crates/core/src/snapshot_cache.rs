@@ -23,8 +23,24 @@ impl StoreState {
         Some(self.cached_snapshot(key))
     }
 
-    fn source_spine(&mut self, identity: &SourceIdentity) -> Option<Arc<TranscriptSnapshot>> {
-        let key = self.source_spines.get(&identity.file())?.first()?.generation;
+    fn source_spine(&mut self, stamp: SourceStamp) -> Option<Arc<TranscriptSnapshot>> {
+        let key = {
+            let eligible = |key: usize| {
+                self.source_view_checks.tick(1);
+                let source = &self.generations.get(&key).expect("source generation")
+                    .cached.as_ref().expect("cached source").snapshot;
+                source.event_count > 0
+                    && NativeStore::matches_prefix(stamp, source.stamp)
+                    && match source.provider {
+                        Provider::Claude => source.stamp.identity.window_base == stamp.identity.window_base
+                            || stamp.identity.window_base < source.committed_bytes,
+                        Provider::Codex => source.codex_raw.is_some() && source.stamp.size < stamp.size,
+                    }
+            };
+            self.latest.get(&stamp.identity).copied().filter(|key| eligible(*key))
+                .or_else(|| self.source_spines.get(&stamp.identity.file())
+                    .and_then(|views| views.iter().find_map(|view| eligible(view.generation).then_some(view.generation))))
+        }?;
         Some(self.cached_snapshot(key))
     }
 
