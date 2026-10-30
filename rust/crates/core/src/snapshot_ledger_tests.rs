@@ -687,7 +687,7 @@ fn remembered(fixture: &Fixture) -> bool {
     let path = PathBuf::from(fixture.request["path"].as_str().unwrap());
     fixture
         .store
-        .remember_locations(&[(id.clone(), path)], &fixture.owner);
+        .remember_locations(std::iter::once((&id, &path)), &fixture.owner);
     fixture.store.lock_state().locations.contains_key(&id)
 }
 
@@ -727,10 +727,8 @@ fn location_fixture(source: &LedgerSource, background: bool) -> Fixture {
         if len == reserved && len > 0 {
             break;
         }
-        store.remember_locations(
-            &[(format!("session-{index:04}"), source.path.clone())],
-            &owner,
-        );
+        let id = format!("session-{index:04}");
+        store.remember_locations(std::iter::once((&id, &source.path)), &owner);
     }
     {
         let state = store.lock_state();
