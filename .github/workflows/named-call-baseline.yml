@@ -1,0 +1,14 @@
+name: Named Call Clone Baseline
+on:
+  push:
+    branches: [diag/named-call-clone-baseline]
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p cc-transcript-core --no-default-features --lib -- named_projection_does_not_clone_unrelated_call_payloads --nocapture
