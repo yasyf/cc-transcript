@@ -54,7 +54,42 @@ impl Charge<String> for RegisteredBuild {
     }
 }
 
+fn catalog_canonical_scratch(value: &Value) -> usize {
+    if let Some(object) = value.as_object() {
+        let entries = object.len() * size_of::<(&str, &Value)>();
+        map_growth(&HashMap::<&str, &Value>::new(), object.len()) + entries
+            + object.iter().map(|(_, value)| catalog_canonical_scratch(value)).max().unwrap_or(0)
+    } else if let Some(array) = value.as_array() {
+        array.iter().map(catalog_canonical_scratch).max().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
 impl NativeStore {
+    fn catalog_key<'a>(
+        &'a self,
+        request: &Value,
+        context: &Value,
+    ) -> Result<(String, ProjectionReservation<'a>), SnapshotError> {
+        let wrapper_scratch = map_growth(&HashMap::<&str, &Value>::new(), 2)
+            + 2 * size_of::<(&str, &Value)>();
+        let scratch = wrapper_scratch + catalog_canonical_scratch(&context["authority"])
+            .max(catalog_canonical_scratch(&request["roots"]));
+        let mut reservation = self.reserve_projection(context,
+            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
+                + 2 * value_bytes(&request["roots"]) + 1024 + scratch)?;
+        let binding = json!({"authority":context["authority"],"roots":request["roots"]});
+        let bytes = crate::ids::canonical_json_size(&binding).map_err(invalid)?;
+        self.extend_projection_reservation(&mut reservation, context, bytes)?;
+        self.before_decode("catalog_key");
+        let mut encoded = String::with_capacity(bytes);
+        crate::ids::write_canonical(&binding, &mut encoded).map_err(invalid)?;
+        assert_eq!(encoded.len(), bytes, "canonical catalog key size");
+        assert_eq!(encoded.capacity(), bytes, "canonical catalog key capacity");
+        Ok((format!("{:x}", Sha256::digest(encoded.as_bytes())), reservation))
+    }
+
     fn catalog_paths<'a>(
         &'a self,
         request: &Value,
@@ -84,12 +119,7 @@ impl NativeStore {
                 }
             }
         }
-        let mut reservation = self.reserve_projection(context,
-            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
-                + 2 * value_bytes(&request["roots"]) + 1024)?;
-        let binding = json!({"authority":context["authority"],"roots":request["roots"]});
-        let binding = crate::ids::canonical_json(&binding).map_err(|error| invalid(error.to_string()))?;
-        let key = format!("{:x}", Sha256::digest(binding.as_bytes()));
+        let (key, mut reservation) = self.catalog_key(request, context)?;
         let slot = {
             let mut state = self.lock_state();
             if let Some(slot) = state.catalogs.get(&key) {

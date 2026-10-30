@@ -33,6 +33,21 @@ pub fn canonical_json(value: &Value) -> Result<String, String> {
     Ok(out)
 }
 
+pub(crate) fn canonical_json_size(value: &Value) -> Result<usize, String> {
+    struct Counter(usize);
+
+    impl std::fmt::Write for Counter {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0 += text.len();
+            Ok(())
+        }
+    }
+
+    let mut out = Counter(0);
+    write_canonical(value, &mut out)?;
+    Ok(out.0)
+}
+
 // Parity: cc_transcript.ids.tool_digest. The two keys are already UTF-16-ordered
 // ("input" < "tool"), so the wrapper is assembled directly.
 pub fn tool_digest(tool_name: &str, tool_input: &Value) -> Result<String, String> {
@@ -46,45 +61,44 @@ pub fn tool_digest(tool_name: &str, tool_input: &Value) -> Result<String, String
     Ok(hex_sha256(wrapper.as_bytes()))
 }
 
-fn write_canonical(value: &Value, out: &mut String) -> Result<(), String> {
+pub(crate) fn write_canonical(value: &Value, out: &mut impl std::fmt::Write) -> Result<(), String> {
     match value.get_type() {
-        JsonType::Null => out.push_str("null"),
-        JsonType::Boolean => out.push_str(if value.as_bool().unwrap() {
+        JsonType::Null => out.write_str("null").unwrap(),
+        JsonType::Boolean => out.write_str(if value.as_bool().unwrap() {
             "true"
         } else {
             "false"
-        }),
+        }).unwrap(),
         JsonType::Number => encode_number(value, out)?,
-        JsonType::String => encode_string(value.as_str().unwrap(), out),
+        JsonType::String => encode_string_to(value.as_str().unwrap(), out).unwrap(),
         JsonType::Array => {
-            out.push('[');
+            out.write_char('[').unwrap();
             for (i, item) in value.as_array().unwrap().iter().enumerate() {
                 if i > 0 {
-                    out.push(',');
+                    out.write_char(',').unwrap();
                 }
                 write_canonical(item, out)?;
             }
-            out.push(']');
+            out.write_char(']').unwrap();
         }
         JsonType::Object => {
-            // Python json.loads keeps the last of duplicate keys; sonic-rs preserves
-            // both, so dedupe by decoded key (last wins) before the UTF-16 sort.
-            let mut deduped: HashMap<&str, &Value> = HashMap::new();
+            let mut deduped: HashMap<&str, &Value> = HashMap::with_capacity(value.as_object().unwrap().len());
             for (key, item) in value.as_object().unwrap().iter() {
                 deduped.insert(key, item);
             }
-            let mut entries: Vec<(&str, &Value)> = deduped.into_iter().collect();
-            entries.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
-            out.push('{');
+            let mut entries: Vec<(&str, &Value)> = Vec::with_capacity(deduped.len());
+            entries.extend(deduped);
+            entries.sort_unstable_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+            out.write_char('{').unwrap();
             for (i, (key, item)) in entries.iter().enumerate() {
                 if i > 0 {
-                    out.push(',');
+                    out.write_char(',').unwrap();
                 }
-                encode_string(key, out);
-                out.push(':');
+                encode_string_to(key, out).unwrap();
+                out.write_char(':').unwrap();
                 write_canonical(item, out)?;
             }
-            out.push('}');
+            out.write_char('}').unwrap();
         }
     }
     Ok(())
@@ -92,7 +106,7 @@ fn write_canonical(value: &Value, out: &mut String) -> Result<(), String> {
 
 // Parity: canonical_parts int/float arms. Parsed numbers carry raw text
 // (arbitrary_precision); constructed Values don't, so classify by numeric type.
-fn encode_number(value: &Value, out: &mut String) -> Result<(), String> {
+fn encode_number(value: &Value, out: &mut impl std::fmt::Write) -> Result<(), String> {
     if let Some(raw) = value.as_raw_number() {
         let text = raw.as_str();
         return if text.bytes().any(|b| matches!(b, b'.' | b'e' | b'E')) {
@@ -113,7 +127,7 @@ fn encode_number(value: &Value, out: &mut String) -> Result<(), String> {
     )
 }
 
-fn push_int(int: i64, out: &mut String) -> Result<(), String> {
+fn push_int(int: i64, out: &mut impl std::fmt::Write) -> Result<(), String> {
     if int.unsigned_abs() > MAX_SAFE_INTEGER as u64 {
         return Err(int_out_of_range(&int.to_string()));
     }
@@ -121,8 +135,8 @@ fn push_int(int: i64, out: &mut String) -> Result<(), String> {
     Ok(())
 }
 
-fn push_float(value: f64, out: &mut String) -> Result<(), String> {
-    out.push_str(&es_number(value)?);
+fn push_float(value: f64, out: &mut impl std::fmt::Write) -> Result<(), String> {
+    out.write_str(&es_number(value)?).unwrap();
     Ok(())
 }
 
@@ -190,6 +204,28 @@ mod tests {
 
     fn digest(name: &str, input_json: &str) -> String {
         tool_digest(name, &sonic_rs::from_str(input_json).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn registered_catalog_canonical_measurement_matches_exact_bytes() {
+        for raw in [
+            r#"{"authority":{"kind":"user","effective_uid":"501"},"roots":["/a\u0001\n\t\r\b\f\\\"é😀"]}"#,
+            r#"{"b":1,"a":2,"b":3,"\u0061":4,"😀":-0.0,"￿":1e21,"€":5e-324}"#,
+            r#"[null,true,false,[],{},[1.5,9007199254740991]]"#,
+        ] {
+            let value: Value = sonic_rs::from_str(raw).unwrap();
+            let expected = canonical_json(&value).unwrap();
+            let bytes = canonical_json_size(&value).unwrap();
+            let mut encoded = String::with_capacity(bytes);
+            write_canonical(&value, &mut encoded).unwrap();
+            assert_eq!(encoded, expected);
+            assert_eq!(encoded.len(), bytes);
+            assert_eq!(encoded.capacity(), bytes);
+        }
+        for raw in ["9007199254740993", "100000000000000000000000000000"] {
+            let value: Value = sonic_rs::from_str(raw).unwrap();
+            assert_eq!(canonical_json_size(&value).unwrap_err(), canonical_json(&value).unwrap_err());
+        }
     }
 
     #[test]
