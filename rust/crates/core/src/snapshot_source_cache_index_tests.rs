@@ -1,5 +1,5 @@
 #[test]
-fn evicting_the_widest_source_keeps_the_next_retained_view_available_without_a_cold_parse() {
+fn source_cache_evicting_the_widest_source_keeps_the_next_retained_view_available_without_a_cold_parse() {
     let source = Source::new(&users(0..200));
     let store = windowed_store();
     let owner = context("indexed-source-view");
@@ -30,5 +30,60 @@ fn evicting_the_widest_source_keeps_the_next_retained_view_available_without_a_c
     assert_eq!(uuids(&snapshot), (first..200).collect::<Vec<_>>());
     release_lease(&store, handle(&narrower), &owner);
     drop(snapshot);
+    store.assert_conserved();
+}
+
+#[test]
+fn source_cache_replacing_an_exact_view_retires_its_obsolete_generations() {
+    let source = Source::new(&users(0..200));
+    let store = windowed_store();
+    let owner = context("source-view-replacement");
+    let first = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let pinned = store.pin(handle(&first), &owner).unwrap();
+    release_lease(&store, handle(&first), &owner);
+    for next in 200..216 {
+        source.append(&users(next..next + 1));
+        let response = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        release_lease(&store, handle(&response), &owner);
+        let state = store.lock_state();
+        assert_eq!(state.source_view_nodes, 1);
+        assert_eq!(state.generations.values().filter(|generation| generation.cached.is_some()).count(), 1);
+        drop(state);
+        store.assert_conserved();
+    }
+    assert_eq!(uuids(&pinned), (0..200).collect::<Vec<_>>());
+    drop(pinned);
+    store.assert_conserved();
+}
+
+#[test]
+fn source_cache_truncation_retires_stale_coverage_before_reusing_its_new_full_view() {
+    let source = Source::new(&users(0..200));
+    let store = windowed_store();
+    let owner = context("source-view-truncation");
+    let old = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let pinned = store.pin(handle(&old), &owner).unwrap();
+    release_lease(&store, handle(&old), &owner);
+    std::fs::write(&source.path, users(0..80)).unwrap();
+    let fresh = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    release_lease(&store, handle(&fresh), &owner);
+    {
+        let mut state = store.lock_state();
+        assert_eq!(state.source_view_nodes, 1);
+        let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
+        assert_eq!(state.source_spine(&identity).unwrap().id, handle(&fresh)["snapshot_id"].as_str().unwrap());
+    }
+    let before = store.lock_state().counters;
+    let tail = windowed(&store, &source.path, 4096, &owner);
+    let after = store.lock_state().counters;
+    eprintln!("source_view_truncation source_bytes={} cold_parses={}", after[1]-before[1], after[4]-before[4]);
+    assert_eq!(after[4], before[4]);
+    let selected = store.pin(handle(&tail), &owner).unwrap();
+    let (_, _, first) = expected_window(&source.path, 4096);
+    assert_eq!(uuids(&selected), (first..80).collect::<Vec<_>>());
+    assert_eq!(uuids(&pinned), (0..200).collect::<Vec<_>>());
+    release_lease(&store, handle(&tail), &owner);
+    drop(selected);
+    drop(pinned);
     store.assert_conserved();
 }

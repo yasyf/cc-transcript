@@ -47,6 +47,25 @@ impl StoreState {
         }
     }
 
+    fn retire_incompatible_source_views(&mut self, snapshot: &Arc<TranscriptSnapshot>) {
+        let physical = snapshot.stamp.identity.file();
+        loop {
+            let stale = self.source_spines.get(&physical).and_then(|views| views.iter().find_map(|view| {
+                self.ledger.shared.work().tick(1);
+                let cached = self.generations.get(&view.generation).expect("source generation").cached.as_ref().expect("cached source");
+                (!NativeStore::matches_prefix(snapshot.stamp, cached.snapshot.stamp)).then_some(view.generation)
+            }));
+            let Some(key) = stale else { break };
+            let cached = self.generations.get(&key).expect("source generation").cached.as_ref().expect("cached source");
+            let source = Arc::clone(&cached.snapshot);
+            if let Some(identity) = cached.latest {
+                drop(self.remove_latest(&identity));
+            } else {
+                self.forget_source_spine(&physical, &source);
+            }
+        }
+    }
+
     fn cache_owner_growth(&self, snapshot: &Arc<TranscriptSnapshot>) -> usize {
         if self.generations.get(&snapshot_key(snapshot)).is_some_and(|record| record.cached.is_some()) {
             0

@@ -2311,6 +2311,7 @@ impl StoreState {
         let displaced = previous.map(|old| Arc::clone(&self.generations.get(&old).expect("latest generation").cached.as_ref().expect("cached owner").snapshot));
         if let Some(old) = previous.filter(|old| *old != key) {
             self.generations.get_mut(&old).expect("latest generation").cached.as_mut().expect("cached owner").latest = None;
+            self.forget_source_spine(&identity, displaced.as_ref().expect("displaced source"));
             self.release_unused_cached_generation(old);
         }
         let physical = identity.file();
@@ -2318,6 +2319,7 @@ impl StoreState {
         self.latest.reserve_for(&identity);
         self.latest.insert(identity, key);
         self.generations.get_mut(&key).expect("latest generation").cached.as_mut().expect("cached owner").latest = Some(identity);
+        self.retire_incompatible_source_views(&snapshot);
         let indexed = self.generations.get(&key).expect("source generation").cached.as_ref().expect("cached owner").spine.is_some();
         if !indexed {
             self.source_spines.reserve_for(&physical);
