@@ -255,7 +255,7 @@ fn registered_catalog_key_admits_escaped_capacity_before_encoding() {
         let control = store();
         let (key, reservation) = control.catalog_key(request["roots"].as_array().unwrap(), &owner).unwrap();
         let bound = reservation.bytes;
-        let binding = json!({"authority":owner["authority"],"roots":request["roots"]});
+        let binding = json!({"effective_uid":owner["authority"]["effective_uid"],"roots":request["roots"]});
         let expected = crate::ids::canonical_json(&binding).unwrap();
         let old_bound = LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&owner["authority"])
             + 2 * value_bytes(&request["roots"]) + 1024;

@@ -63,9 +63,9 @@ struct CatalogInput<'a> {
     roots: &'a [Value],
 }
 
-enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate }
+enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Public(&'a mut CatalogLocateQuery) }
 
-enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending }
+enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending, Public(CatalogLocatePage) }
 
 enum CatalogResolution<'a> {
     Indexed,
@@ -74,6 +74,7 @@ enum CatalogResolution<'a> {
         reservation: ProjectionReservation<'a>,
     },
     Pending(Arc<CatalogSlot>),
+    Public { page:CatalogLocatePage, slot:Arc<CatalogSlot>, reservation:ProjectionReservation<'a> },
 }
 
 struct RegisteredBuild {
@@ -128,14 +129,16 @@ impl NativeStore {
         roots: &[Value],
         context: &Value,
     ) -> Result<(String, ProjectionReservation<'a>), SnapshotError> {
+        self.authority(context,None)?;
+        let uid = &context["authority"]["effective_uid"];
         let wrapper_scratch = map_growth(&HashMap::<&str, &Value>::new(), 2)
             + 2 * size_of::<(&str, &Value)>();
-        let scratch = wrapper_scratch + catalog_canonical_scratch(&context["authority"])
+        let scratch = wrapper_scratch + catalog_canonical_scratch(uid)
             .max(roots.iter().map(catalog_canonical_scratch).max().unwrap_or(0));
         let mut reservation = self.reserve_projection(context,
-            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
+            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(uid)
                 + 2 * (roots.len() * size_of::<Value>() + roots.iter().map(value_bytes).sum::<usize>()) + 1024 + scratch)?;
-        let binding = json!({"authority":context["authority"],"roots":roots});
+        let binding = json!({"effective_uid":uid,"roots":roots});
         let bytes = crate::ids::canonical_json_size(&binding).map_err(invalid)?;
         self.extend_projection_reservation(&mut reservation, context, bytes)?;
         self.before_decode("catalog_key");
@@ -214,7 +217,7 @@ impl NativeStore {
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
         let outcome = (|| {
-            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64 };
+            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0 };
             if catalog.is_none() {
                 catalog = Some(SourceCatalog::new(self, roots, context, &mut budget)?);
             }
@@ -232,6 +235,7 @@ impl NativeStore {
                     if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }
                     return Ok(CatalogWorkResult::Pending);
                 }
+                CatalogMode::Public(query) => return catalog.locate_page(self,ids,context,cancel,remaining,usage,query,&mut budget).map(CatalogWorkResult::Public),
                 CatalogMode::Locate => {}
             }
             let mut paths = HashMap::new();
@@ -248,7 +252,7 @@ impl NativeStore {
                             catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                             if !catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) { continue; }
                             catalog.sync_routes(&mut budget)?;
-                            plan = Some(catalog.read_plan(cancel, remaining.deadline_unix_ms, &mut budget)?);
+                            plan = Some(catalog.read_plan(self, context, cancel, remaining.deadline_unix_ms, &mut budget)?);
                             plan_epoch = catalog.epoch;
                         }
                         if let Some(located) = catalog.try_locate(self, chunk, context, cancel,
@@ -299,6 +303,7 @@ impl NativeStore {
             CatalogWorkResult::Paths(paths) => Ok(CatalogResolution::Ready { paths, reservation }),
             CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
             CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
+            CatalogWorkResult::Public(page) => Ok(CatalogResolution::Public { page,slot,reservation }),
         }
     }
 }
@@ -380,7 +385,7 @@ impl NativeStore {
                 build.request.insert("limits", build.remaining.to_json());
                 self.prepare_graph_ready(&build.request, &build.context, cancel, usage)
             }
-            CatalogResolution::Ready { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. } | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
             CatalogResolution::Pending(slot) => {
                 build.catalog = Some(slot);
                 let mut state = self.lock_state();

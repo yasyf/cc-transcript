@@ -1,5 +1,6 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -738,56 +739,17 @@ struct LocatedPath {
 struct LocateCursor {
     claimant: String,
     context: Value,
+    request: Value,
     limits: WorkLimits,
-    ids: Vec<String>,
-    wanted: HashSet<String>,
-    found: HashSet<String>,
-    scope: Vec<PathBuf>,
-    roots: Vec<PathBuf>,
-    directories: Vec<OpenDirectory>,
-    seen_directories: HashSet<SourceIdentity>,
-    pending: VecDeque<Value>,
-    examined: usize,
-    emitted: usize,
-    output_bytes: usize,
-    finished: bool,
-    exhausted: bool,
+    query: CatalogLocateQuery,
+    catalog: Option<Arc<CatalogSlot>>,
     expires: u64,
 }
 
 impl LocateCursor {
     fn accounted_bytes(&self) -> usize {
-        let context = crate::snapshot_memory::value_charge(&self.context);
-        size_of::<Self>()
-            + self.claimant.capacity()
-            + context.owned_capacity_bytes
-            + context.opaque_dom_accounted_bytes
-            + self.ids.capacity() * size_of::<String>()
-            + self.ids.iter().map(String::capacity).sum::<usize>()
-            + self.wanted.capacity() * size_of::<String>()
-            + self.wanted.iter().map(String::capacity).sum::<usize>()
-            + self.found.capacity() * size_of::<String>()
-            + self.found.iter().map(String::capacity).sum::<usize>()
-            + self.scope.capacity() * size_of::<PathBuf>()
-            + self.scope.iter().map(PathBuf::capacity).sum::<usize>()
-            + self.roots.capacity() * size_of::<PathBuf>()
-            + self.roots.iter().map(PathBuf::capacity).sum::<usize>()
-            + self.directories.capacity() * size_of::<OpenDirectory>()
-            + self
-                .directories
-                .iter()
-                .map(OpenDirectory::retained_bytes)
-                .sum::<usize>()
-            + self.seen_directories.capacity() * size_of::<SourceIdentity>()
-            + self.pending.capacity() * size_of::<Value>()
-            + self
-                .pending
-                .iter()
-                .map(|item| {
-                    let charge = crate::snapshot_memory::value_charge(item);
-                    charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
-                })
-                .sum::<usize>()
+        size_of::<Self>() + self.claimant.capacity() + value_bytes(&self.context)
+            + value_bytes(&self.request) + self.query.accounted_bytes()
     }
 }
 
@@ -5916,47 +5878,25 @@ impl NativeStore {
 
     #[cfg(test)]
     fn audit_locate_bytes(token: &String, cursor: &LocateCursor) -> usize {
-        let LocateCursor {
-            claimant,
-            context,
-            limits: _,
-            ids,
-            wanted,
-            found,
-            scope,
-            roots,
-            directories,
-            seen_directories,
-            pending,
-            examined: _,
-            emitted: _,
-            output_bytes: _,
-            finished: _,
-            exhausted: _,
-            expires: _,
-        } = cursor;
-        token.capacity()
-            + size_of::<LocateCursor>()
-            + claimant.capacity()
-            + value_bytes(context)
-            + ids.capacity() * size_of::<String>()
-            + ids.iter().map(String::capacity).sum::<usize>()
-            + wanted.capacity() * size_of::<String>()
-            + wanted.iter().map(String::capacity).sum::<usize>()
-            + found.capacity() * size_of::<String>()
-            + found.iter().map(String::capacity).sum::<usize>()
-            + scope.capacity() * size_of::<PathBuf>()
-            + scope.iter().map(PathBuf::capacity).sum::<usize>()
-            + roots.capacity() * size_of::<PathBuf>()
-            + roots.iter().map(PathBuf::capacity).sum::<usize>()
-            + directories.capacity() * size_of::<OpenDirectory>()
-            + directories
-                .iter()
-                .map(Self::audit_open_directory_bytes)
-                .sum::<usize>()
-            + seen_directories.capacity() * size_of::<SourceIdentity>()
-            + pending.capacity() * size_of::<Value>()
-            + pending.iter().map(value_bytes).sum::<usize>()
+        let query = &cursor.query;
+        token.capacity() + size_of::<LocateCursor>() + cursor.claimant.capacity()
+            + value_bytes(&cursor.context) + value_bytes(&cursor.request)
+            + query.ids.capacity() * size_of::<String>()
+            + query.ids.iter().map(String::capacity).sum::<usize>()
+            + query.wanted.capacity() * size_of::<String>()
+            + query.wanted.iter().map(String::capacity).sum::<usize>()
+            + query.found.capacity() * size_of::<String>()
+            + query.found.iter().map(String::capacity).sum::<usize>()
+            + query.scope.capacity() * size_of::<PathBuf>()
+            + query.scope.iter().map(PathBuf::capacity).sum::<usize>()
+            + query.pending.capacity() * size_of::<Value>()
+            + query.pending.iter().map(value_bytes).sum::<usize>()
+            + query.output.capacity() * size_of::<Value>()
+            + query.output.iter().map(value_bytes).sum::<usize>()
+            + query.choices.capacity() * size_of::<Reverse<CatalogChoice>>()
+            + query.choices.iter().map(|Reverse(choice)| choice.id.capacity() + choice.path.capacity() + choice.order.capacity() * size_of::<usize>()).sum::<usize>()
+            + query.floor.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
+            + query.validated_after.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
     }
 
     fn fixed_metadata_bytes(state: &StoreState) -> usize {
@@ -7131,6 +7071,7 @@ impl NativeStore {
                         drop(locate);
                         return Err(error);
                     }
+                    locate.query.authority_changed |= locate.context["authority"] != context["authority"];
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
                 }
@@ -10757,54 +10698,6 @@ impl NativeStore {
             .find_map(|(index, _)| wanted.get(&stem[index + 1..]).map(String::as_str))
     }
 
-    fn queue_unfound_locations(
-        &self,
-        cursor: &mut LocateCursor,
-        reservation: &mut ProjectionReservation<'_>,
-        status: &str,
-    ) -> Result<(), SnapshotError> {
-        let unfound = || cursor.ids.iter().filter(|id| !cursor.found.contains(*id));
-        let count = unfound().count();
-        self.extend_projection_reservation(
-            reservation,
-            &cursor.context,
-            deque_growth(&cursor.pending, count)
-                + unfound()
-                    .map(|id| located_item_bytes(id, status, None))
-                    .sum::<usize>(),
-        )?;
-        let predicted = deque_capacity_for(&cursor.pending, count);
-        cursor.pending.reserve(count);
-        for id in &cursor.ids {
-            if !cursor.found.contains(id) {
-                cursor.pending.push_back(
-                    json!({"session_id":id,"status":status,"path":null,"revision":null}),
-                );
-            }
-        }
-        assert_eq!(cursor.pending.capacity(), predicted);
-        Ok(())
-    }
-
-    fn forget_location(
-        &self,
-        cursor: &mut LocateCursor,
-        reservation: &mut ProjectionReservation<'_>,
-        id: &str,
-    ) -> Result<(), SnapshotError> {
-        self.extend_projection_reservation(
-            reservation,
-            &cursor.context,
-            cursor.found.len() * size_of::<String>(),
-        )?;
-        let capacity = cursor.found.capacity();
-        let mut kept = Vec::with_capacity(cursor.found.len());
-        kept.extend(cursor.found.drain().filter(|found| found.as_str() != id));
-        cursor.found.extend(kept);
-        assert_eq!(cursor.found.capacity(), capacity);
-        Ok(())
-    }
-
     fn location_candidate(
         &self,
         path: &Path,
@@ -10849,7 +10742,6 @@ impl NativeStore {
         let added = remembered()
             .map(|(id, path)| 2 * id.len() + path.as_os_str().len() + size_of::<LocatedPath>())
             .sum::<usize>();
-        while state.locations.len() + entries.len() > 4096 && state.evict_oldest_location() {}
         let (fresh, pushed) = remembered().fold((0, 0), |(fresh, pushed), (id, _)| {
             (
                 fresh + usize::from(!state.locations.contains_key(id)),
@@ -10931,7 +10823,7 @@ impl NativeStore {
                 + requested.len() * size_of::<String>()
                 + set_growth(&HashSet::<String>::new(), requested.len())
                 + 2 * id_bytes
-                + 2 * paths,
+                + paths + value_bytes(request),
         )?;
         #[cfg(test)]
         self.locate_records.fetch_add(1, Ordering::Relaxed);
@@ -11036,20 +10928,15 @@ impl NativeStore {
         let cursor = LocateCursor {
             claimant: claimant.to_owned(),
             context: context.clone(),
+            request: request.clone(),
             limits: bound,
-            ids,
-            wanted,
-            found,
-            roots: scope.clone(),
-            scope,
-            directories: Vec::new(),
-            seen_directories: HashSet::new(),
-            pending,
-            examined: 0,
-            emitted: 0,
-            output_bytes: 0,
-            finished: false,
-            exhausted: false,
+            query: CatalogLocateQuery {
+                ids, wanted, found, scope, pending, output:Vec::new(), page_bytes:64,
+                choices:BinaryHeap::new(), choice_bytes:0, choices_ready:false, choice_version:0,
+                floor:None, validated_after:None, final_hold:false, authority_changed:false,
+                emitted: 0, output_bytes: 0, finished: false, exhausted: false,
+            },
+            catalog: None,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
         };
         self.locate_step(&token, cursor, &mut reservation, cancel, usage)
@@ -11064,267 +10951,33 @@ impl NativeStore {
         usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         cancel.check(cursor.limits.deadline_unix_ms)?;
-        let mut output = Vec::new();
-        let mut page_bytes = 64usize;
-        let stop = cursor
-            .examined
-            .saturating_add(self.config.event_step)
-            .min(cursor.limits.max_discovery_entries);
-        let mut updates = Vec::new();
-        let mut parent_hint: Option<(PathBuf, Option<PathBuf>)> = None;
-        loop {
-            cancel.check(cursor.limits.deadline_unix_ms)?;
-            while let Some(mut item) = cursor.pending.pop_front() {
-                cancel.check(cursor.limits.deadline_unix_ms)?;
-                if item["status"].as_str() == Some("ok") {
-                    let Some(stamp) = self.location_candidate(
-                        Path::new(str_field(&item, "path")?),
-                        &cursor.scope,
-                        &cursor.context,
-                    )?
-                    else {
-                        self.forget_location(
-                            &mut cursor,
-                            reservation,
-                            str_field(&item, "session_id")?,
-                        )?;
-                        continue;
-                    };
-                    #[cfg(test)]
-                    self.after_location_metadata("pending");
-                    let revision = stamp.revision();
-                    self.extend_projection_reservation(
-                        reservation,
-                        &cursor.context,
-                        revision.len(),
-                    )?;
-                    item.insert("revision", json!(revision));
-                }
-                let bytes = encoded_size(&item, MAX_DATA_BYTES)?;
-                if cursor.output_bytes + bytes + 2
-                    > cursor.limits.max_output_bytes.saturating_sub(64)
-                {
-                    return Err(SnapshotError::new(
-                        Status::OutputLimit,
-                        "location output budget exhausted",
-                    ));
-                }
-                if page_bytes + bytes + 2 > MAX_DATA_BYTES || output.len() >= 1024 {
-                    cursor.pending.push_front(item);
-                    break;
-                }
-                cursor.output_bytes += bytes + 2;
-                cursor.emitted += 1;
-                page_bytes += bytes + 2;
-                output.push(item);
-            }
-            if !cursor.pending.is_empty() || cursor.finished || page_bytes >= MAX_DATA_BYTES {
-                break;
-            }
-            if cursor.found.len() == cursor.ids.len() {
-                cursor.finished = true;
-                break;
-            }
-            if cursor.examined >= cursor.limits.max_discovery_entries
-                || cursor.found.len() >= cursor.limits.max_sources
-            {
-                cursor.exhausted = true;
-                cursor.finished = true;
-            } else if cursor.examined >= stop {
-                break;
-            } else {
-                let path = if let Some(reader) = cursor.directories.last_mut() {
-                    match reader.next() {
-                        Some(Ok(entry)) => {
-                            cursor.examined += 1;
-                            usage[17] += 1;
-                            let path = entry.path();
-                            #[cfg(test)]
-                            self.after_location_metadata("entry");
-                            if cursor.context["authority"]["kind"].as_str() == Some("user") {
-                                let parent = path.parent().expect("directory entry parent");
-                                if parent_hint.as_ref().is_none_or(|(raw, _)| raw != parent) {
-                                    drop(parent_hint.take());
-                                    #[cfg(test)]
-                                    self.location_canonicalizations
-                                        .fetch_add(1, Ordering::Relaxed);
-                                    let resolved = std::fs::canonicalize(parent).ok();
-                                    parent_hint = Some((parent.to_path_buf(), resolved));
-                                }
-                                let metadata = parent_hint.as_mut().and_then(|(_raw, resolved)| {
-                                    let child = resolved.as_mut()?;
-                                    let leaf = path.file_name().expect("directory entry name");
-                                    child.reserve_exact(1 + leaf.len());
-                                    child.push(leaf);
-                                    #[cfg(test)]
-                                    assert!(
-                                        path.capacity()
-                                            + _raw.capacity()
-                                            + child.capacity()
-                                            + (path.as_os_str().len() + 1)
-                                                .max(child.as_os_str().len() + 1)
-                                            + size_of::<libc::dirent>()
-                                            <= LOCATE_USER_PATH_SLOTS
-                                    );
-                                    let metadata = std::fs::symlink_metadata(&*child).ok();
-                                    child.pop();
-                                    let metadata = metadata?;
-                                    #[cfg(test)]
-                                    self.after_location_metadata("canonical_prefilter");
-                                    let raw_metadata = std::fs::symlink_metadata(&path).ok()?;
-                                    (metadata.is_file()
-                                        && raw_metadata.is_file()
-                                        && SourceStamp::of(&metadata).identity
-                                            == SourceStamp::of(&raw_metadata).identity)
-                                        .then_some(metadata)
-                                });
-                                if let Some(metadata) = metadata {
-                                    #[cfg(test)]
-                                    self.after_location_metadata("prefilter");
-                                    if metadata.is_file()
-                                        && (path.extension().is_none_or(|ext| ext != "jsonl")
-                                            || Self::requested_location(
-                                                &path
-                                                    .file_stem()
-                                                    .expect("source filename")
-                                                    .to_string_lossy(),
-                                                &cursor.wanted,
-                                            )
-                                            .is_none())
-                                    {
-                                        continue;
-                                    }
-                                }
-                            }
-                            parent_hint = None;
-                            path
-                        }
-                        Some(Err(error)) => return Err(io_error(error)),
-                        None => {
-                            cursor.directories.pop();
-                            parent_hint = None;
-                            continue;
-                        }
-                    }
-                } else if let Some(root) = cursor.roots.pop() {
-                    parent_hint = None;
-                    root
-                } else {
-                    cursor.finished = true;
-                    self.queue_unfound_locations(&mut cursor, reservation, "missing")?;
-                    continue;
-                };
-                let metadata = {
-                    #[cfg(test)]
-                    if !cursor.directories.is_empty() {
-                        self.location_entry_canonicalizations
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                    #[cfg(test)]
-                    self.location_canonicalizations
-                        .fetch_add(1, Ordering::Relaxed);
-                    let canonical = match std::fs::canonicalize(&path) {
-                        Ok(path) => path,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(error) => return Err(io_error(error)),
-                    };
-                    self.authority(&cursor.context, Some(&canonical))?;
-                    match std::fs::metadata(&canonical) {
-                        Ok(metadata) => metadata,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(error) => return Err(io_error(error)),
-                    }
-                };
-                #[cfg(test)]
-                self.after_location_metadata("walk");
-                if metadata.is_dir() {
-                    let identity = SourceStamp::of(&metadata).identity;
-                    if !cursor.seen_directories.contains(&identity) {
-                        self.extend_projection_reservation(
-                            reservation,
-                            &cursor.context,
-                            set_growth(&cursor.seen_directories, 1)
-                                + vec_growth(&cursor.directories, 1)
-                                + READ_DIR_HANDLE_BYTES
-                                + path.as_os_str().len(),
-                        )?;
-                        let predicted = (
-                            set_capacity_for(&cursor.seen_directories, 1),
-                            vec_capacity_for(&cursor.directories, 1),
-                        );
-                        cursor.seen_directories.insert(identity);
-                        cursor.directories.push(OpenDirectory::open(&path)?);
-                        #[cfg(test)]
-                        self.directory_opens.fetch_add(1, Ordering::Relaxed);
-                        assert_eq!(
-                            (
-                                cursor.seen_directories.capacity(),
-                                cursor.directories.capacity()
-                            ),
-                            predicted
-                        );
-                    }
-                    continue;
-                }
-                if !metadata.is_file() || path.extension().is_none_or(|ext| ext != "jsonl") {
-                    continue;
-                }
-                let stem = path.file_stem().expect("source filename").to_string_lossy();
-                let Some(id) = Self::requested_location(&stem, &cursor.wanted) else {
-                    continue;
-                };
-                if !cursor.found.contains(id) {
-                    let stamp = SourceStamp::of(&metadata);
-                    let revision = stamp.revision();
-                    self.extend_projection_reservation(
-                        reservation,
-                        &cursor.context,
-                        set_growth(&cursor.found, 1)
-                            + id.len()
-                            + deque_growth(&cursor.pending, 1)
-                            + located_item_bytes(
-                                id,
-                                "ok",
-                                Some((path.as_path(), revision.as_str())),
-                            )
-                            + vec_growth(&updates, 1)
-                            + id.len()
-                            + path.capacity(),
-                    )?;
-                    #[cfg(test)]
-                    self.locate_items.fetch_add(1, Ordering::Relaxed);
-                    let predicted = (
-                        deque_capacity_for(&cursor.pending, 1),
-                        vec_capacity_for(&updates, 1),
-                    );
-                    cursor.found.insert(id.to_owned());
-                    cursor.pending.push_back(json!({"session_id":id,"status":"ok","path":path.to_string_lossy().as_ref(),"revision":revision}));
-                    updates.push((id.to_owned(), path));
-                    assert_eq!((cursor.pending.capacity(), updates.capacity()), predicted);
-                }
-                continue;
-            }
-            let status = if cursor.exhausted {
-                "incomplete"
-            } else {
-                "missing"
-            };
-            self.queue_unfound_locations(&mut cursor, reservation, status)?;
+        cursor.query.page_bytes = 64;
+        {
+            let mut budget = CatalogBudget { store:self, context:&cursor.context, reservation:&mut *reservation,
+                attempt:self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0 };
+            cursor.query.drain(self, &cursor.context, &cursor.limits, cancel, &mut budget)?;
         }
+        if cursor.query.found.len() == cursor.query.ids.len() { cursor.query.finished = true; }
+        let page = if cursor.query.finished || !cursor.query.pending.is_empty()
+            || cursor.query.page_bytes >= MAX_DATA_BYTES || cursor.query.output.len() >= 1024 {
+            cursor.query.page()
+        } else {
+            let input = CatalogInput {
+                ids:cursor.request["session_ids"].as_array().expect("validated location ids"),
+                roots:cursor.request["roots"].as_array().expect("validated location roots"),
+            };
+            let CatalogResolution::Public { page, slot, reservation:mut held } =
+                self.catalog_access(input, &cursor.context, cancel, &mut cursor.limits, usage,
+                    CatalogMode::Public(&mut cursor.query))? else { unreachable!("public location result") };
+            cursor.catalog = Some(slot);
+            reservation.bytes += held.bytes;
+            held.bytes = 0;
+            page
+        };
         cancel.check(cursor.limits.deadline_unix_ms)?;
-        self.remember_locations(updates.iter().map(|(id, path)| (id, path)), &cursor.context);
-        drop(updates);
-        cancel.check(cursor.limits.deadline_unix_ms)?;
-        let complete = cursor.finished && cursor.pending.is_empty();
-        let data = json!({"kind":"located","sessions":output});
-        if complete {
-            return Ok((
-                data,
-                None,
-                cursor
-                    .exhausted
-                    .then(|| "bounded location incomplete".to_owned()),
-            ));
+        let data = json!({"kind":"located","sessions":page.sessions});
+        if page.complete {
+            return Ok((data, None, page.exhausted.then(|| "bounded location incomplete".to_owned())));
         }
         let mut state = self.lock_state();
         cancel.check(cursor.limits.deadline_unix_ms)?;
@@ -11713,6 +11366,7 @@ impl NativeStore {
 
 include!("snapshot_catalog.rs");
 include!("snapshot_catalog_owner.rs");
+include!("snapshot_catalog_locate.rs");
 include!("snapshot_prepared_service.rs");
 include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
@@ -11776,6 +11430,38 @@ mod tests {
     }
 
     include!("snapshot_catalog_tests.rs");
+    include!("snapshot_public_catalog_tests.rs");
+
+    #[test]
+    fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {
+        let source = Source::new("");
+        let outside = Source::new("");
+        std::os::unix::fs::symlink(&outside.path,source.directory.join("outside.jsonl")).unwrap();
+        let store = store();
+        let owner = context("public-physical-authority");
+        let request = public_catalog_request(&source,&["missing"]);
+        let (rows,_) = public_catalog_finish(&store,&request,&owner);
+        assert_eq!(rows[0]["status"].as_str(),Some("missing"));
+        let mut restricted = owner.clone();
+        restricted.insert("authority",json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+        let response = store.request(&request,&restricted,&Cancellation::default());
+        assert_eq!(response["status"].as_str(),Some("permission_denied"),"{response:?}");
+        assert!(response["data"].is_null());
+        assert!(response["cursor"].is_null());
+        store.assert_conserved();
+    }
+
+#[test]
+fn public_catalog_location_hints_use_bytes_instead_of_a_4096_count_limit() {
+    let store = store();
+    let owner = context("public-catalog-hints");
+    let entries: Vec<_> = (0..4587).map(|index| (format!("session-{index:04}"), PathBuf::from(format!("/locations/session-{index:04}.jsonl")))).collect();
+    store.remember_locations(entries.iter().map(|(id, path)| (id, path)), &owner);
+    assert_eq!(store.lock_state().locations.len(), 4587);
+    assert!(store.lock_state().locations.contains_key("session-0000"));
+    store.assert_conserved();
+}
+
 
     fn context(claimant: &str) -> Value {
         json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint()})
@@ -21559,12 +21245,9 @@ mod tests {
             assert_eq!(state.locations.len(), 4096);
         }
         let before = store.retained_work.load(Ordering::Relaxed);
-        store.remember_locations(
-            [("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))]
-                .iter()
-                .map(|(id, path)| (id, path)),
-            &owner,
-        );
+        assert!(store.lock_state().evict_oldest_location());
+        let entries = [("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))];
+        store.remember_locations(entries.iter().map(|(id, path)| (id, path)), &owner);
         {
             let state = store.lock_state();
             assert_eq!(state.locations.len(), 4096);

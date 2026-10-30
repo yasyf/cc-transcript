@@ -82,6 +82,10 @@ jobs:
       - name: Test owned transcript catalog operation counts on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
 
+      - name: Test public transcript catalog contracts on Linux
+        if: always()
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- public_catalog_
+
       - name: Generate native type stubs
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
@@ -125,6 +129,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test owned transcript catalog operation counts on macOS
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
+
+      - name: Test public transcript catalog contracts on macOS
+        if: always()
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- public_catalog_
 
   snapshot-wheel:
     runs-on: macos-15
