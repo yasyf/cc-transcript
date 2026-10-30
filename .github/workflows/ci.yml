@@ -84,7 +84,7 @@ jobs:
 
       - name: Test public transcript catalog contracts on Linux
         if: always()
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- public_catalog_
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- public_catalog_ --nocapture
 
       - name: Generate native type stubs
         env:
@@ -132,7 +132,7 @@ jobs:
 
       - name: Test public transcript catalog contracts on macOS
         if: always()
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- public_catalog_
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- public_catalog_ --nocapture
 
   snapshot-wheel:
     runs-on: macos-15
