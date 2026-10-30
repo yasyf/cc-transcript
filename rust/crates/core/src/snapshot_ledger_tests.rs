@@ -1542,13 +1542,23 @@ fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocat
     let (whole_handle, full) = acquired(&store, &source.path, &owner);
     let mut request = acquire(&source.path);
     request.insert("tail_bytes", json!(4096));
-    let response = drive(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    let response = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
     let tail_handle = ok_handle(&response);
     let tail = store.pin(&tail_handle, &owner).unwrap();
-    let (original, selected) = tail.chunks.iter().find_map(|selected| {
-        full.chunks.iter().find(|original| Arc::ptr_eq(&original.entries, &selected.entries))
-            .map(|original| (Arc::clone(original), Arc::clone(selected)))
-    }).expect("the overlapping views share rows");
+    let (original, selected) = tail
+        .chunks
+        .iter()
+        .find_map(|selected| {
+            full.chunks
+                .iter()
+                .find(|original| Arc::ptr_eq(&original.entries, &selected.entries))
+                .map(|original| (Arc::clone(original), Arc::clone(selected)))
+        })
+        .expect("the overlapping views share rows");
     assert!(!Arc::ptr_eq(&original, &selected));
     let rows = Arc::clone(&original.entries);
     let rows_bytes = NativeStore::audit_chunk_rows_bytes(&original.entries);
@@ -1560,7 +1570,10 @@ fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocat
     drop(tail);
     evict_unpinned(&store, &owner);
     store.assert_conserved();
-    assert_eq!(ledger(&store)[ENTRIES], rows_bytes + original_metadata + selected_metadata);
+    assert_eq!(
+        ledger(&store)[ENTRIES],
+        rows_bytes + original_metadata + selected_metadata
+    );
     drop(original);
     store.assert_conserved();
     assert_eq!(ledger(&store)[ENTRIES], rows_bytes + selected_metadata);
@@ -1590,20 +1603,33 @@ fn source_spine_escaped_allocation_audit_reads_live_fields() {
     {
         let mut state = store.lock_state();
         for key in keys {
-            state.escaped_chunks.get_mut(&key).unwrap().1.owned_capacity_bytes += 4096;
+            state
+                .escaped_chunks
+                .get_mut(&key)
+                .unwrap()
+                .1
+                .owned_capacity_bytes += 4096;
         }
     }
     assert_eq!(audited(&store)[ENTRIES], expected);
     {
         let mut state = store.lock_state();
         for key in keys {
-            state.escaped_chunks.get_mut(&key).unwrap().1.owned_capacity_bytes -= 4096;
+            state
+                .escaped_chunks
+                .get_mut(&key)
+                .unwrap()
+                .1
+                .owned_capacity_bytes -= 4096;
         }
     }
     store.assert_conserved();
     drop(chunk);
     store.assert_conserved();
-    assert_eq!(ledger(&store)[ENTRIES], NativeStore::audit_chunk_rows_bytes(&rows));
+    assert_eq!(
+        ledger(&store)[ENTRIES],
+        NativeStore::audit_chunk_rows_bytes(&rows)
+    );
     drop(rows);
     store.assert_conserved();
     assert_eq!(ledger(&store)[ENTRIES], 0);
@@ -1619,11 +1645,26 @@ fn source_spine_rewrite_discards_the_prior_byte_provenance_and_keeps_its_old_vie
     std::fs::write(&source.path, lines(200..400)).unwrap();
     let mut request = acquire(&source.path);
     request.insert("tail_bytes", json!(4096));
-    let response = drive(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    let response = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
     let selected = store.pin(&ok_handle(&response), &owner).unwrap();
     assert_eq!(original.entry(0).meta().unwrap().uuid, prior_first);
-    assert!(selected.entries().iter().all(|entry| entry.meta().unwrap().uuid.strip_prefix("event-").unwrap().parse::<usize>().unwrap() >= 200));
-    assert!(selected.chunks.iter().all(|fresh| original.chunks.iter().all(|old| !Arc::ptr_eq(&fresh.entries, &old.entries))));
+    assert!(selected.entries().iter().all(|entry| entry
+        .meta()
+        .unwrap()
+        .uuid
+        .strip_prefix("event-")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap()
+        >= 200));
+    assert!(selected.chunks.iter().all(|fresh| original
+        .chunks
+        .iter()
+        .all(|old| !Arc::ptr_eq(&fresh.entries, &old.entries))));
     store.assert_conserved();
 }
 

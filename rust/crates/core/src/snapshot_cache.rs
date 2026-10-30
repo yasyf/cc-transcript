@@ -136,7 +136,7 @@ impl StoreState {
     #[cfg(test)]
     fn clear_classified(&mut self) {
         loop {
-            let Some(key) = self.classified.keys().next().cloned() else { break; };
+            let Some(key) = self.classified.iter().next().map(|(key, _)| key.clone()) else { break; };
             let generation = self.classified.remove(&key).expect("classified alias");
             self.generations.get_mut(&generation).expect("classified generation").cached.as_mut().expect("cached owner").classified = None;
             self.release_unused_cached_generation(generation);
