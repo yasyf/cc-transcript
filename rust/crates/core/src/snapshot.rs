@@ -12628,6 +12628,102 @@ mod tests {
     }
 
     #[test]
+    fn windowed_alignment_reads_a_chunk_instead_of_the_whole_read_step() {
+        let source = Source::new(&format!(
+            "{}\n{}",
+            user("0").replace("hello", &"x".repeat(9 * 1024 * 1024)),
+            users(1..100)
+        ));
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("a");
+        let (base, start, first) = expected_window(&source.path, 4096);
+        assert!(base > 8 * 1024 * 1024);
+        assert!(base - start < 1024);
+        let mut request = windowed_acquire(&source.path, 4096);
+        request["limits"].insert("max_source_read_bytes", json!(32 * 1024 * 1024));
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+        let snapshot = store.pin(handle(&response), &owner).unwrap();
+        assert_eq!(snapshot.window_start, start);
+        assert_eq!(snapshot.committed_bytes, snapshot.stamp.size);
+        assert_eq!(uuids(&snapshot), (first..100).collect::<Vec<_>>());
+        assert_eq!(snapshot.activity.turn_count(), 100 - first);
+        let read = store.state.lock().unwrap().counters[1];
+        assert_eq!(read, snapshot.stamp.size - start + 128 + 64 * 1024);
+    }
+
+    #[test]
+    fn windowed_alignment_crosses_chunks_and_reaches_a_source_without_newlines() {
+        for prefix in [false, true] {
+            let source = Source::new(&format!(
+                "{}{}",
+                if prefix { users(0..2) } else { String::new() },
+                user("2").replace("hello", &"x".repeat(192 * 1024))
+            ));
+            let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_entry_bytes":256*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+            let owner = context("a");
+            let (base, start, _) = expected_window(&source.path, 1024);
+            assert!(base - start > 128 * 1024);
+            let response = windowed(&store, &source.path, 1024, &owner);
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            let snapshot = store.pin(handle(&response), &owner).unwrap();
+            assert_eq!(snapshot.window_start, start);
+            assert_eq!(uuids(&snapshot), vec![2]);
+            assert_eq!(snapshot.activity.turn_count(), 1);
+            assert_eq!(snapshot.committed_bytes, start);
+            let read = store.state.lock().unwrap().counters[1];
+            assert!(read <= snapshot.stamp.size - start + 128 + base - start + 64 * 1024);
+        }
+    }
+
+    #[test]
+    fn windowed_alignment_preserves_source_budget_and_cancellation_at_a_yield() {
+        let source = Source::new(&user("0").replace("hello", &"x".repeat(192 * 1024)));
+        let owner = context("a");
+        for cancel_next in [false, true] {
+            let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_entry_bytes":256*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+            let mut request = windowed_acquire(&source.path, 1024);
+            request["limits"].insert("max_source_read_bytes", json!(81));
+            let origin = store.request(&request, &owner, &Cancellation::default());
+            assert_eq!(origin["status"].as_str(), Some("incomplete"));
+            assert_eq!(origin["usage"]["source_bytes_read"].as_u64(), Some(64));
+            let resume = |reply: &Value| json!({"schema":SCHEMA,"id":"resume","operation":"resume","cursor":reply["cursor"]});
+            let aligned = store.request(&resume(&origin), &owner, &Cancellation::default());
+            assert_eq!(aligned["status"].as_str(), Some("incomplete"));
+            assert_eq!(aligned["usage"]["source_bytes_read"].as_u64(), Some(17));
+            let cancel = Cancellation::default();
+            if cancel_next {
+                cancel.cancel();
+            }
+            let stopped = store.request(&resume(&aligned), &owner, &cancel);
+            assert_eq!(
+                stopped["status"].as_str(),
+                Some(if cancel_next {
+                    "cancelled"
+                } else {
+                    "incomplete"
+                }),
+                "{stopped:?}"
+            );
+            assert_eq!(
+                stopped["reason"].as_str(),
+                Some(if cancel_next {
+                    "request cancelled"
+                } else {
+                    "source_read_limit"
+                })
+            );
+            assert_eq!(stopped["usage"]["source_bytes_read"].as_u64(), Some(0));
+            assert!(stopped["cursor"].is_null());
+            assert_eq!(store.state.lock().unwrap().counters[1], 81);
+        }
+    }
+
+    #[test]
     fn windowed_acquire_keeps_its_base_across_appends_and_reads_only_the_tail() {
         let source = Source::new(&users(0..200));
         let store = windowed_store();
