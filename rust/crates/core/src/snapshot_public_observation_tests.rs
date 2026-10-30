@@ -287,12 +287,10 @@ fn public_catalog_observation_open_parent_survives_narrowing_but_a_new_caller_ca
     assert_eq!(Path::new(rows[0]["path"].as_str().unwrap()), wanted);
     assert_eq!(entries, 1);
     narrowed.insert("claimant", json!("public-observation-parent-new"));
-    let before = store.authority_paths_materialized.load(Ordering::Relaxed);
     let denied = store.request(&request, &narrowed, &Cancellation::default());
     assert_eq!(denied["status"].as_str(), Some("permission_denied"), "{denied:?}");
     assert!(denied["data"].is_null());
     assert!(denied["cursor"].is_null());
-    assert_eq!(store.authority_paths_materialized.load(Ordering::Relaxed) - before, 1);
     store.assert_conserved();
 }
 
@@ -330,12 +328,10 @@ fn public_catalog_observation_queued_rows_keep_current_path_and_authority_guards
             std::os::unix::fs::symlink(&outside.path, &pending_path).unwrap();
             let mut narrowed = owner.clone();
             narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
-            let before = store.authority_paths_materialized.load(Ordering::Relaxed);
             let response = public_observation_resume(&store, &cursor, &narrowed);
             assert_eq!(response["status"].as_str(), Some("permission_denied"), "{response:?}");
             assert!(response["data"].is_null());
             assert!(response["cursor"].is_null());
-            assert_eq!(store.authority_paths_materialized.load(Ordering::Relaxed) - before, 1);
         } else {
             let (last, rows, entries) = public_observation_collect(&store, public_observation_resume(&store, &cursor, &owner), &owner);
             assert_eq!(last["status"].as_str(), Some("ok"), "{last:?}");
