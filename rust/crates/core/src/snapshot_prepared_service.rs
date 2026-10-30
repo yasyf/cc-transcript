@@ -1824,11 +1824,9 @@ impl NativeStore {
                 CatalogResolution::Ready { paths, reservation, certificate } => (paths, Some(reservation), certificate),
                 CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Checked(_) => unreachable!("synchronous catalog lookup"),
             }
-
         };
         let mut members = Vec::new();
         let mut seen = HashSet::new();
-        let mut dirs = ResolvedDirs::new(self, context);
         for path in ids
             .iter()
             .filter_map(Value::as_str)
@@ -1836,17 +1834,10 @@ impl NativeStore {
             .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
         {
             cancel.check(remaining.deadline_unix_ms)?;
-            let (canonical, metadata) = if context["authority"]["kind"].as_str() == Some("user") {
-                let resolved = dirs.resolve(&path)?;
-                self.authority(context, Some(&resolved.0))?;
-                resolved
-            } else {
-                let canonical = self.canonical_path(&path).map_err(io_error)?;
-                self.authority(context, Some(&canonical))?;
-                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-                self.after_source_resolved(&path);
-                (canonical, metadata)
-            };
+            let canonical = self.canonical_path(&path).map_err(io_error)?;
+            self.authority(context, Some(&canonical))?;
+            let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+            self.after_source_resolved(&path);
             if !metadata.is_file() {
                 return Err(invalid("registered source must be a file"));
             }
@@ -1951,10 +1942,6 @@ impl NativeStore {
             }
             examined += 1;
         }
-        if !dirs.hold(|| cancel.check(remaining.deadline_unix_ms))? {
-            return Err(SnapshotError::new(Status::Changed, "registered source parent changed during preparation"));
-        }
-        drop(dirs);
         if !self.catalog_membership_valid(certificate, request, context, cancel, remaining)? {
             return Err(SnapshotError::new(Status::Changed, "registered catalog changed during member preparation"));
         }
@@ -3132,7 +3119,7 @@ impl<'a> ResolvedDirs<'a> {
     fn resolve(&mut self, path: &Path) -> Result<(PathBuf, std::fs::Metadata), SnapshotError> {
         let resolved = match self.context["authority"]["kind"].as_str() {
             Some("user") => match std::fs::symlink_metadata(path).map_err(io_error)? {
-                metadata if metadata.is_symlink() || path.file_name().is_none() => self.exact(path)?,
+                metadata if metadata.is_symlink() => self.exact(path)?,
                 metadata => (self.memoized(path)?, metadata),
             },
             _ => self.exact(path)?,

@@ -540,44 +540,6 @@ fn registered_catalog_id_validation_preserves_the_first_error() {
 }
 
 #[test]
-fn registered_catalog_membership_batches_its_definitive_realpath_checks() {
-    let source = Source::new(&format!("{}\n", user("root")));
-    let ids: Vec<_> = (0..32).map(|index| format!("selected-{index:04}")).collect();
-    for id in &ids {
-        std::fs::write(source.directory.join(format!("{id}.jsonl")), format!("{}\n", user(id))).unwrap();
-    }
-    let mut measurements = Vec::new();
-    for restricted in [false, true] {
-        let store = store();
-        let mut owner = context("selected-realpaths");
-        if restricted {
-            owner.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
-        }
-        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
-        let mut request = catalog_missing_request(&source, &root, &ids);
-        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
-        let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
-        let mut remaining = limits(&request).unwrap();
-        let before = store.source_resolutions.load(Ordering::Relaxed);
-        let (membership, reservation) = store.build_warm_membership(&key, &request, &owner,
-            &Cancellation::default(), &mut [0;20], &mut remaining).unwrap();
-        let realpaths = store.source_resolutions.load(Ordering::Relaxed) - before;
-        eprintln!("membership_realpaths sources={} restricted={restricted} realpaths={realpaths}", ids.len());
-        measurements.push((restricted, realpaths));
-        assert!(membership.complete);
-        assert_eq!(membership.members.len(), ids.len());
-        for member in membership.members.iter() {
-            assert_eq!(member.path, std::fs::canonicalize(&member.path).unwrap());
-            assert_eq!(member.stamp, SourceStamp::of(&std::fs::metadata(&member.path).unwrap()));
-        }
-        drop(membership);
-        drop(reservation);
-        store.assert_conserved();
-    }
-    assert_eq!(measurements, vec![(false, 2), (true, 32)]);
-}
-
-#[test]
 fn registered_catalog_membership_rejects_a_directory_source() {
     let source = Source::new(&format!("{}\n", user("root")));
     let store = store();
