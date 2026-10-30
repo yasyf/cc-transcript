@@ -21310,4 +21310,6 @@ mod tests {
         assert_eq!(merged[14] - before[14], 128);
         assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
+    include!("snapshot_spine_tests.rs");
+
 }

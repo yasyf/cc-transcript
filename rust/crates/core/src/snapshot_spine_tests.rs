@@ -1,0 +1,80 @@
+#[test]
+fn source_spine_reuses_full_history_rows_for_a_tail_view() {
+    let source = Source::new(&users(0..600));
+    let store = windowed_store();
+    let owner = context("spine-full-tail");
+    let whole = finish_prepared(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let full = store.pin(handle(&whole), &owner).unwrap();
+    let before = store.state.lock().unwrap().counters;
+    let window = finish_prepared(&store, store.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
+    let tail = store.pin(handle(&window), &owner).unwrap();
+    let after = store.state.lock().unwrap().counters;
+    let (_, start, first) = expected_window(&source.path, 4096);
+    assert_eq!(tail.window_start, start);
+    assert_eq!(tail.entries().iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>(),
+        full.entries()[first..].iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>());
+    let read = after[1] - before[1];
+    assert!(read <= 8192, "full-to-tail source bytes={read}, limit=8192");
+    assert_eq!(after[4], before[4], "full-to-tail cold parses");
+    assert!(tail.chunks.iter().any(|selected| full.chunks.iter().any(|original| Arc::ptr_eq(&selected.entries, &original.entries))));
+    store.assert_conserved();
+}
+
+#[test]
+fn source_spine_reuses_rows_across_a_half_tail_quantum() {
+    let source = Source::new(&users(0..180));
+    let store = windowed_store();
+    let owner = context("spine-half-tail");
+    let first = finish_prepared(&store, store.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
+    let prior = store.pin(handle(&first), &owner).unwrap();
+    let original_size = std::fs::metadata(&source.path).unwrap().len();
+    let base = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).windowed(Some(4096)).identity.window_base;
+    let mut next = 180;
+    while SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).windowed(Some(4096)).identity.window_base == base {
+        source.append(&users(next..next + 1));
+        next += 1;
+        assert!(next < 220);
+    }
+    let appended = std::fs::metadata(&source.path).unwrap().len() - original_size;
+    let before = store.state.lock().unwrap().counters;
+    let second = finish_prepared(&store, store.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
+    let current = store.pin(handle(&second), &owner).unwrap();
+    let after = store.state.lock().unwrap().counters;
+    let (_, start, first_event) = expected_window(&source.path, 4096);
+    assert_eq!(current.window_start, start);
+    assert_eq!(current.event_count, next - first_event);
+    let read = after[1] - before[1];
+    assert!(read <= appended + 4096, "half-quantum source bytes={read}, appended={appended}, overlap limit=4096");
+    assert_eq!(after[4], before[4], "half-quantum cold parses");
+    assert!(current.chunks.iter().any(|selected| prior.chunks.iter().any(|original| Arc::ptr_eq(&selected.entries, &original.entries))));
+    store.assert_conserved();
+}
+
+#[test]
+fn source_spine_tail_matches_a_cold_parse_with_skipped_lines_and_a_provisional_tail() {
+    for provisional in [false, true] {
+        let mut text = (0..300).map(|index| format!("\nnot-json\n{}", users(index..index + 1))).collect::<String>();
+        if provisional { text.pop(); }
+        let source = Source::new(&text);
+        let store = windowed_store();
+        let reference = windowed_store();
+        let owner = context("spine-skipped-lines");
+        let whole = finish_prepared(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let _full = store.pin(handle(&whole), &owner).unwrap();
+        let expected = finish_prepared(&reference, reference.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
+        let before = store.state.lock().unwrap().counters;
+        let actual = finish_prepared(&store, store.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
+        let cold = reference.pin(handle(&expected), &owner).unwrap();
+        let reused = store.pin(handle(&actual), &owner).unwrap();
+        assert_eq!(reused.window_start, cold.window_start);
+        assert_eq!(reused.committed_bytes, cold.committed_bytes);
+        assert_eq!(reused.provisional_tail, cold.provisional_tail);
+        assert_eq!(reused.entries().iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>(),
+            cold.entries().iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>());
+        let after = store.state.lock().unwrap().counters;
+        let read = after[1] - before[1];
+        assert!(read <= 8192, "skipped/provisional source bytes={read}, limit=8192, provisional={provisional}");
+        store.assert_conserved();
+        reference.assert_conserved();
+    }
+}
