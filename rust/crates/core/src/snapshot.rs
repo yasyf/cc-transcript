@@ -7172,6 +7172,7 @@ impl NativeStore {
                         value_bytes(context),
                     )?;
                     build.context = context.clone();
+                    build.context_bytes = value_bytes(&build.context);
                     return self.registered_graph_step(
                         cursor,
                         build,
@@ -8808,6 +8809,7 @@ impl NativeStore {
                 let fence = std::mem::take(&mut load.prefix_fence);
                 if fence == prior_fence {
                     if previous.stamp.identity.window_base != slot.stamp.identity.window_base {
+                        load.file.seek(SeekFrom::Start(load.offset)).map_err(io_error)?;
                         load.prefix_checked = true;
                         return Ok(());
                     }

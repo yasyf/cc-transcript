@@ -85,3 +85,26 @@ fn source_spine_tail_matches_a_cold_parse_with_skipped_lines_and_a_provisional_t
         reference.assert_conserved();
     }
 }
+
+#[test]
+fn source_spine_expands_a_tail_view_to_complete_history() {
+    let source = Source::new(&users(0..200));
+    let store = windowed_store();
+    let owner = context("spine-tail-full");
+    let window = finish_prepared(&store, store.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
+    let tail = store.pin(handle(&window), &owner).unwrap();
+    let mut request = acquire(&source.path);
+    request["limits"].insert("max_events", json!(4096));
+    let whole = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    let full = store.pin(handle(&whole), &owner).unwrap();
+    assert_eq!(full.window_start, 0);
+    assert_eq!(full.event_count, 200);
+    assert_ne!(handle(&whole)["snapshot_id"], handle(&window)["snapshot_id"]);
+    let (_, start, first) = expected_window(&source.path, 4096);
+    assert_eq!(tail.window_start, start);
+    assert_eq!(tail.entries().iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>(),
+        full.entries()[first..].iter().map(|entry| entry.meta().unwrap().uuid.as_str()).collect::<Vec<_>>());
+    let repeated = finish_prepared(&store, store.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
+    assert_eq!(handle(&repeated)["snapshot_id"], handle(&window)["snapshot_id"]);
+    store.assert_conserved();
+}

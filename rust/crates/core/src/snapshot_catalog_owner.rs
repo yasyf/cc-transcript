@@ -19,7 +19,51 @@ impl Charge<String> for Arc<CatalogSlot> {
     }
 }
 
-enum CatalogMode { Index, Locate }
+struct CatalogProbe {
+    chunks: Vec<HashSet<String>>,
+    next_id: usize,
+    use_hints: bool,
+    epoch: u64,
+    invalid_chunk: Option<usize>,
+    owned_bytes: usize,
+}
+
+impl CatalogProbe {
+    fn new(store: &NativeStore, ids: &[Value], chunk_size: usize, context: &Value,
+        reservation: &mut ProjectionReservation<'_>) -> Result<Self, SnapshotError> {
+        if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
+        NativeStore::validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?;
+        let count = ids.len().div_ceil(chunk_size);
+        store.extend_projection_reservation(reservation, context,
+            count * size_of::<HashSet<String>>()
+                + ids.chunks(chunk_size).map(|chunk| set_growth(&HashSet::<String>::new(), chunk.len())).sum::<usize>()
+                + ids.iter().filter_map(Value::as_str).map(str::len).sum::<usize>())?;
+        let mut chunks = Vec::with_capacity(count);
+        let mut owned_bytes = chunks.capacity() * size_of::<HashSet<String>>();
+        let mut invalid_chunk = None;
+        for (index, chunk) in ids.chunks(chunk_size).enumerate() {
+            let mut wanted = HashSet::with_capacity(chunk.len());
+            for value in chunk {
+                let Some(id) = value.as_str().filter(|id| !id.is_empty() && id.len() <= 256) else {
+                    invalid_chunk = Some(index); break;
+                };
+                if !wanted.insert(id.to_owned()) { invalid_chunk = Some(index); break; }
+            }
+            if invalid_chunk == Some(0) { return Err(invalid("invalid or duplicate session id")); }
+            owned_bytes += wanted.capacity() * size_of::<String>() + wanted.iter().map(String::capacity).sum::<usize>();
+            chunks.push(wanted);
+            if invalid_chunk.is_some() { break; }
+        }
+        Ok(Self { chunks, next_id: 0, use_hints: true, epoch: 0, invalid_chunk, owned_bytes })
+    }
+}
+
+struct CatalogInput<'a> {
+    ids: &'a [Value],
+    roots: &'a [Value],
+}
+
+enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate }
 
 enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending }
 
@@ -36,6 +80,9 @@ struct RegisteredBuild {
     claimant: String,
     request: Value,
     context: Value,
+    request_bytes: usize,
+    context_bytes: usize,
+    probe: CatalogProbe,
     root: Arc<TranscriptSnapshot>,
     catalog: Option<Arc<CatalogSlot>>,
     remaining: WorkLimits,
@@ -49,22 +96,66 @@ impl Charge<String> for RegisteredBuild {
 
     fn charge(&self) -> usize {
         size_of::<Self>() + self.claimant.capacity()
-            + value_bytes(&self.request) + value_bytes(&self.context)
+            + self.request_bytes + self.context_bytes + self.probe.owned_bytes
+    }
+}
+
+fn catalog_canonical_scratch(value: &Value) -> usize {
+    if let Some(object) = value.as_object() {
+        let entries = object.len() * size_of::<(&str, &Value)>();
+        map_growth(&HashMap::<&str, &Value>::new(), object.len()) + entries
+            + object.iter().map(|(_, value)| catalog_canonical_scratch(value)).max().unwrap_or(0)
+    } else if let Some(array) = value.as_array() {
+        array.iter().map(catalog_canonical_scratch).max().unwrap_or(0)
+    } else {
+        0
     }
 }
 
 impl NativeStore {
-    fn catalog_paths<'a>(
+    fn validate_catalog_chunk(ids: &[Value]) -> Result<(), SnapshotError> {
+        for (index, value) in ids.iter().enumerate() {
+            let id = value.as_str().ok_or_else(|| invalid("invalid session id"))?;
+            if id.is_empty() || id.len() > 256 || ids[..index].iter().any(|prior| prior.as_str() == Some(id)) {
+                return Err(invalid("invalid or duplicate session id"));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_key<'a>(
         &'a self,
-        request: &Value,
+        roots: &[Value],
+        context: &Value,
+    ) -> Result<(String, ProjectionReservation<'a>), SnapshotError> {
+        let wrapper_scratch = map_growth(&HashMap::<&str, &Value>::new(), 2)
+            + 2 * size_of::<(&str, &Value)>();
+        let scratch = wrapper_scratch + catalog_canonical_scratch(&context["authority"])
+            .max(roots.iter().map(catalog_canonical_scratch).max().unwrap_or(0));
+        let mut reservation = self.reserve_projection(context,
+            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
+                + 2 * (roots.len() * size_of::<Value>() + roots.iter().map(value_bytes).sum::<usize>()) + 1024 + scratch)?;
+        let binding = json!({"authority":context["authority"],"roots":roots});
+        let bytes = crate::ids::canonical_json_size(&binding).map_err(invalid)?;
+        self.extend_projection_reservation(&mut reservation, context, bytes)?;
+        self.before_decode("catalog_key");
+        let mut encoded = String::with_capacity(bytes);
+        crate::ids::write_canonical(&binding, &mut encoded).map_err(invalid)?;
+        assert_eq!(encoded.len(), bytes, "canonical catalog key size");
+        assert_eq!(encoded.capacity(), bytes, "canonical catalog key capacity");
+        Ok((format!("{:x}", Sha256::digest(encoded.as_bytes())), reservation))
+    }
+
+    fn catalog_access<'a>(
+        &'a self,
+        input: CatalogInput<'_>,
         context: &Value,
         cancel: &Cancellation,
         remaining: &mut WorkLimits,
         usage: &mut [u64; 20],
-        mode: CatalogMode,
+        mut mode: CatalogMode<'_>,
     ) -> Result<CatalogResolution<'a>, SnapshotError> {
-        let ids = request["thread_ids"].as_array().ok_or_else(|| invalid("missing registered thread ids"))?;
-        let roots = request["roots"].as_array().ok_or_else(|| invalid("missing registered roots"))?;
+        let CatalogInput { ids, roots } = input;
         if ids.is_empty() {
             return Ok(CatalogResolution::Ready { paths: HashMap::new(), reservation: ProjectionReservation { store: self, bytes: 0 } });
         }
@@ -73,22 +164,8 @@ impl NativeStore {
         }
         let chunk_size = 1024.min(remaining.max_items);
         if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
-        for chunk in ids.chunks(chunk_size) {
-            for (index, id) in chunk.iter().enumerate() {
-                let id = id.as_str().ok_or_else(|| invalid("invalid session id"))?;
-                if id.is_empty() || id.len() > 256
-                    || chunk[..index].iter().any(|prior| prior.as_str() == Some(id))
-                {
-                    return Err(invalid("invalid or duplicate session id"));
-                }
-            }
-        }
-        let mut reservation = self.reserve_projection(context,
-            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
-                + 2 * value_bytes(&request["roots"]) + 1024)?;
-        let binding = json!({"authority":context["authority"],"roots":request["roots"]});
-        let binding = crate::ids::canonical_json(&binding).map_err(|error| invalid(error.to_string()))?;
-        let key = format!("{:x}", Sha256::digest(binding.as_bytes()));
+        if matches!(mode, CatalogMode::Locate) { Self::validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?; }
+        let (key, mut reservation) = self.catalog_key(roots, context)?;
         let slot = {
             let mut state = self.lock_state();
             if let Some(slot) = state.catalogs.get(&key) {
@@ -142,33 +219,62 @@ impl NativeStore {
                 catalog = Some(SourceCatalog::new(self, roots, context, &mut budget)?);
             }
             let catalog = catalog.as_mut().expect("source catalog");
-            catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-            loop {
-                if catalog.ready_for(self, ids, chunk_size, context, cancel,
-                    remaining.deadline_unix_ms, &mut budget)? { break; }
-                let before = usage[17];
-                catalog.advance(self, cancel, remaining.deadline_unix_ms,
-                    self.config.event_step.min(remaining.max_discovery_entries), usage, &mut budget)?;
-                remaining.max_discovery_entries = remaining.max_discovery_entries
-                    .saturating_sub((usage[17] - before) as usize);
-                catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-                if catalog.ready_for(self, ids, chunk_size, context, cancel,
-                    remaining.deadline_unix_ms, &mut budget)? { break; }
-                if remaining.max_discovery_entries == 0 {
-                    return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete"));
-                }
-                if matches!(mode, CatalogMode::Index) {
+            match &mut mode {
+                CatalogMode::Index(probe) => {
+                    catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
+                    let before = usage[17];
+                    catalog.advance(self, cancel, remaining.deadline_unix_ms,
+                        self.config.event_step.min(remaining.max_discovery_entries), usage, &mut budget)?;
+                    remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
+                    catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
+                    if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }
                     return Ok(CatalogWorkResult::Pending);
                 }
+                CatalogMode::Locate => {}
             }
-            if matches!(mode, CatalogMode::Index) { return Ok(CatalogWorkResult::Indexed); }
             let mut paths = HashMap::new();
+            let mut plan = None;
+            let mut plan_epoch = 0;
             for chunk in ids.chunks(chunk_size) {
-                let located = catalog.locate(self, chunk, context, cancel,
-                    remaining.deadline_unix_ms, &mut budget)?;
-                self.remember_locations(located.iter(), context);
-                budget.reserve(map_growth(&paths, located.len()))?;
-                paths.extend(located);
+                Self::validate_catalog_chunk(chunk)?;
+                let mut probe = CatalogProbe::new(self, chunk, chunk.len(), context, budget.reservation)?;
+                loop {
+                    catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    if plan_epoch != catalog.epoch { plan = None; }
+                    if catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) {
+                        if plan.is_none() {
+                            catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                            if !catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) { continue; }
+                            catalog.sync_routes(&mut budget)?;
+                            plan = Some(catalog.read_plan(cancel, remaining.deadline_unix_ms, &mut budget)?);
+                            plan_epoch = catalog.epoch;
+                        }
+                        if let Some(located) = catalog.try_locate(self, chunk, context, cancel,
+                            remaining.deadline_unix_ms, plan.as_ref().expect("catalog read plan"), &mut budget)?
+                        {
+                            self.remember_locations(located.iter(), context);
+                            budget.reserve(map_growth(&paths, located.len()))?;
+                            paths.extend(located);
+                            break;
+                        }
+                    }
+                    plan = None;
+                    probe.use_hints = false;
+                    probe.next_id = 0;
+                    let before = usage[17];
+                    catalog.advance(self, cancel, remaining.deadline_unix_ms,
+                        self.config.event_step.min(remaining.max_discovery_entries), usage, &mut budget)?;
+                    remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
+                    if remaining.max_discovery_entries == 0 && !catalog.complete {
+                        return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete"));
+                    }
+                }
+            }
+            catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+            if plan_epoch != catalog.epoch {
+                return Err(SnapshotError::new(Status::Changed, "registered catalog changed during lookup"));
             }
             cancel.check(remaining.deadline_unix_ms)?;
             Ok(CatalogWorkResult::Paths(paths))
@@ -213,6 +319,8 @@ impl NativeStore {
     fn audit_registered_build_bytes(key: &String, build: &RegisteredBuild) -> usize {
         key.capacity() + size_of::<RegisteredBuild>() + build.claimant.capacity()
             + value_bytes(&build.request) + value_bytes(&build.context)
+            + build.probe.chunks.capacity() * size_of::<HashSet<String>>()
+            + build.probe.chunks.iter().map(|chunk| chunk.capacity() * size_of::<String>() + chunk.iter().map(String::capacity).sum::<usize>()).sum::<usize>()
     }
 
     fn prepare_graph(
@@ -236,11 +344,16 @@ impl NativeStore {
         let mut reservation = self.reserve_projection(context,
             size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
                 + str_field(context, "claimant")?.len())?;
-        let build = RegisteredBuild {
+        let probe = CatalogProbe::new(self, ids, 1024.min(remaining.max_items), context, &mut reservation)?;
+        let mut build = RegisteredBuild {
             claimant: str_field(context, "claimant")?.to_owned(),
-            request: request.clone(), context: context.clone(), root: scope.snapshot, catalog: None,
+            request: request.clone(), context: context.clone(),
+            request_bytes: 0, context_bytes: 0, probe,
+            root: scope.snapshot, catalog: None,
             remaining, expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
         };
+        build.request_bytes = value_bytes(&build.request);
+        build.context_bytes = value_bytes(&build.context);
         self.registered_graph_step(&self.token("registered-build"), build, &mut reservation, cancel, usage)
     }
 
@@ -256,8 +369,10 @@ impl NativeStore {
         {
             return Err(SnapshotError::new(Status::Changed, "prepared graph root generation changed"));
         }
-        match self.catalog_paths(&build.request, &build.context, cancel,
-            &mut build.remaining, usage, CatalogMode::Index)?
+        match self.catalog_access(CatalogInput {
+            ids: build.request["thread_ids"].as_array().expect("validated registered ids"),
+            roots: build.request["roots"].as_array().expect("validated registered roots"),
+        }, &build.context, cancel, &mut build.remaining, usage, CatalogMode::Index(&mut build.probe))?
         {
             CatalogResolution::Indexed => {
                 self.extend_projection_reservation(reservation, &build.context,
