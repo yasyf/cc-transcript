@@ -117,12 +117,13 @@ fn public_catalog_review_external_target_replacement_rewinds_its_generation() {
         let slot = state.catalogs.values().next().expect("warm catalog");
         let cell = slot.cell.lock().unwrap();
         let CatalogCell::Idle(catalog) = &*cell else { panic!("warm catalog is not idle"); };
-        catalog.directories.values().find_map(|node| {
+        let observed = catalog.directories.values().find_map(|node| {
             node.symlinks.iter().copied().find(|index| *index > 0).map(|index| {
                 let edge = &node.edges[index];
                 (index,edge.name.clone(),edge.binding.canonical.as_ref().unwrap().clone(),edge.binding.stamp.unwrap())
             })
-        }).expect("at least one of two observed symlinks must have a nonzero edge index")
+        }).expect("at least one of two observed symlinks must have a nonzero edge index");
+        observed
     };
     assert!(edge_index > 0);
     let parent_before = SourceStamp::of(&std::fs::metadata(&source.directory).unwrap());

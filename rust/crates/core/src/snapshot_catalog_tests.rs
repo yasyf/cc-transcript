@@ -406,7 +406,7 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
         budget.reserve("injected transient I/O".len() + vec_growth(&catalog.retry_issues, 1)).unwrap();
         let node = catalog.directories.get_mut(&identity).unwrap();
         let before = node.owned_bytes();
-        node.scan = CatalogScan::Issue { status: Status::Changed, reason: "injected transient I/O".to_owned(), position: 0, attempt: 1, scratch_bytes:0 };
+        node.scan = CatalogScan::Issue { status: Status::Changed, reason: "injected transient I/O".to_owned(), position: 0, attempt: 1 };
         catalog.directory_bytes = catalog.directory_bytes - before + node.owned_bytes();
         catalog.retry_issues.push(identity);
         catalog.record_issue(identity, 0);
@@ -456,7 +456,7 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
             let before = node.owned_bytes();
             node.edges.clear(); node.directories.clear(); node.symlinks.clear(); node.issues.clear();
             node.payload_bytes = 0;
-            node.scan = CatalogScan::Issue { status: Status::Changed, reason: "transient retry".to_owned(), position: 0, attempt: 1, scratch_bytes:0 };
+            node.scan = CatalogScan::Issue { status: Status::Changed, reason: "transient retry".to_owned(), position: 0, attempt: 1 };
             catalog.directory_bytes = catalog.directory_bytes - before + node.owned_bytes();
             catalog.retry_issues.push(*identity);
             catalog.record_issue(*identity, 0);

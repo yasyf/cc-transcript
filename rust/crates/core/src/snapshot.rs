@@ -10951,11 +10951,11 @@ impl NativeStore {
         self.locate_step(&token, cursor, &mut reservation, cancel, usage)
     }
 
-    fn locate_step(
-        &self,
+    fn locate_step<'a>(
+        &'a self,
         token: &str,
         mut cursor: LocateCursor,
-        reservation: &mut ProjectionReservation<'_>,
+        reservation: &mut ProjectionReservation<'a>,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
