@@ -1,3 +1,20 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CatalogCertificate {
+    scope: [u8; 64],
+    incarnation: u64,
+    revision: u64,
+}
+
+impl CatalogCertificate {
+    fn matches(&self, catalog: &SourceCatalog) -> bool {
+        self.incarnation == catalog.incarnation && self.revision == catalog.decision_revision
+    }
+
+    fn key(&self) -> &str {
+        std::str::from_utf8(&self.scope).expect("catalog scope digest")
+    }
+}
+
 enum CatalogCell {
     Empty,
     Idle(SourceCatalog),
@@ -61,15 +78,17 @@ struct CatalogInput<'a> {
     roots: &'a [Value],
 }
 
-enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate }
+enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Check(CatalogCertificate) }
 
-enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending }
+enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>, CatalogCertificate), Checked(bool), Pending }
 
 enum CatalogResolution<'a> {
     Indexed,
+    Checked(bool),
     Ready {
         paths: HashMap<String, PathBuf>,
         reservation: ProjectionReservation<'a>,
+        certificate: Option<CatalogCertificate>,
     },
     Pending(Arc<CatalogSlot>),
 }
@@ -178,7 +197,7 @@ impl NativeStore {
     ) -> Result<CatalogResolution<'a>, SnapshotError> {
         let CatalogInput { ids, roots } = input;
         if ids.is_empty() {
-            return Ok(CatalogResolution::Ready { paths: HashMap::new(), reservation: ProjectionReservation { store: self, bytes: 0 } });
+            return Ok(CatalogResolution::Ready { paths: HashMap::new(), reservation: ProjectionReservation { store: self, bytes: 0 }, certificate: None });
         }
         if roots.is_empty() || roots.len() > 64 {
             return Err(invalid("invalid root count"));
@@ -253,11 +272,16 @@ impl NativeStore {
                     if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }
                     return Ok(CatalogWorkResult::Pending);
                 }
+                CatalogMode::Check(expected) => {
+                    catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    return Ok(CatalogWorkResult::Checked(expected.key() == key && expected.matches(catalog)));
+                }
                 CatalogMode::Locate => {}
             }
             let mut paths = HashMap::new();
             let mut plan = None;
             let mut plan_epoch = 0;
+            let mut selected_revision = None;
             for chunk in ids.chunks(chunk_size) {
                 self.validate_catalog_chunk(chunk)?;
                 budget.reserve(CatalogProbe::allocation_bound(chunk, chunk.len()))?;
@@ -276,6 +300,10 @@ impl NativeStore {
                         if let Some(located) = catalog.try_locate(self, chunk, context, cancel,
                             remaining.deadline_unix_ms, plan.as_ref().expect("catalog read plan"), &mut budget)?
                         {
+                            if selected_revision.is_some_and(|revision| revision != catalog.decision_revision) {
+                                return Err(SnapshotError::new(Status::Changed, "registered catalog changed during selection"));
+                            }
+                            selected_revision = Some(catalog.decision_revision);
                             self.remember_locations(located.iter(), context);
                             budget.reserve(map_growth(&paths, located.len()))?;
                             paths.extend(located);
@@ -295,11 +323,15 @@ impl NativeStore {
                 }
             }
             catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-            if plan_epoch != catalog.epoch {
+            if plan_epoch != catalog.epoch || selected_revision != Some(catalog.decision_revision) {
                 return Err(SnapshotError::new(Status::Changed, "registered catalog changed during lookup"));
             }
             cancel.check(remaining.deadline_unix_ms)?;
-            Ok(CatalogWorkResult::Paths(paths))
+            Ok(CatalogWorkResult::Paths(paths, CatalogCertificate {
+                scope: key.as_bytes().try_into().expect("catalog scope digest size"),
+                incarnation: catalog.incarnation,
+                revision: catalog.decision_revision,
+            }))
         })();
         {
             let mut state = self.lock_state();
@@ -318,7 +350,8 @@ impl NativeStore {
         }
         self.fact_read_released.notify_all();
         match outcome? {
-            CatalogWorkResult::Paths(paths) => Ok(CatalogResolution::Ready { paths, reservation }),
+            CatalogWorkResult::Paths(paths, certificate) => Ok(CatalogResolution::Ready { paths, reservation, certificate: Some(certificate) }),
+            CatalogWorkResult::Checked(valid) => Ok(CatalogResolution::Checked(valid)),
             CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
             CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
         }
@@ -388,7 +421,7 @@ impl NativeStore {
                 drop(scope);
                 self.prepare_graph_ready(request, context, cancel, usage, remaining)
             }
-            CatalogResolution::Ready { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) => unreachable!("catalog indexing does not materialize paths"),
             CatalogResolution::Pending(slot) => {
                 self.extend_projection_reservation(&mut reservation, context,
                     size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
@@ -427,7 +460,7 @@ impl NativeStore {
             CatalogResolution::Indexed => {
                 self.prepare_graph_ready(&build.request, &build.context, cancel, usage, build.remaining)
             }
-            CatalogResolution::Ready { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) => unreachable!("catalog indexing does not materialize paths"),
             CatalogResolution::Pending(slot) => self.retain_registered_build(token, build, slot, reservation),
         }
     }

@@ -696,3 +696,105 @@ fn registered_catalog_negative_lookup_observes_a_nested_source_creation() {
     assert_eq!(fresh.members[0].path, std::fs::canonicalize(path).unwrap());
     store.assert_conserved();
 }
+
+#[test]
+fn registered_catalog_membership_certificate_survives_reads_and_same_file_appends() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let path = source.directory.join("wanted.jsonl");
+    std::fs::write(&path, format!("{}\n", user("first"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-stability");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let initial = catalog_cached_membership(&store, &request, &owner, true);
+    let unchanged = catalog_cached_membership(&store, &request, &owner, true);
+    assert!(initial.catalog.is_some());
+    assert_eq!(initial.catalog, unchanged.catalog);
+    assert!(Arc::ptr_eq(&initial.members, &unchanged.members));
+    std::fs::OpenOptions::new().append(true).open(&path).unwrap()
+        .write_all(format!("{}\n", user("second")).as_bytes()).unwrap();
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let mut usage = [0; 20];
+    let (fresh, mut reservation) = store.registered_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut usage, &mut remaining, true).unwrap();
+    store.publish_warm_membership(&key, &fresh, &owner, reservation.as_mut()).unwrap();
+    drop(reservation);
+    assert_eq!(usage[17], 0);
+    assert_eq!(initial.catalog, fresh.catalog);
+    assert_ne!(initial.revision, fresh.revision);
+    assert!(fresh.members[0].stamp.size > initial.members[0].stamp.size);
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_does_not_pin_eviction_or_accept_a_recreated_catalog() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    std::fs::write(source.directory.join("wanted.jsonl"), format!("{}\n", user("wanted"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-incarnation");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let initial = catalog_cached_membership(&store, &request, &owner, true);
+    let certificate = initial.catalog.unwrap();
+    let weak = {
+        let mut state = store.lock_state();
+        let slot = state.catalogs.get(certificate.key()).unwrap();
+        assert_eq!(Arc::strong_count(slot), 1);
+        let weak = Arc::downgrade(slot);
+        drop(state.remove_catalog(certificate.key()).unwrap());
+        weak
+    };
+    assert!(weak.upgrade().is_none());
+    let fresh = catalog_cached_membership(&store, &request, &owner, false);
+    assert_eq!(initial.revision, fresh.revision);
+    assert_ne!(certificate.incarnation, fresh.catalog.unwrap().incarnation);
+    let mut remaining = limits(&request).unwrap();
+    assert!(!store.catalog_membership_valid(Some(certificate), &request, &owner,
+        &Cancellation::default(), &mut remaining).unwrap());
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_cannot_publish_after_its_catalog_is_removed() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    std::fs::write(source.directory.join("wanted.jsonl"), format!("{}\n", user("wanted"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-publication");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let (membership, mut reservation) = store.build_warm_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining).unwrap();
+    drop(store.lock_state().remove_catalog(membership.catalog.unwrap().key()).unwrap());
+    let result = store.publish_warm_membership(&key, &membership, &owner, Some(&mut reservation));
+    assert!(matches!(result, Err(error) if error.status == Status::Changed));
+    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    drop(reservation);
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_certificate_validation_honors_cancellation() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    std::fs::write(source.directory.join("wanted.jsonl"), format!("{}\n", user("wanted"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-cancellation");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let membership = catalog_cached_membership(&store, &request, &owner, true);
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    let mut remaining = limits(&request).unwrap();
+    let result = store.catalog_membership_valid(membership.catalog, &request, &owner, &cancel, &mut remaining);
+    assert!(matches!(result, Err(error) if error.status == Status::Cancelled));
+    let mut remaining = limits(&request).unwrap();
+    assert!(store.catalog_membership_valid(membership.catalog, &request, &owner,
+        &Cancellation::default(), &mut remaining).unwrap());
+    store.assert_conserved();
+}
