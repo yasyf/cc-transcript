@@ -6,7 +6,6 @@ enum CatalogCell {
 
 struct CatalogSlot {
     cell: Mutex<CatalogCell>,
-    released: Condvar,
     accounted: AtomicUsize,
 }
 
@@ -64,9 +63,9 @@ struct CatalogInput<'a> {
     roots: &'a [Value],
 }
 
-enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Public(&'a mut CatalogLocateQuery) }
+enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate }
 
-enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending, Public(CatalogLocatePage) }
+enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending }
 
 enum CatalogResolution<'a> {
     Indexed,
@@ -75,7 +74,6 @@ enum CatalogResolution<'a> {
         reservation: ProjectionReservation<'a>,
     },
     Pending(Arc<CatalogSlot>),
-    Public { page: CatalogLocatePage, slot: Arc<CatalogSlot>, reservation: ProjectionReservation<'a> },
 }
 
 struct RegisteredBuild {
@@ -102,6 +100,18 @@ impl Charge<String> for RegisteredBuild {
     }
 }
 
+fn catalog_canonical_scratch(value: &Value) -> usize {
+    if let Some(object) = value.as_object() {
+        let entries = object.len() * size_of::<(&str, &Value)>();
+        map_growth(&HashMap::<&str, &Value>::new(), object.len()) + entries
+            + object.iter().map(|(_, value)| catalog_canonical_scratch(value)).max().unwrap_or(0)
+    } else if let Some(array) = value.as_array() {
+        array.iter().map(catalog_canonical_scratch).max().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
 impl NativeStore {
     fn validate_catalog_chunk(ids: &[Value]) -> Result<(), SnapshotError> {
         for (index, value) in ids.iter().enumerate() {
@@ -111,6 +121,29 @@ impl NativeStore {
             }
         }
         Ok(())
+    }
+
+    fn catalog_key<'a>(
+        &'a self,
+        roots: &[Value],
+        context: &Value,
+    ) -> Result<(String, ProjectionReservation<'a>), SnapshotError> {
+        let wrapper_scratch = map_growth(&HashMap::<&str, &Value>::new(), 2)
+            + 2 * size_of::<(&str, &Value)>();
+        let scratch = wrapper_scratch + catalog_canonical_scratch(&context["authority"])
+            .max(roots.iter().map(catalog_canonical_scratch).max().unwrap_or(0));
+        let mut reservation = self.reserve_projection(context,
+            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
+                + 2 * (roots.len() * size_of::<Value>() + roots.iter().map(value_bytes).sum::<usize>()) + 1024 + scratch)?;
+        let binding = json!({"authority":context["authority"],"roots":roots});
+        let bytes = crate::ids::canonical_json_size(&binding).map_err(invalid)?;
+        self.extend_projection_reservation(&mut reservation, context, bytes)?;
+        self.before_decode("catalog_key");
+        let mut encoded = String::with_capacity(bytes);
+        crate::ids::write_canonical(&binding, &mut encoded).map_err(invalid)?;
+        assert_eq!(encoded.len(), bytes, "canonical catalog key size");
+        assert_eq!(encoded.capacity(), bytes, "canonical catalog key capacity");
+        Ok((format!("{:x}", Sha256::digest(encoded.as_bytes())), reservation))
     }
 
     fn catalog_access<'a>(
@@ -132,12 +165,7 @@ impl NativeStore {
         let chunk_size = 1024.min(remaining.max_items);
         if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
         if matches!(mode, CatalogMode::Locate) { Self::validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?; }
-        let mut reservation = self.reserve_projection(context,
-            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
-                + 2 * (roots.len() * size_of::<Value>() + roots.iter().map(value_bytes).sum::<usize>()) + 1024)?;
-        let binding = json!({"authority":context["authority"],"roots":roots});
-        let binding = crate::ids::canonical_json(&binding).map_err(|error| invalid(error.to_string()))?;
-        let key = format!("{:x}", Sha256::digest(binding.as_bytes()));
+        let (key, mut reservation) = self.catalog_key(roots, context)?;
         let slot = {
             let mut state = self.lock_state();
             if let Some(slot) = state.catalogs.get(&key) {
@@ -150,7 +178,6 @@ impl NativeStore {
                 self.extend_projection_reservation_in(&mut state, &mut reservation, context, additional)?;
                 let slot = Arc::new(CatalogSlot {
                     cell: Mutex::new(CatalogCell::Empty),
-                    released: Condvar::new(),
                     accounted: AtomicUsize::new(0),
                 });
                 let owner_growth = state.catalog_owner_growth(&key, &slot);
@@ -164,16 +191,25 @@ impl NativeStore {
             }
         };
         let mut catalog = {
-            let mut cell = slot.cell.lock().expect("source catalog");
-            while matches!(*cell, CatalogCell::Busy) {
+            let mut state = self.lock_state();
+            loop {
                 cancel.check(remaining.deadline_unix_ms)?;
-                cell = slot.released.wait_timeout(cell, FACT_READ_WAIT_SLICE).expect("source catalog").0;
-            }
-            cancel.check(remaining.deadline_unix_ms)?;
-            match std::mem::replace(&mut *cell, CatalogCell::Busy) {
-                CatalogCell::Empty => None,
-                CatalogCell::Idle(catalog) => Some(catalog),
-                CatalogCell::Busy => unreachable!("claimed source catalog"),
+                let mut cell = slot.cell.lock().expect("source catalog");
+                if matches!(*cell, CatalogCell::Busy) {
+                    drop(cell);
+                    #[cfg(test)]
+                    {
+                        let hook = self.catalog_wait_hook.lock().expect("catalog wait hook").clone();
+                        if let Some(hook) = hook { hook(); }
+                    }
+                    state = self.fact_read_released.wait_timeout(state, FACT_READ_WAIT_SLICE).expect("source catalog").0;
+                    continue;
+                }
+                break match std::mem::replace(&mut *cell, CatalogCell::Busy) {
+                    CatalogCell::Empty => None,
+                    CatalogCell::Idle(catalog) => Some(catalog),
+                    CatalogCell::Busy => unreachable!("claimed source catalog"),
+                };
             }
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
@@ -195,9 +231,6 @@ impl NativeStore {
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }
                     return Ok(CatalogWorkResult::Pending);
-                }
-                CatalogMode::Public(query) => {
-                    return catalog.locate_page(self, ids, context, cancel, remaining, usage, query, &mut budget).map(CatalogWorkResult::Public);
                 }
                 CatalogMode::Locate => {}
             }
@@ -261,12 +294,11 @@ impl NativeStore {
                 None => CatalogCell::Empty,
             };
         }
-        slot.released.notify_all();
+        self.fact_read_released.notify_all();
         match outcome? {
             CatalogWorkResult::Paths(paths) => Ok(CatalogResolution::Ready { paths, reservation }),
             CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
             CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
-            CatalogWorkResult::Public(page) => Ok(CatalogResolution::Public { page, slot, reservation }),
         }
     }
 }
@@ -348,7 +380,7 @@ impl NativeStore {
                 build.request.insert("limits", build.remaining.to_json());
                 self.prepare_graph_ready(&build.request, &build.context, cancel, usage)
             }
-            CatalogResolution::Ready { .. } | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. } => unreachable!("catalog indexing does not materialize paths"),
             CatalogResolution::Pending(slot) => {
                 build.catalog = Some(slot);
                 let mut state = self.lock_state();

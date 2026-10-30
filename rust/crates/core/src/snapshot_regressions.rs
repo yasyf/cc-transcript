@@ -426,7 +426,7 @@ fn joined_waiters_publish_a_cold_generation_once_while_its_parser_still_classifi
     gate.release();
     let first = worker.join().unwrap();
     let latest = {
-        let state = store.state.lock().unwrap();
+        let mut state = store.state.lock().unwrap();
         assert_eq!(
             [4, 8, 9, 10].map(|counter| (COUNTERS[counter], state.counters[counter])),
             [
@@ -436,7 +436,7 @@ fn joined_waiters_publish_a_cold_generation_once_while_its_parser_still_classifi
                 ("generations_invalidated", 0),
             ]
         );
-        Arc::clone(state.latest.get(&identity).expect("published latest"))
+        state.latest_source(&identity).expect("published latest")
     };
     for (response, published) in [(&first, 0), (&second, 1), (&third, 0)] {
         assert_eq!(
@@ -465,7 +465,7 @@ fn joined_waiters_publish_a_cold_generation_once_while_its_parser_still_classifi
     assert!(Arc::ptr_eq(&pin(&store, &third, &c), &latest));
     assert_eq!(
         store.state.lock().unwrap().escaped_chunks.len(),
-        latest.chunks.len()
+        2 * latest.chunks.len()
     );
     store.assert_conserved();
 }
@@ -547,7 +547,7 @@ fn old_generation_first_lift_after_append_preserves_each_classifier_and_late_res
     );
     let new = pin(&store, &new_response, &owner);
     assert!(Arc::ptr_eq(&old.chunks[0], &new.chunks[0]));
-    assert!(store.classified.lock().unwrap().is_empty());
+    assert!(store.lock_state().classified.is_empty());
     for classifier in ["native", "merged", "split"] {
         for (physical, expected_events, has_result) in [(&old, 3, false), (&new, 5, true)] {
             let snapshot = classified(&store, Arc::clone(physical), &owner, classifier);

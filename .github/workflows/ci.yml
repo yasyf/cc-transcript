@@ -71,6 +71,14 @@ jobs:
       - name: Test location traversal on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- location_
 
+      - name: Test source cache ownership on Linux
+        run: |
+          cargo test -p cc-transcript-core --no-default-features --lib -- pressure_ --nocapture
+          cargo test -p cc-transcript-core --no-default-features --lib -- cache_ --nocapture
+
+      - name: Test shared source-spine work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- source_spine_ --nocapture
+
       - name: Test owned transcript catalog operation counts on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
 

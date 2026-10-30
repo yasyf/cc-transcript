@@ -687,7 +687,7 @@ fn remembered(fixture: &Fixture) -> bool {
     let path = PathBuf::from(fixture.request["path"].as_str().unwrap());
     fixture
         .store
-        .remember_locations(&[(id.clone(), path)], &fixture.owner);
+        .remember_locations(std::iter::once((&id, &path)), &fixture.owner);
     fixture.store.lock_state().locations.contains_key(&id)
 }
 
@@ -727,10 +727,8 @@ fn location_fixture(source: &LedgerSource, background: bool) -> Fixture {
         if len == reserved && len > 0 {
             break;
         }
-        store.remember_locations(
-            &[(format!("session-{index:04}"), source.path.clone())],
-            &owner,
-        );
+        let id = format!("session-{index:04}");
+        store.remember_locations(std::iter::once((&id, &source.path)), &owner);
     }
     {
         let state = store.lock_state();
@@ -1517,7 +1515,7 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
     let owner = context_for("escaped", false);
     let (handle, snapshot) = acquired(&store, &source.path, &owner);
     assert_eq!(snapshot.chunks.len(), 1);
-    let charge = chunk_charge(&snapshot.chunks[0]);
+    let charge = NativeStore::audit_chunk_rows_bytes(&snapshot.chunks[0].entries);
     let rows = Arc::clone(&snapshot.chunks[0].entries);
     assert_eq!(rows.len(), 1);
     assert!(matches!(&rows[0], Entry::User(user) if user.meta.uuid == "escaped"));
@@ -1535,12 +1533,146 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
 }
 
 #[test]
+fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocation() {
+    let source = LedgerSource::new(&lines(0..200));
+    let store = fast_store();
+    let owner = context_for("spine-wrapper-escape", false);
+    let (whole_handle, full) = acquired(&store, &source.path, &owner);
+    let mut request = acquire(&source.path);
+    request.insert("tail_bytes", json!(4096));
+    let response = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    let tail_handle = ok_handle(&response);
+    let tail = store.pin(&tail_handle, &owner).unwrap();
+    let (original, selected) = tail
+        .chunks
+        .iter()
+        .find_map(|selected| {
+            full.chunks
+                .iter()
+                .find(|original| Arc::ptr_eq(&original.entries, &selected.entries))
+                .map(|original| (Arc::clone(original), Arc::clone(selected)))
+        })
+        .expect("the overlapping views share rows");
+    assert!(!Arc::ptr_eq(&original, &selected));
+    let rows = Arc::clone(&original.entries);
+    let rows_bytes = NativeStore::audit_chunk_rows_bytes(&original.entries);
+    let original_metadata = NativeStore::audit_chunk_metadata_bytes(&original);
+    let selected_metadata = NativeStore::audit_chunk_metadata_bytes(&selected);
+    release_lease(&store, &whole_handle, &owner);
+    release_lease(&store, &tail_handle, &owner);
+    drop(full);
+    drop(tail);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    assert_eq!(
+        ledger(&store)[ENTRIES],
+        rows_bytes + original_metadata + selected_metadata
+    );
+    drop(original);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], rows_bytes + selected_metadata);
+    drop(selected);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], rows_bytes);
+    drop(rows);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], 0);
+}
+
+#[test]
+fn source_spine_escaped_allocation_audit_reads_live_fields() {
+    let source = LedgerSource::new(&line("audit-escape"));
+    let store = fast_store();
+    let owner = context_for("spine-escape-audit", false);
+    let (handle, snapshot) = acquired(&store, &source.path, &owner);
+    let chunk = Arc::clone(&snapshot.chunks[0]);
+    let rows = Arc::clone(&chunk.entries);
+    let expected = NativeStore::audit_chunk_rows_bytes(&rows)
+        + NativeStore::audit_chunk_metadata_bytes(&chunk);
+    release_lease(&store, &handle, &owner);
+    drop(snapshot);
+    evict_unpinned(&store, &owner);
+    store.assert_conserved();
+    let keys = [Arc::as_ptr(&rows) as usize, Arc::as_ptr(&chunk) as usize];
+    {
+        let mut state = store.lock_state();
+        for key in keys {
+            state
+                .escaped_chunks
+                .get_mut(&key)
+                .unwrap()
+                .1
+                .owned_capacity_bytes += 4096;
+        }
+    }
+    assert_eq!(audited(&store)[ENTRIES], expected);
+    {
+        let mut state = store.lock_state();
+        for key in keys {
+            state
+                .escaped_chunks
+                .get_mut(&key)
+                .unwrap()
+                .1
+                .owned_capacity_bytes -= 4096;
+        }
+    }
+    store.assert_conserved();
+    drop(chunk);
+    store.assert_conserved();
+    assert_eq!(
+        ledger(&store)[ENTRIES],
+        NativeStore::audit_chunk_rows_bytes(&rows)
+    );
+    drop(rows);
+    store.assert_conserved();
+    assert_eq!(ledger(&store)[ENTRIES], 0);
+}
+
+#[test]
+fn source_spine_rewrite_discards_the_prior_byte_provenance_and_keeps_its_old_view_immutable() {
+    let source = LedgerSource::new(&lines(0..200));
+    let store = fast_store();
+    let owner = context_for("spine-rewrite", false);
+    let (_, original) = acquired(&store, &source.path, &owner);
+    let prior_first = original.entry(0).meta().unwrap().uuid.clone();
+    std::fs::write(&source.path, lines(200..400)).unwrap();
+    let mut request = acquire(&source.path);
+    request.insert("tail_bytes", json!(4096));
+    let response = drive(
+        &store,
+        store.request(&request, &owner, &Cancellation::default()),
+        &owner,
+    );
+    let selected = store.pin(&ok_handle(&response), &owner).unwrap();
+    assert_eq!(original.entry(0).meta().unwrap().uuid, prior_first);
+    assert!(selected.entries().iter().all(|entry| entry
+        .meta()
+        .unwrap()
+        .uuid
+        .strip_prefix("event-")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap()
+        >= 200));
+    assert!(selected.chunks.iter().all(|fresh| original
+        .chunks
+        .iter()
+        .all(|old| !Arc::ptr_eq(&fresh.entries, &old.entries))));
+    store.assert_conserved();
+}
+
+#[test]
 fn observations_under_one_guard_drain_deaths_after_the_lock() {
     let source = LedgerSource::new(&line("guarded"));
     let store = fast_store();
     let owner = context_for("guarded", false);
     let (orphan, replacement) = orphaned(&store, &source, &owner);
-    let charge = chunk_charge(&orphan.chunks[0]);
+    let charge = NativeStore::audit_chunk_rows_bytes(&orphan.chunks[0].entries);
     let rows = Arc::clone(&orphan.chunks[0].entries);
     let mut state = store.lock_state();
     drop(orphan);
@@ -3814,10 +3946,10 @@ fn refused_publication_keeps_the_parsed_result_unpublished_until_the_retry_admit
         {
             let state = refused.store.lock_state();
             assert!(state.generations.contains_key(&snapshot_key(&parsed)));
-            assert_eq!(state.escaped_chunks.len(), parsed.chunks.len());
+            assert_eq!(state.escaped_chunks.len(), 2 * parsed.chunks.len());
             assert_eq!(slot.ledgered_bytes(), 0);
         }
-        let charge = chunk_charge(&parsed.chunks[0]);
+        let charge = NativeStore::audit_chunk_rows_bytes(&parsed.chunks[0].entries);
         let rows = Arc::clone(&parsed.chunks[0].entries);
         release_lease(&refused.store, &handle, &refused.owner);
         drop(pinned);
@@ -4953,32 +5085,45 @@ fn failed_prepared_source_pin_releases_its_internal_lease() {
 }
 
 #[test]
-fn cancelled_registered_warming_releases_its_location_cursor() {
+fn cancelled_registered_warming_releases_its_location_work() {
     let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
     let store = cursor_store();
     let owner = context_for("warming", true);
     let cancel = Cancellation::default();
     let armed = cancel.clone();
-    *store.locate_hook.lock().unwrap() = Some(Arc::new(move || armed.cancel()));
+    let observed = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::clone(&observed);
+    *store.location_metadata_hook.lock().unwrap() = Some((
+        "entry",
+        Arc::new(move || {
+            entered.fetch_add(1, Ordering::Relaxed);
+            armed.cancel();
+        }),
+    ));
     let response = store.request(&warm_request(&scenario), &owner, &cancel);
+    *store.location_metadata_hook.lock().unwrap() = None;
     assert_eq!(
         response["status"].as_str(),
         Some("cancelled"),
         "{response:?}"
     );
-    assert!(
-        store.locate_hook.lock().unwrap().is_none(),
-        "the location page never parked"
-    );
+    assert_eq!(observed.load(Ordering::Relaxed), 1);
     assert_eq!(
         response["usage"]["discovery_entries_examined"].as_u64(),
-        Some(2),
+        Some(1),
         "{response:?}"
     );
-    assert!(
-        store.lock_state().locates.is_empty(),
-        "the cancelled warm left its location cursor behind"
-    );
+    {
+        let state = store.lock_state();
+        assert!(state.locates.is_empty());
+        assert!(state.registered_builds.is_empty());
+        assert_eq!(state.transient_bytes, 0);
+        assert_eq!(state.catalogs.len(), 1);
+        for slot in state.catalogs.values() {
+            assert_eq!(Arc::strong_count(slot), 1);
+            assert!(matches!(*slot.cell.lock().unwrap(), CatalogCell::Idle(_)));
+        }
+    }
     store.assert_conserved();
 }
 
@@ -7964,7 +8109,7 @@ fn exact_fill_refuses_one_more_byte_and_reuses_released_capacity() {
 }
 
 #[test]
-fn pressure_eviction_frees_unleased_latest_within_the_cap() {
+fn pressure_eviction_reclaims_one_unleased_generation_within_the_cap() {
     let sources: Vec<_> = (0..6)
         .map(|index| LedgerSource::new(&lines(index * 3..index * 3 + 3)))
         .collect();
@@ -7975,6 +8120,7 @@ fn pressure_eviction_frees_unleased_latest_within_the_cap() {
             .iter()
             .map(|source| acquired(&store, &source.path, &owner))
             .collect();
+        let victim_entries = entry_bytes(&[&retained[2].1]);
         for (handle, snapshot) in retained.split_off(2) {
             release_lease(&store, &handle, &owner);
             drop(snapshot);
@@ -7989,11 +8135,11 @@ fn pressure_eviction_frees_unleased_latest_within_the_cap() {
             .unwrap();
         let after = ledger(&store);
         store.assert_conserved();
-        assert_eq!(after[GENERATIONS], 2);
+        assert_eq!(after[GENERATIONS], before[GENERATIONS] - 1);
+        assert_eq!(after[LEASES], before[LEASES]);
         assert!(after[TOTAL] <= cap);
         assert!(audited(&store)[TOTAL] <= cap);
-        let kept: Vec<_> = retained.iter().map(|(_, snapshot)| snapshot).collect();
-        assert_eq!(after[ENTRIES], entry_bytes(&kept));
+        assert_eq!(after[ENTRIES], before[ENTRIES] - victim_entries);
         drop(pressure);
         store.assert_conserved();
         assert_eq!(
@@ -8871,6 +9017,11 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
         pending_start: _,
         provider: _,
         chunks,
+        source_chunks,
+        previous_chunks: _,
+        published_chunks: _,
+        reuse_next: _,
+        reuse_prepared: _,
         codex_raw,
         codex_append,
         count: _,
@@ -8900,6 +9051,7 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
     );
     assert!(codex_raw.is_none() && codex_append.is_none());
     pending.capacity()
+        + source_chunks.capacity() * size_of::<SourceChunkSpan>()
         + origin_fence.capacity()
         + seal_fence.capacity()
         + prefix_fence.capacity()

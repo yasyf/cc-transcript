@@ -1789,7 +1789,7 @@ impl NativeStore {
             CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
         )? {
             CatalogResolution::Ready { paths, reservation } => (paths, reservation),
-            CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Public { .. } => unreachable!("synchronous catalog lookup"),
+            CatalogResolution::Indexed | CatalogResolution::Pending(_) => unreachable!("synchronous catalog lookup"),
         };
         let mut members = Vec::new();
         let mut seen = HashSet::new();
