@@ -11135,8 +11135,8 @@ fn fresh_graph_cursor_admits_its_record_before_constructing_it() {
         .unwrap()
         .join("s")
         .join("subagents");
-    let listed_directory =
-        2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
+    let listed_directory = 2 * directory.as_os_str().len()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
     for background in [false, true] {
         let build = || graph_fixture(&source, background, json!([]));
         let control = build();
@@ -11789,16 +11789,11 @@ fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
     );
     assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
     let mut pins = vec![root_snapshot];
-    pins.extend(
-        scenario
-            .sidechains
-            .iter()
-            .map(|path| {
-                let (handle, snapshot) = acquired(&store, path, &owner);
-                release_lease(&store, &handle, &owner);
-                snapshot
-            }),
-    );
+    pins.extend(scenario.sidechains.iter().map(|path| {
+        let (handle, snapshot) = acquired(&store, path, &owner);
+        release_lease(&store, &handle, &owner);
+        snapshot
+    }));
     Fixture {
         store,
         owner,
@@ -12684,7 +12679,8 @@ fn denied_graph_listing_admission_opens_nothing_and_retries() {
         .unwrap()
         .join("s")
         .join("subagents");
-    let listed = 2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
+    let listed = 2 * directory.as_os_str().len()
+        + arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>();
     for background in [false, true] {
         assert_denied_directory_admission_opens_nothing(
             "graph listing",

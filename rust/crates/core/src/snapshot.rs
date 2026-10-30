@@ -1210,7 +1210,9 @@ unsafe impl Sync for OpenedDirectory {}
 
 impl Drop for OpenedDirectory {
     fn drop(&mut self) {
-        unsafe { libc::closedir(self.directory.as_ptr()); }
+        unsafe {
+            libc::closedir(self.directory.as_ptr());
+        }
     }
 }
 
@@ -1227,18 +1229,29 @@ struct OpenDirectoryEntry {
 }
 
 impl OpenDirectoryEntry {
-    fn path(&self) -> PathBuf { self.directory.root.join(&self.name) }
-    fn file_name(&self) -> OsString { self.name.clone() }
+    fn path(&self) -> PathBuf {
+        self.directory.root.join(&self.name)
+    }
+    fn file_name(&self) -> OsString {
+        self.name.clone()
+    }
 
     fn name_evidence(&self, _store: &NativeStore) -> CatalogNameEvidence {
         let mut kind = (self.kind != libc::DT_UNKNOWN).then_some(self.kind);
         #[cfg(test)]
-        if _store.directory_force_unknown.load(Ordering::Relaxed) { kind = None; }
-        CatalogNameEvidence { inode:self.inode,kind }
+        if _store.directory_force_unknown.load(Ordering::Relaxed) {
+            kind = None;
+        }
+        CatalogNameEvidence {
+            inode: self.inode,
+            kind,
+        }
     }
 
     fn symlink_hint(&self, store: &NativeStore) -> Option<bool> {
-        self.name_evidence(store).kind.map(|kind| kind == libc::DT_LNK)
+        self.name_evidence(store)
+            .kind
+            .map(|kind| kind == libc::DT_LNK)
     }
 }
 
@@ -1246,24 +1259,41 @@ impl OpenedDirectory {
     fn current_stamp(&self) -> std::io::Result<SourceStamp> {
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
         #[cfg(test)]
-        self.parent_metadata_attempts.fetch_add(1, Ordering::Relaxed);
-        if unsafe { libc::fstat(libc::dirfd(self.directory.as_ptr()),metadata.as_mut_ptr()) } != 0 {
+        self.parent_metadata_attempts
+            .fetch_add(1, Ordering::Relaxed);
+        if unsafe { libc::fstat(libc::dirfd(self.directory.as_ptr()), metadata.as_mut_ptr()) } != 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         Ok(CatalogChildMetadata::from_descriptor(&unsafe { metadata.assume_init() }).stamp)
     }
 
-    fn object_metadata(&self, name: &OsStr, _store: &NativeStore) -> std::io::Result<CatalogChildMetadata> {
-        let name = std::ffi::CString::new(name.as_encoded_bytes()).expect("directory name contains no NUL");
+    fn object_metadata(
+        &self,
+        name: &OsStr,
+        _store: &NativeStore,
+    ) -> std::io::Result<CatalogChildMetadata> {
+        let name = std::ffi::CString::new(name.as_encoded_bytes())
+            .expect("directory name contains no NUL");
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
         #[cfg(test)]
         {
-            _store.directory_descriptor_metadata.fetch_add(1, Ordering::Relaxed);
+            _store
+                .directory_descriptor_metadata
+                .fetch_add(1, Ordering::Relaxed);
             _store.after_location_metadata("descriptor_metadata");
         }
-        let result = unsafe { libc::fstatat(libc::dirfd(self.directory.as_ptr()),name.as_ptr(),
-            metadata.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW) };
-        if result != 0 { return Err(std::io::Error::last_os_error()); }
+        let result = unsafe {
+            libc::fstatat(
+                libc::dirfd(self.directory.as_ptr()),
+                name.as_ptr(),
+                metadata.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
         let metadata = unsafe { metadata.assume_init() };
         Ok(CatalogChildMetadata::from_descriptor(&metadata))
     }
@@ -1271,25 +1301,40 @@ impl OpenedDirectory {
 
 impl OpenDirectory {
     fn open(path: &Path) -> Result<Self, SnapshotError> {
-        let encoded = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| io_error(
-            std::io::Error::new(std::io::ErrorKind::InvalidInput,"file name contained an unexpected NUL byte")))?;
+        let encoded =
+            std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| {
+                io_error(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "file name contained an unexpected NUL byte",
+                ))
+            })?;
         let directory = std::ptr::NonNull::new(unsafe { libc::opendir(encoded.as_ptr()) })
             .ok_or_else(|| io_error(std::io::Error::last_os_error()))?;
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-        if unsafe { libc::fstat(libc::dirfd(directory.as_ptr()),metadata.as_mut_ptr()) } != 0 {
+        if unsafe { libc::fstat(libc::dirfd(directory.as_ptr()), metadata.as_mut_ptr()) } != 0 {
             let error = std::io::Error::last_os_error();
-            unsafe { libc::closedir(directory.as_ptr()); }
+            unsafe {
+                libc::closedir(directory.as_ptr());
+            }
             return Err(io_error(error));
         }
         let metadata = unsafe { metadata.assume_init() };
         let stamp = CatalogChildMetadata::from_descriptor(&metadata).stamp;
-        Ok(Self { entries:Arc::new(OpenedDirectory { directory,root:path.to_owned(),stamp,
-            #[cfg(test)]
-            parent_metadata_attempts: AtomicUsize::new(0),
-        }),end_of_stream:false })
+        Ok(Self {
+            entries: Arc::new(OpenedDirectory {
+                directory,
+                root: path.to_owned(),
+                stamp,
+                #[cfg(test)]
+                parent_metadata_attempts: AtomicUsize::new(0),
+            }),
+            end_of_stream: false,
+        })
     }
 
-    fn stamp(&self) -> SourceStamp { self.entries.stamp }
+    fn stamp(&self) -> SourceStamp {
+        self.entries.stamp
+    }
 
     fn retained_bytes(&self) -> usize {
         READ_DIR_HANDLE_BYTES + self.entries.root.capacity()
@@ -1297,19 +1342,33 @@ impl OpenDirectory {
 }
 
 fn directory_errno() -> *mut libc::c_int {
-    #[cfg(any(target_vendor = "apple",target_os = "freebsd"))]
-    unsafe { libc::__error() }
-    #[cfg(any(target_os = "android",target_os = "openbsd",target_os = "netbsd"))]
-    unsafe { libc::__errno() }
-    #[cfg(not(any(target_vendor = "apple",target_os = "freebsd",target_os = "android",target_os = "openbsd",target_os = "netbsd")))]
-    unsafe { libc::__errno_location() }
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+    unsafe {
+        libc::__error()
+    }
+    #[cfg(any(target_os = "android", target_os = "openbsd", target_os = "netbsd"))]
+    unsafe {
+        libc::__errno()
+    }
+    #[cfg(not(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "android",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )))]
+    unsafe {
+        libc::__errno_location()
+    }
 }
 
 impl Iterator for OpenDirectory {
     type Item = std::io::Result<OpenDirectoryEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.end_of_stream { return None; }
+        if self.end_of_stream {
+            return None;
+        }
         loop {
             let entry = unsafe {
                 *directory_errno() = 0;
@@ -1321,10 +1380,18 @@ impl Iterator for OpenDirectory {
                 return (error.raw_os_error() != Some(0)).then_some(Err(error));
             }
             // dirent may have a dynamically sized trailing name; never form a reference to its full layout.
-            let name = unsafe { std::ffi::CStr::from_ptr(std::ptr::addr_of!((*entry).d_name).cast()) }.to_bytes();
-            if name == b"." || name == b".." { continue; }
-            return Some(Ok(OpenDirectoryEntry { directory:Arc::clone(&self.entries),
-                name:OsString::from_vec(name.to_vec()),kind:unsafe { (*entry).d_type },inode:unsafe { (*entry).d_ino as u64 } }));
+            let name =
+                unsafe { std::ffi::CStr::from_ptr(std::ptr::addr_of!((*entry).d_name).cast()) }
+                    .to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            return Some(Ok(OpenDirectoryEntry {
+                directory: Arc::clone(&self.entries),
+                name: OsString::from_vec(name.to_vec()),
+                kind: unsafe { (*entry).d_type },
+                inode: unsafe { (*entry).d_ino as u64 },
+            }));
         }
     }
 }
@@ -5662,8 +5729,16 @@ impl NativeStore {
 
     #[cfg(test)]
     fn audit_open_directory_bytes(directory: &OpenDirectory) -> usize {
-        let OpenDirectory { entries, end_of_stream: _ } = directory;
-        let OpenedDirectory { directory: _, root, stamp: _, parent_metadata_attempts: _ } = entries.as_ref();
+        let OpenDirectory {
+            entries,
+            end_of_stream: _,
+        } = directory;
+        let OpenedDirectory {
+            directory: _,
+            root,
+            stamp: _,
+            parent_metadata_attempts: _,
+        } = entries.as_ref();
         arc_mirror::<(*mut libc::DIR, PathBuf, SourceStamp, AtomicUsize)>() + root.capacity()
     }
 
@@ -10676,7 +10751,13 @@ impl NativeStore {
                 let path = entry.path();
                 let symlink = match entry.symlink_hint(self) {
                     Some(symlink) => symlink,
-                    None => entry.directory.object_metadata(&entry.name, self).map_err(io_error)?.symlink,
+                    None => {
+                        entry
+                            .directory
+                            .object_metadata(&entry.name, self)
+                            .map_err(io_error)?
+                            .symlink
+                    }
                 };
                 let canonical = if symlink {
                     std::fs::canonicalize(&path).map_err(io_error)?
