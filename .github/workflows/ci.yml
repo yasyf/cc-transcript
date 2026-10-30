@@ -109,6 +109,15 @@ jobs:
           name: cc-transcript-linux-${{ github.sha }}
           path: dist/*.whl
 
+  snapshot-catalog-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test owned transcript catalog operation counts on macOS
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
+
   snapshot-wheel:
     runs-on: macos-15
     steps:
