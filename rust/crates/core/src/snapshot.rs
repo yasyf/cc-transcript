@@ -11580,6 +11580,54 @@ mod tests {
         store.assert_conserved();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn location_preserves_oversized_raw_alias_entry_errors() {
+        let source = Source::new("");
+        std::fs::remove_file(&source.path).unwrap();
+        let physical_entry = source.directory.join("unrelated.txt");
+        std::fs::write(&physical_entry, b"").unwrap();
+        let target_bytes = libc::PATH_MAX as usize - 8;
+        let mut spelling = source.directory.to_string_lossy().into_owned();
+        spelling.push_str(&"/".repeat(target_bytes - spelling.len()));
+        let root = PathBuf::from(spelling);
+        assert_eq!(root.as_os_str().len(), target_bytes);
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let entry = std::fs::read_dir(&root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(entry.as_os_str().len() >= libc::PATH_MAX as usize);
+        assert!(
+            std::fs::symlink_metadata(canonical_root.join("unrelated.txt"))
+                .unwrap()
+                .is_file()
+        );
+        assert_eq!(
+            std::fs::symlink_metadata(&entry)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+        assert_eq!(
+            std::fs::canonicalize(&entry).unwrap_err().raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+        let store = store();
+        let owner = context("a");
+        let template = acquire(&source.path);
+        let request = json!({"schema":SCHEMA,"id":"locate-raw-pathmax","operation":"locate","session_ids":["wanted"],"roots":[root],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+        let response = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        assert_eq!(response["status"].as_str(), Some("changed"), "{response:?}");
+        store.assert_conserved();
+    }
+
     #[test]
     fn location_nonmatching_regular_files_share_parent_canonicalization() {
         let source = Source::new("");
