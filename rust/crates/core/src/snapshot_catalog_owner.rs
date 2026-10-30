@@ -32,7 +32,7 @@ impl CatalogProbe {
     fn new(store: &NativeStore, ids: &[Value], chunk_size: usize, context: &Value,
         reservation: &mut ProjectionReservation<'_>) -> Result<Self, SnapshotError> {
         if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
-        NativeStore::validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?;
+        store.validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?;
         let count = ids.len().div_ceil(chunk_size);
         store.extend_projection_reservation(reservation, context,
             count * size_of::<HashSet<String>>()
@@ -113,10 +113,14 @@ fn catalog_canonical_scratch(value: &Value) -> usize {
 }
 
 impl NativeStore {
-    fn validate_catalog_chunk(ids: &[Value]) -> Result<(), SnapshotError> {
+    fn validate_catalog_chunk(&self, ids: &[Value]) -> Result<(), SnapshotError> {
         for (index, value) in ids.iter().enumerate() {
             let id = value.as_str().ok_or_else(|| invalid("invalid session id"))?;
-            if id.is_empty() || id.len() > 256 || ids[..index].iter().any(|prior| prior.as_str() == Some(id)) {
+            if id.is_empty() || id.len() > 256 || ids[..index].iter().any(|prior| {
+                #[cfg(test)]
+                self.catalog_id_comparisons.fetch_add(1, Ordering::Relaxed);
+                prior.as_str() == Some(id)
+            }) {
                 return Err(invalid("invalid or duplicate session id"));
             }
         }
@@ -164,7 +168,7 @@ impl NativeStore {
         }
         let chunk_size = 1024.min(remaining.max_items);
         if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
-        if matches!(mode, CatalogMode::Locate) { Self::validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?; }
+        if matches!(mode, CatalogMode::Locate) { self.validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?; }
         let (key, mut reservation) = self.catalog_key(roots, context)?;
         let slot = {
             let mut state = self.lock_state();
@@ -238,7 +242,7 @@ impl NativeStore {
             let mut plan = None;
             let mut plan_epoch = 0;
             for chunk in ids.chunks(chunk_size) {
-                Self::validate_catalog_chunk(chunk)?;
+                self.validate_catalog_chunk(chunk)?;
                 let mut probe = CatalogProbe::new(self, chunk, chunk.len(), context, budget.reservation)?;
                 loop {
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;

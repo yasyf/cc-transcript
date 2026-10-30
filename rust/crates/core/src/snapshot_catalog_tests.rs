@@ -494,3 +494,39 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
         store.assert_conserved();
     }
 }
+
+#[test]
+fn registered_catalog_id_validation_work_is_bounded_by_the_chunk() {
+    let store = store();
+    let mut measurements = Vec::new();
+    for count in [128, 512, 1024] {
+        let ids: Vec<_> = (0..count)
+            .map(|index| json!(format!("session-{:04}", (index * 129 + 17) % count)))
+            .collect();
+        let before = store.catalog_id_comparisons.load(Ordering::Relaxed);
+        store.validate_catalog_chunk(&ids).unwrap();
+        let comparisons = store.catalog_id_comparisons.load(Ordering::Relaxed) - before;
+        eprintln!("catalog_id_validation ids={count} comparisons={comparisons}");
+        measurements.push((count, comparisons));
+    }
+    for (count, comparisons) in measurements {
+        assert!(comparisons <= 32 * count, "ids={count} comparisons={comparisons}");
+    }
+}
+
+#[test]
+fn registered_catalog_id_validation_preserves_the_first_error() {
+    let store = store();
+    for (ids, reason) in [
+        (json!(["same", "same", 7]), "invalid or duplicate session id"),
+        (json!(["same", 7, "same"]), "invalid session id"),
+        (json!([7, "same", "same"]), "invalid session id"),
+        (json!(["same", "", 7]), "invalid or duplicate session id"),
+        (json!(["a", "b", "a"]), "invalid or duplicate session id"),
+    ] {
+        let error = store.validate_catalog_chunk(ids.as_array().unwrap()).unwrap_err();
+        assert_eq!(error.reason, reason);
+    }
+    store.validate_catalog_chunk(&[]).unwrap();
+    store.validate_catalog_chunk(json!(["a", "b", "c"]).as_array().unwrap()).unwrap();
+}
