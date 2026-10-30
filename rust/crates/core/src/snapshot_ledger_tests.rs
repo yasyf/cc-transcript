@@ -3987,31 +3987,32 @@ fn published_follower(path: &Path, background: bool, requests: usize) -> Fixture
             state.loads.get(&slot.stamp.identity).expect("pinned load"),
             &slot
         ));
-        for inode in 1u64.. {
-            if state.latest.len() == state.latest.reserved() {
-                break;
-            }
-            state.insert_latest(
-                SourceIdentity {
-                    device: 0,
-                    inode,
-                    window_base: 0,
-                },
-                Arc::clone(&snapshot),
-            );
-        }
-        assert!(state.latest.growth(1) > 0);
     }
+    let mut pins = vec![snapshot];
+    let mut padding = Vec::new();
+    loop {
+        let padded = {
+            let state = parked.store.lock_state();
+            state.latest.len() == state.latest.reserved()
+        };
+        if padded { break; }
+        let source = LedgerSource::new(&line(&format!("cache-padding-{}", padding.len())));
+        let (handle, snapshot) = acquired(&parked.store, &source.path, &parked.owner);
+        release_lease(&parked.store, &handle, &parked.owner);
+        pins.push(snapshot);
+        padding.push(source);
+    }
+    assert!(parked.store.lock_state().latest.growth(1) > 0);
     Fixture {
         store: parked.store,
         owner: parked.owner,
         request: acquire(path),
-        pins: vec![snapshot],
+        pins,
     }
 }
 
 #[test]
-fn latest_cache_write_is_skipped_when_only_its_table_growth_does_not_fit() {
+fn latest_cache_write_is_skipped_when_its_index_growth_does_not_fit() {
     let source = LedgerSource::new(&line("anchor"));
     let deep = deep_source(&source, &line("latest"));
     let identity = SourceStamp::of(&std::fs::metadata(&deep).unwrap()).identity;
@@ -4035,12 +4036,12 @@ fn latest_cache_write_is_skipped_when_only_its_table_growth_does_not_fit() {
         let skipped = build();
         let (growth, reserved) = {
             let state = skipped.store.lock_state();
-            (state.latest.growth(1), state.latest.reserved())
+            (state.latest_growth(&identity, &skipped.pins[0]), state.latest.reserved())
         };
         assert!(growth > 0);
         assert!(
             exact < with_cache && with_cache <= exact + growth,
-            "the cache write costs its table growth: exact={exact} with_cache={with_cache} growth={growth}"
+            "the cache write costs its index growth: exact={exact} with_cache={with_cache} growth={growth}"
         );
         {
             let _filler = fill_to(&skipped.store, &skipped.owner, with_cache - 1);
