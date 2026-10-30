@@ -1800,7 +1800,7 @@ impl NativeStore {
             .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
         {
             cancel.check(remaining.deadline_unix_ms)?;
-            let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+            let canonical = self.canonical_path(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
             let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
             if !metadata.is_file() {
