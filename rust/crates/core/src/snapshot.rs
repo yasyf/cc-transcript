@@ -1512,11 +1512,40 @@ struct CachedSnapshot {
 enum CacheOwner {
     Generation(usize),
     Carried(usize),
+    Catalog(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SourceView {
+    window_start: u64,
+    size: std::cmp::Reverse<u64>,
+    generation: usize,
+}
+
+impl SourceView {
+    fn of(snapshot: &Arc<TranscriptSnapshot>) -> Self {
+        Self {
+            window_start: snapshot.window_start,
+            size: std::cmp::Reverse(snapshot.stamp.size),
+            generation: snapshot_key(snapshot),
+        }
+    }
 }
 
 struct CarriedOwner {
     lineages: Vec<(SourceIdentity, String)>,
     touched: u64,
+}
+
+struct CatalogOwner {
+    key: String,
+    touched: u64,
+}
+
+impl Charge<usize> for CatalogOwner {
+    fn charge(&self) -> usize {
+        self.key.capacity()
+    }
 }
 
 impl Charge<usize> for CarriedOwner {
@@ -1835,11 +1864,13 @@ impl Delivery {
 
 pub(crate) struct StoreState {
     latest: Table<SourceIdentity, usize>,
-    source_spines: Table<SourceIdentity, usize>,
+    source_spines: Table<SourceIdentity, BTreeSet<SourceView>>,
+    source_view_nodes: usize,
     classified: Ledgered<String, usize>,
     cache_order: BTreeSet<(u64, CacheOwner)>,
     cache_clock: u64,
     carried_owners: Ledgered<usize, CarriedOwner>,
+    catalog_owners: Ledgered<usize, CatalogOwner>,
     recent_codex: Table<SourceIdentity, u64>,
     loads: Table<SourceIdentity, Arc<LoadSlot>>,
     prepared_loads: Table<SourceIdentity, (Arc<LoadSlot>, u64)>,
@@ -1904,10 +1935,12 @@ impl StoreState {
         Self {
             latest: Table::new(work.clone()),
             source_spines: Table::new(work.clone()),
+            source_view_nodes: 0,
             classified: Ledgered::new(work.clone()),
             cache_order: BTreeSet::new(),
             cache_clock: 0,
             carried_owners: Ledgered::new(work.clone()),
+            catalog_owners: Ledgered::new(work.clone()),
             recent_codex: Table::new(work.clone()),
             loads: Table::new(work.clone()),
             prepared_loads: Table::new(work.clone()),
@@ -1954,7 +1987,7 @@ impl StoreState {
     }
 
     #[cfg(test)]
-    fn reservables(&self) -> [&dyn Reserved; 34] {
+    fn reservables(&self) -> [&dyn Reserved; 35] {
         [
             &self.ledger.shared,
             &self.registries,
@@ -1980,6 +2013,7 @@ impl StoreState {
             &self.source_spines,
             &self.classified,
             &self.carried_owners,
+            &self.catalog_owners,
             &self.escaped_chunks,
             &self.prepared_loads,
             &self.recent_codex,
@@ -2211,25 +2245,17 @@ impl StoreState {
             self.release_unused_cached_generation(old);
         }
         let physical = identity.file();
-        let prior_spine = self.source_spines.get(&physical).copied();
-        let replace_spine = prior_spine.is_none_or(|old| {
-            let cached = self.generations.get(&old).expect("source spine").cached.as_ref().expect("cached owner");
-            !(cached.snapshot.window_start < snapshot.window_start && cached.snapshot.stamp.size <= snapshot.stamp.size)
-        });
-        if replace_spine {
-            if let Some(old) = prior_spine.filter(|old| *old != key) {
-                self.generations.get_mut(&old).expect("source spine").cached.as_mut().expect("cached owner").spine = None;
-                self.release_unused_cached_generation(old);
-            }
-        }
         self.cache_generation(Arc::clone(&snapshot));
         self.latest.reserve_for(&identity);
         self.latest.insert(identity, key);
         self.generations.get_mut(&key).expect("latest generation").cached.as_mut().expect("cached owner").latest = Some(identity);
-        if replace_spine {
+        let indexed = self.generations.get(&key).expect("source generation").cached.as_ref().expect("cached owner").spine.is_some();
+        if !indexed {
             self.source_spines.reserve_for(&physical);
-            self.source_spines.insert(physical, key);
-            self.generations.get_mut(&key).expect("source spine").cached.as_mut().expect("cached owner").spine = Some(physical);
+            if !self.source_spines.contains_key(&physical) { self.source_spines.insert(physical, BTreeSet::new()); }
+            assert!(self.source_spines.get_mut(&physical).expect("source views").insert(SourceView::of(&snapshot)));
+            self.source_view_nodes += 1;
+            self.generations.get_mut(&key).expect("source generation").cached.as_mut().expect("cached owner").spine = Some(physical);
         }
         if self.recent_codex.contains_key(&identity) {
             self.recent_codex_raw_bytes -= displaced.as_ref().map_or(0, codex_raw_len);
@@ -2244,11 +2270,9 @@ impl StoreState {
         let mut generation = self.generations.get_mut(&key).expect("latest generation");
         let cached = generation.cached.as_mut().expect("cached owner");
         cached.latest = None;
-        if cached.spine == Some(identity.file()) {
-            assert_eq!(self.source_spines.remove(&identity.file()), Some(key));
-            cached.spine = None;
-        }
+        let indexed = cached.spine.take().is_some();
         drop(generation);
+        if indexed { self.remove_source_view(&removed); }
         self.release_unused_cached_generation(key);
         if self.recent_codex.contains_key(identity) {
             self.recent_codex_raw_bytes -= codex_raw_len(&removed);
@@ -4784,6 +4808,7 @@ impl NativeStore {
                 + state.generations.charged()
                 + state.classified.charged()
                 + state.carried_owners.charged()
+                + state.catalog_owners.charged()
                 + state.carried_classifications.charged()
                 + state.leases.charged()
                 + state.waiters.charged()
@@ -4906,6 +4931,7 @@ impl NativeStore {
                 "generations",
                 "classified",
                 "carried_owners",
+                "catalog_owners",
                 "carried_classifications",
                 "leases",
                 "waiters",
@@ -4920,8 +4946,9 @@ impl NativeStore {
     }
 
     #[cfg(test)]
-    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 22] {
+    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 23] {
         [
+            ("catalog_owners", state.catalog_owners.charged(), state.catalog_owners.audit_with(|_, record| record.key.capacity())),
             ("classified", state.classified.charged(), state.classified.audit_with(|key, _| key.capacity())),
             ("carried_owners", state.carried_owners.charged(), state.carried_owners.audit_with(|_, record| record.lineages.capacity() * size_of::<(SourceIdentity, String)>() + record.lineages.iter().map(|(_, key)| key.capacity()).sum::<usize>())),
             (
@@ -5681,7 +5708,9 @@ impl NativeStore {
             + state.source_spines.reserved_bytes()
             + state.classified.capacity_bytes()
             + state.carried_owners.capacity_bytes()
+            + state.catalog_owners.capacity_bytes()
             + state.cache_order.len() * size_of::<(u64, CacheOwner)>()
+            + state.source_view_nodes * size_of::<SourceView>()
             + state.escaped_chunks.reserved_bytes()
             + state.prepared_loads.reserved_bytes()
             + state.recent_codex.reserved_bytes()
@@ -21368,5 +21397,6 @@ mod tests {
         assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
     include!("snapshot_cache_tests.rs");
+    include!("snapshot_source_cache_index_tests.rs");
 
 }

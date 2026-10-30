@@ -92,6 +92,8 @@ fn shared_cache_owners_are_charged_once_and_evicted_only_until_the_real_cap_fits
     let retained = entry_bytes(&store);
     assert!(retained > 0);
     drop(prefix);
+    let used = store.retained_accounted_bytes();
+    store.admit_memory(&mut store.lock_state(), &owner, store.config.retained - used + 1).unwrap();
     store.assert_conserved();
     assert!(entry_bytes(&store) < retained);
 }

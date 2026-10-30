@@ -24,15 +24,24 @@ impl StoreState {
     }
 
     fn source_spine(&mut self, identity: &SourceIdentity) -> Option<Arc<TranscriptSnapshot>> {
-        let key = *self.source_spines.get(&identity.file())?;
+        let key = self.source_spines.get(&identity.file())?.first()?.generation;
         Some(self.cached_snapshot(key))
+    }
+
+    fn remove_source_view(&mut self, snapshot: &Arc<TranscriptSnapshot>) {
+        let identity = snapshot.stamp.identity.file();
+        let views = self.source_spines.get_mut(&identity).expect("source views");
+        assert!(views.remove(&SourceView::of(snapshot)));
+        self.source_view_nodes -= 1;
+        if views.is_empty() { self.source_spines.remove(&identity); }
     }
 
     fn forget_source_spine(&mut self, identity: &SourceIdentity, snapshot: &Arc<TranscriptSnapshot>) {
         let identity = identity.file();
         let key = snapshot_key(snapshot);
-        if self.source_spines.get(&identity) == Some(&key) {
-            self.source_spines.remove(&identity);
+        let selected = self.generations.get(&key).and_then(|record| record.cached.as_ref()).is_some_and(|cached| cached.spine == Some(identity));
+        if selected {
+            self.remove_source_view(snapshot);
             self.generations.get_mut(&key).expect("source spine generation").cached.as_mut().expect("cached owner").spine = None;
             self.release_unused_cached_generation(key);
         }
@@ -47,8 +56,10 @@ impl StoreState {
     }
 
     fn latest_growth(&self, identity: &SourceIdentity, snapshot: &Arc<TranscriptSnapshot>) -> usize {
+        let indexed = self.generations.get(&snapshot_key(snapshot)).and_then(|record| record.cached.as_ref()).is_some_and(|cached| cached.spine.is_some());
         self.latest.growth_for(identity)
             + self.source_spines.growth_for(&identity.file())
+            + if indexed { 0 } else { size_of::<SourceView>() }
             + self.cache_owner_growth(snapshot)
     }
 
@@ -112,6 +123,10 @@ impl StoreState {
         self.cache_order.iter().find_map(|(_, owner)| {
             self.ledger.shared.work().tick(1);
             let available = match owner {
+                CacheOwner::Catalog(key) => {
+                    let metadata = self.catalog_owners.get(key).expect("catalog owner");
+                    Arc::strong_count(self.catalogs.get(metadata.key.as_str()).expect("catalog slot")) == 1
+                }
                 CacheOwner::Generation(key) => Arc::strong_count(&self.generations.get(key).expect("cached generation").cached.as_ref().expect("cached owner").snapshot) == 1,
                 CacheOwner::Carried(key) => {
                     let metadata = self.carried_owners.get(key).expect("carried owner");
@@ -125,6 +140,11 @@ impl StoreState {
 
     fn evict_cache_owner(&mut self, owner: CacheOwner) {
         match owner {
+            CacheOwner::Catalog(key) => {
+                let metadata = self.detach_catalog_owner(key);
+                let slot = self.catalogs.remove(metadata.key.as_str()).expect("catalog slot");
+                drop(slot);
+            }
             CacheOwner::Generation(key) => {
                 let cached = self.generations.get_mut(&key).expect("cached generation").cached.take().expect("cached owner");
                 assert!(self.cache_order.remove(&(cached.touched, owner)));
@@ -134,8 +154,8 @@ impl StoreState {
                         self.recent_codex_raw_bytes -= codex_raw_len(&cached.snapshot);
                     }
                 }
-                if let Some(identity) = cached.spine {
-                    assert_eq!(self.source_spines.remove(&identity), Some(key));
+                if cached.spine.is_some() {
+                    self.remove_source_view(&cached.snapshot);
                 }
                 if let Some(classified) = cached.classified {
                     assert_eq!(self.classified.remove(&classified), Some(key));
@@ -207,22 +227,35 @@ impl StoreState {
     #[cfg(test)]
     fn assert_cache_owners(&self) {
         let cached = self.generations.values().filter(|record| record.cached.is_some()).count();
-        assert_eq!(self.cache_order.len(), cached + self.carried_owners.len());
+        assert_eq!(self.cache_order.len(), cached + self.carried_owners.len() + self.catalog_owners.len());
+        assert_eq!(self.catalog_owners.len(), self.catalogs.len());
+        for (key, owner) in self.catalog_owners.iter() {
+            assert_eq!(Arc::as_ptr(self.catalogs.get(owner.key.as_str()).unwrap()) as usize, *key);
+            assert!(self.cache_order.contains(&(owner.touched, CacheOwner::Catalog(*key))));
+        }
         for (key, record) in self.generations.iter() {
             if let Some(cached) = &record.cached {
                 assert_eq!(*key, snapshot_key(&cached.snapshot));
                 assert!(self.cache_order.contains(&(cached.touched, CacheOwner::Generation(*key))));
                 if let Some(identity) = cached.latest { assert_eq!(self.latest.get(&identity), Some(key)); }
-                if let Some(identity) = cached.spine { assert_eq!(self.source_spines.get(&identity), Some(key)); }
+                if let Some(identity) = cached.spine { assert!(self.source_spines.get(&identity).unwrap().contains(&SourceView::of(&cached.snapshot))); }
                 if let Some(classified) = &cached.classified { assert_eq!(self.classified.get(classified), Some(key)); }
             }
         }
         for (identity, key) in self.latest.iter() {
             assert_eq!(self.generations.get(key).unwrap().cached.as_ref().unwrap().latest, Some(*identity));
         }
-        for (identity, key) in self.source_spines.iter() {
-            assert_eq!(self.generations.get(key).unwrap().cached.as_ref().unwrap().spine, Some(*identity));
+        let mut source_nodes = 0;
+        for (identity, views) in self.source_spines.iter() {
+            assert!(!views.is_empty());
+            for view in views {
+                let cached = self.generations.get(&view.generation).unwrap().cached.as_ref().unwrap();
+                assert_eq!(cached.spine, Some(*identity));
+                assert!(SourceView::of(&cached.snapshot) == *view);
+                source_nodes += 1;
+            }
         }
+        assert_eq!(self.source_view_nodes, source_nodes);
         for (classified, key) in self.classified.iter() {
             assert_eq!(self.generations.get(key).unwrap().cached.as_ref().unwrap().classified.as_ref(), Some(classified));
         }
@@ -236,6 +269,44 @@ impl StoreState {
             }
         }
         assert_eq!(aliases, self.carried_classifications.len());
+    }
+
+    fn catalog_owner_growth(&self, key: &String, slot: &Arc<CatalogSlot>) -> usize {
+        let identity = Arc::as_ptr(slot) as usize;
+        if self.catalog_owners.contains_key(&identity) { 0 } else {
+            self.catalog_owners.growth_for(&identity) + key.len() + size_of::<(u64, CacheOwner)>()
+        }
+    }
+
+    fn attach_catalog_owner(&mut self, key: &String, slot: &Arc<CatalogSlot>) {
+        let identity = Arc::as_ptr(slot) as usize;
+        let touched = self.next_cache_touch();
+        self.catalog_owners.reserve_for(&identity);
+        assert!(self.catalog_owners.insert(identity, CatalogOwner { key: key.clone(), touched }).is_none());
+        assert!(self.cache_order.insert((touched, CacheOwner::Catalog(identity))));
+    }
+
+    fn touch_catalog_owner(&mut self, slot: &Arc<CatalogSlot>) {
+        let identity = Arc::as_ptr(slot) as usize;
+        let touched = self.next_cache_touch();
+        let mut owner = self.catalog_owners.get_mut(&identity).expect("catalog owner");
+        assert!(self.cache_order.remove(&(owner.touched, CacheOwner::Catalog(identity))));
+        owner.touched = touched;
+        assert!(self.cache_order.insert((touched, CacheOwner::Catalog(identity))));
+    }
+
+    fn detach_catalog_owner(&mut self, identity: usize) -> CatalogOwner {
+        let owner = self.catalog_owners.remove(&identity).expect("catalog owner");
+        assert!(self.cache_order.remove(&(owner.touched, CacheOwner::Catalog(identity))));
+        owner
+    }
+
+    fn remove_catalog(&mut self, key: &str) -> Option<Arc<CatalogSlot>> {
+        let slot = self.catalogs.remove(key)?;
+        let identity = Arc::as_ptr(&slot) as usize;
+        let owner = self.detach_catalog_owner(identity);
+        assert_eq!(owner.key, key);
+        Some(slot)
     }
 
 }
