@@ -295,3 +295,54 @@ fn public_catalog_observation_open_parent_survives_narrowing_but_a_new_caller_ca
     assert_eq!(store.authority_paths_materialized.load(Ordering::Relaxed) - before, 1);
     store.assert_conserved();
 }
+
+#[test]
+fn public_catalog_observation_queued_rows_keep_current_path_and_authority_guards() {
+    for denied in [false, true] {
+        let source = Source::new("");
+        let outside = Source::new("");
+        std::fs::remove_file(&source.path).unwrap();
+        let mut directory = source.directory.clone();
+        for name in ["d", "e", "f"] {
+            directory = directory.join(name.repeat(160));
+            std::fs::create_dir(&directory).unwrap();
+        }
+        let ids: Vec<_> = (0..1024).map(|index| format!("{index:04}-{}", "x".repeat(190))).collect();
+        for id in &ids { std::fs::write(directory.join(format!("{id}.jsonl")), "").unwrap(); }
+        let wanted: Vec<_> = ids.iter().map(String::as_str).collect();
+        let store = NativeStore::new(&json!({"max_events_per_step":128,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+        let owner = context("public-observation-queued-guard");
+        let mut request = public_catalog_request(&source, &wanted);
+        request["limits"].insert("max_output_bytes", json!(8 * 1024 * 1024));
+        let (primed, _) = public_catalog_finish(&store, &request, &owner);
+        assert_eq!(primed.len(), ids.len());
+        assert!(primed.iter().all(|row| row["status"].as_str() == Some("ok")));
+        let first = store.request(&request, &owner, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("incomplete"), "{first:?}");
+        assert_eq!(first["usage"]["discovery_entries_examined"].as_u64(), Some(0));
+        let emitted = first["data"]["sessions"].as_array().unwrap();
+        assert!(!emitted.is_empty() && emitted.len() < ids.len());
+        let pending_id = &ids[emitted.len()];
+        let pending_path = directory.join(format!("{pending_id}.jsonl"));
+        let cursor = first["cursor"].as_str().expect("queued successful rows").to_owned();
+        std::fs::remove_file(&pending_path).unwrap();
+        if denied {
+            std::os::unix::fs::symlink(&outside.path, &pending_path).unwrap();
+            let mut narrowed = owner.clone();
+            narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+            let before = store.authority_paths_materialized.load(Ordering::Relaxed);
+            let response = public_observation_resume(&store, &cursor, &narrowed);
+            assert_eq!(response["status"].as_str(), Some("permission_denied"), "{response:?}");
+            assert!(response["data"].is_null());
+            assert!(response["cursor"].is_null());
+            assert_eq!(store.authority_paths_materialized.load(Ordering::Relaxed) - before, 1);
+        } else {
+            let (last, rows, entries) = public_observation_collect(&store, public_observation_resume(&store, &cursor, &owner), &owner);
+            assert_eq!(last["status"].as_str(), Some("ok"), "{last:?}");
+            assert_eq!(entries, 0);
+            assert!(rows.iter().all(|row| row["session_id"].as_str() != Some(pending_id.as_str())), "a disappeared queued path must not be published as successful");
+            assert_eq!(emitted.len() + rows.len(), ids.len() - 1);
+        }
+        store.assert_conserved();
+    }
+}
