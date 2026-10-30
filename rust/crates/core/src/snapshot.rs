@@ -960,6 +960,7 @@ struct PreparedSourceRef {
 
 #[derive(Clone)]
 struct WarmMembership {
+    catalog: Option<CatalogCertificate>,
     members: Arc<[PreparedSourceRef]>,
     positions: Arc<[(SourceIdentity, usize)]>,
     sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
@@ -5794,6 +5795,7 @@ impl NativeStore {
     #[cfg(test)]
     fn audit_warm_membership_bytes(key: &String, membership: &WarmMembership) -> usize {
         let WarmMembership {
+            catalog: _,
             members: _,
             positions: _,
             sidechain_dirs: _,

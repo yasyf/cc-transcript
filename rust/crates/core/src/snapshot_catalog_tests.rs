@@ -538,3 +538,329 @@ fn registered_catalog_id_validation_preserves_the_first_error() {
     store.validate_catalog_chunk(&[]).unwrap();
     store.validate_catalog_chunk(json!(["a", "b", "c"]).as_array().unwrap()).unwrap();
 }
+
+#[test]
+fn registered_catalog_membership_batches_its_definitive_realpath_checks() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let ids: Vec<_> = (0..32).map(|index| format!("selected-{index:04}")).collect();
+    for id in &ids {
+        std::fs::write(source.directory.join(format!("{id}.jsonl")), format!("{}\n", user(id))).unwrap();
+    }
+    let mut measurements = Vec::new();
+    for restricted in [false, true] {
+        let store = store();
+        let mut owner = context("selected-realpaths");
+        if restricted {
+            owner.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+        }
+        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let mut request = catalog_missing_request(&source, &root, &ids);
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+        let mut remaining = limits(&request).unwrap();
+        let before = store.source_resolutions.load(Ordering::Relaxed);
+        let (membership, reservation) = store.build_warm_membership(&key, &request, &owner,
+            &Cancellation::default(), &mut [0;20], &mut remaining).unwrap();
+        let realpaths = store.source_resolutions.load(Ordering::Relaxed) - before;
+        eprintln!("membership_realpaths sources={} restricted={restricted} realpaths={realpaths}", ids.len());
+        measurements.push((restricted, realpaths));
+        assert!(membership.complete);
+        assert_eq!(membership.members.len(), ids.len());
+        for member in membership.members.iter() {
+            assert_eq!(member.path, std::fs::canonicalize(&member.path).unwrap());
+            assert_eq!(member.stamp, SourceStamp::of(&std::fs::metadata(&member.path).unwrap()));
+        }
+        drop(membership);
+        drop(reservation);
+        store.assert_conserved();
+    }
+    assert_eq!(measurements, vec![(false, 2), (true, 32)]);
+}
+
+#[test]
+fn registered_catalog_membership_rejects_a_directory_source() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let store = store();
+    let owner = context("directory-source");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &[]);
+    request.insert("direct_paths", json!(["/"]));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let result = store.build_warm_membership(&key, &request, &owner, &Cancellation::default(),
+        &mut [0;20], &mut remaining);
+    assert!(matches!(result, Err(error) if error.reason == "registered source must be a file"));
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_rejects_a_parent_retargeted_during_its_pin() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let left = source.directory.join("left");
+    let right = source.directory.join("right");
+    let alias = source.directory.join("alias");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    for directory in [&left, &right] {
+        for id in ["first", "second"] {
+            std::fs::write(directory.join(format!("{id}.jsonl")), format!("{}\n", user(id))).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink(&left, &alias).unwrap();
+    let store = store();
+    let owner = context("membership-parent-retarget");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["first".to_owned(), "second".to_owned()]);
+    request.insert("roots", json!([alias]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let retargeted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *store.resolve_hook.lock().unwrap() = Some(Arc::new({
+        let (alias, right, retargeted) = (alias.clone(), right.clone(), Arc::clone(&retargeted));
+        move |path| {
+            if path.parent() == Some(alias.as_path()) && !retargeted.swap(true, Ordering::Relaxed) {
+                std::fs::remove_file(&alias).unwrap();
+                std::os::unix::fs::symlink(&right, &alias).unwrap();
+            }
+        }
+    }));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let result = store.build_warm_membership(&key, &request, &owner, &Cancellation::default(),
+        &mut [0;20], &mut remaining);
+    assert!(retargeted.load(Ordering::Relaxed));
+    assert!(matches!(result, Err(error) if error.status == Status::Changed));
+    store.assert_conserved();
+}
+
+fn catalog_cached_membership(store: &NativeStore, request: &Value, owner: &Value, revalidate: bool) -> WarmMembership {
+    let key = NativeStore::warm_membership_key(request, owner).unwrap();
+    let mut remaining = limits(request).unwrap();
+    let (membership, mut reservation) = store.registered_membership(&key, request, owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining, revalidate).unwrap();
+    store.publish_warm_membership(&key, &membership, owner, reservation.as_mut()).unwrap();
+    drop(reservation);
+    membership
+}
+
+#[test]
+fn registered_catalog_cached_membership_observes_root_retarget_with_old_target_alive() {
+    for revalidate in [true, false] {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let left = source.directory.join("left");
+        let right = source.directory.join("right");
+        let alias = source.directory.join("alias");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        for (directory, text) in [(&left, "left"), (&right, "right")] {
+            std::fs::write(directory.join("wanted.jsonl"), format!("{}\n", user(text))).unwrap();
+        }
+        std::os::unix::fs::symlink(&left, &alias).unwrap();
+        let store = store();
+        let owner = context("catalog-cache-root-retarget");
+        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+        request.insert("roots", json!([alias]));
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let initial = catalog_cached_membership(&store, &request, &owner, true);
+        assert_eq!(initial.members[0].path, std::fs::canonicalize(left.join("wanted.jsonl")).unwrap());
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&right, &alias).unwrap();
+        let fresh = catalog_cached_membership(&store, &request, &owner, revalidate);
+        assert!(left.join("wanted.jsonl").is_file());
+        assert_eq!(fresh.members[0].path, std::fs::canonicalize(right.join("wanted.jsonl")).unwrap());
+        assert_ne!(initial.revision, fresh.revision);
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn registered_catalog_negative_lookup_observes_a_nested_source_creation() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let nested = source.directory.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let store = store();
+    let owner = context("catalog-negative-created");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let first = store.registered_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining, true);
+    assert!(matches!(first, Err(error) if error.status == Status::Incomplete));
+    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    let path = nested.join("wanted.jsonl");
+    std::fs::write(&path, format!("{}\n", user("new"))).unwrap();
+    let fresh = catalog_cached_membership(&store, &request, &owner, true);
+    assert!(fresh.complete);
+    assert_eq!(fresh.members[0].path, std::fs::canonicalize(path).unwrap());
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_certificate_survives_reads_and_same_file_appends() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let path = source.directory.join("wanted.jsonl");
+    std::fs::write(&path, format!("{}\n", user("first"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-stability");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let initial = catalog_cached_membership(&store, &request, &owner, true);
+    let unchanged = catalog_cached_membership(&store, &request, &owner, true);
+    assert!(initial.catalog.is_some());
+    assert_eq!(initial.catalog, unchanged.catalog);
+    assert!(Arc::ptr_eq(&initial.members, &unchanged.members));
+    std::fs::OpenOptions::new().append(true).open(&path).unwrap()
+        .write_all(format!("{}\n", user("second")).as_bytes()).unwrap();
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let mut usage = [0; 20];
+    let (fresh, mut reservation) = store.registered_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut usage, &mut remaining, true).unwrap();
+    store.publish_warm_membership(&key, &fresh, &owner, reservation.as_mut()).unwrap();
+    drop(reservation);
+    assert_eq!(usage[17], 0);
+    assert_eq!(initial.catalog, fresh.catalog);
+    assert_ne!(initial.revision, fresh.revision);
+    assert!(fresh.members[0].stamp.size > initial.members[0].stamp.size);
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_does_not_pin_eviction_or_accept_a_recreated_catalog() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    std::fs::write(source.directory.join("wanted.jsonl"), format!("{}\n", user("wanted"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-incarnation");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let initial = catalog_cached_membership(&store, &request, &owner, true);
+    let certificate = initial.catalog.unwrap();
+    let weak = {
+        let mut state = store.lock_state();
+        let slot = state.catalogs.get(certificate.key()).unwrap();
+        assert_eq!(Arc::strong_count(slot), 1);
+        let weak = Arc::downgrade(slot);
+        drop(state.remove_catalog(certificate.key()).unwrap());
+        weak
+    };
+    assert!(weak.upgrade().is_none());
+    let fresh = catalog_cached_membership(&store, &request, &owner, false);
+    assert_eq!(initial.revision, fresh.revision);
+    assert_ne!(certificate.incarnation, fresh.catalog.unwrap().incarnation);
+    let mut remaining = limits(&request).unwrap();
+    assert!(!store.catalog_membership_valid(Some(certificate), &request, &owner,
+        &Cancellation::default(), &mut remaining).unwrap());
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_cannot_publish_after_its_catalog_is_removed() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    std::fs::write(source.directory.join("wanted.jsonl"), format!("{}\n", user("wanted"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-publication");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let (membership, mut reservation) = store.build_warm_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining).unwrap();
+    drop(store.lock_state().remove_catalog(membership.catalog.unwrap().key()).unwrap());
+    let result = store.publish_warm_membership(&key, &membership, &owner, Some(&mut reservation));
+    assert!(matches!(result, Err(error) if error.status == Status::Changed));
+    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    drop(reservation);
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_membership_certificate_validation_honors_cancellation() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    std::fs::write(source.directory.join("wanted.jsonl"), format!("{}\n", user("wanted"))).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-cancellation");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let membership = catalog_cached_membership(&store, &request, &owner, true);
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    let mut remaining = limits(&request).unwrap();
+    let result = store.catalog_membership_valid(membership.catalog, &request, &owner, &cancel, &mut remaining);
+    assert!(matches!(result, Err(error) if error.status == Status::Cancelled));
+    let mut remaining = limits(&request).unwrap();
+    assert!(store.catalog_membership_valid(membership.catalog, &request, &owner,
+        &Cancellation::default(), &mut remaining).unwrap());
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_certificate_allows_later_chunk_discovery_after_a_certified_prefix() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let later = source.directory.join("later");
+    std::fs::create_dir(&later).unwrap();
+    let first = source.directory.join("first.jsonl");
+    let second = later.join("second.jsonl");
+    for path in [&first, &second] {
+        std::fs::write(path, format!("{}\n", user("member"))).unwrap();
+    }
+    let store = store();
+    let owner = context("catalog-certificate-chunk-prefix");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["first".to_owned(), "second".to_owned()]);
+    request.insert("roots", json!([later, first]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    request["limits"].insert("max_items", json!(1));
+    let membership = catalog_cached_membership(&store, &request, &owner, true);
+    assert!(membership.complete);
+    assert_eq!(membership.members.len(), 2);
+    assert_eq!(membership.members[0].path, std::fs::canonicalize(first).unwrap());
+    assert_eq!(membership.members[1].path, std::fs::canonicalize(second).unwrap());
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_discovery() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let later = source.directory.join("later");
+    std::fs::create_dir(&later).unwrap();
+    let left = source.directory.join("left.txt");
+    let right = source.directory.join("right.txt");
+    let alias = source.directory.join("first.jsonl");
+    let second = later.join("second.jsonl");
+    for path in [&left, &right, &second] {
+        std::fs::write(path, format!("{}\n", user("member"))).unwrap();
+    }
+    std::os::unix::fs::symlink(&left, &alias).unwrap();
+    let store = store();
+    let owner = context("catalog-certificate-prefix-invalidation");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["first".to_owned(), "second".to_owned()]);
+    request.insert("roots", json!([later, alias]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    request["limits"].insert("max_items", json!(1));
+    let retargeted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new({
+        let (alias, right, retargeted) = (alias.clone(), right.clone(), Arc::clone(&retargeted));
+        move || {
+            if !retargeted.swap(true, Ordering::Relaxed) {
+                std::fs::remove_file(&alias).unwrap();
+                std::os::unix::fs::symlink(&right, &alias).unwrap();
+            }
+        }
+    })));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let outcome = store.build_warm_membership(&key, &request, &owner,
+        &Cancellation::default(), &mut [0; 20], &mut remaining);
+    *store.location_metadata_hook.lock().unwrap() = None;
+    assert!(retargeted.load(Ordering::Relaxed));
+    assert!(matches!(outcome, Err(error) if error.status == Status::Changed));
+    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    store.assert_conserved();
+}

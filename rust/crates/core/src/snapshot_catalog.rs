@@ -149,6 +149,9 @@ struct SourceCatalog {
     roots_bytes: usize,
     directory_bytes: usize,
     index_bytes: usize,
+    incarnation: u64,
+    decision_revision: u64,
+    selection_revision: u64,
     epoch: u64,
     complete: bool,
 }
@@ -234,7 +237,8 @@ impl SourceCatalog {
             route_index: Table::new(work), route_bytes: 0, routes_dirty: false, retry_issues: Vec::new(), edge_issues: 0, issue_bound: None, issues_dirty: false,
             pending: Vec::new(), pending_edge: None, pending_issue: None,
             context_bytes: 0, roots_bytes: 0, directory_bytes: 0, index_bytes: 0,
-            epoch: 0, complete: false,
+            incarnation: store.sequence.fetch_add(1, Ordering::Relaxed) as u64,
+            decision_revision: 0, selection_revision: 0, epoch: 0, complete: false,
         };
         catalog.context_bytes = value_bytes(&catalog.context);
         catalog.roots_bytes = catalog.roots.iter().map(|root| root.path.capacity() + root.binding.payload_bytes()).sum();
@@ -268,11 +272,13 @@ impl SourceCatalog {
     }
 
     fn install_route(&mut self, identity: SourceIdentity, route: CatalogRoute) {
+        if self.route_index.get(&identity).is_some_and(|old| old.order <= route.order) { return; }
+        self.decision_revision += 1;
+        if self.route_index.contains_key(&identity) { self.selection_revision += 1; }
         if !self.route_index.contains_key(&identity)
             && self.directories.get(&identity).is_some_and(|node| !node.edges.is_empty())
         { self.routes_dirty = true; }
         if let Some(old) = self.route_index.get(&identity) {
-            if old.order <= route.order { return; }
             self.route_bytes -= old.owned_bytes();
             if self.directories.get(&identity).is_some_and(|node| !node.directories.is_empty()) {
                 self.routes_dirty = true;
@@ -424,7 +430,9 @@ impl SourceCatalog {
     }
 
     fn install_directory(&mut self, canonical: PathBuf, stamp: SourceStamp, parent: Option<SourceIdentity>) {
+        self.decision_revision += 1;
         if let Some(node) = self.directories.get_mut(&stamp.identity) {
+            if node.canonical != canonical { self.selection_revision += 1; }
             let before = node.owned_bytes();
             node.canonical = canonical;
             if matches!(node.scan, CatalogScan::Gone) {
@@ -503,6 +511,7 @@ impl SourceCatalog {
     }
 
     fn commit_edge(&mut self, pending: CatalogPendingEdge) {
+        self.decision_revision += 1;
         let directory = pending.directory;
         if pending.edge.binding.directory {
             let parent = self.route_index.get(&directory).expect("catalog parent route");
@@ -588,6 +597,7 @@ impl SourceCatalog {
                     self.pending_issue = Some(issue);
                     return Err(error);
                 }
+                self.decision_revision += 1;
                 let node = self.directories.get_mut(&issue.directory).expect("catalog directory");
                 let before = node.owned_bytes();
                 node.scan = CatalogScan::Issue { status: issue.status, reason: issue.reason,
@@ -607,6 +617,7 @@ impl SourceCatalog {
                 continue;
             }
             let Some(identity) = self.pending.last().copied() else {
+                self.decision_revision += 1;
                 self.epoch += 1;
                 self.complete = true;
                 return Ok(());
@@ -623,6 +634,7 @@ impl SourceCatalog {
                 };
                 self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
                 if matches!(node.scan, CatalogScan::Issue { .. }) {
+                    self.decision_revision += 1;
                     self.retry_issues.push(identity);
                     self.record_issue(identity, 0);
                     self.pending.pop();
@@ -640,11 +652,13 @@ impl SourceCatalog {
                 Some(Ok(entry)) => entry,
                 Some(Err(error)) => {
                     let error = io_error(error);
+                    self.decision_revision += 1;
                     self.pending_issue = Some(CatalogPendingIssue { directory: identity, status: error.status,
                         reason: error.reason, position: node.edges.len(), attempt: budget.attempt });
                     continue;
                 }
                 None => {
+                    self.decision_revision += 1;
                     node.scan = CatalogScan::Done;
                     self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
                     self.pending.pop();
@@ -656,6 +670,7 @@ impl SourceCatalog {
             let path = entry.path();
             let symlink = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_symlink());
             let binding = CatalogBinding::inspect(store, &path, &self.context);
+            self.decision_revision += 1;
             self.pending_edge = Some(CatalogPendingEdge { directory: identity, edge: CatalogEdge { name: entry.file_name(), binding }, symlink });
             #[cfg(test)]
             store.after_location_metadata("entry");
@@ -694,6 +709,8 @@ impl SourceCatalog {
     }
 
     fn remove_directory_index(&mut self, identity: SourceIdentity) {
+        self.decision_revision += 1;
+        self.selection_revision += 1;
         let node = self.directories.get(&identity).expect("catalog directory");
         self.issues_dirty |= self.issue_bound.is_some_and(|bound| bound.0 == identity);
         if self.route_index.contains_key(&identity) { self.edge_issues -= node.issues.len(); }
@@ -750,6 +767,8 @@ impl SourceCatalog {
             let root = &self.roots[index];
             let fresh = CatalogBinding::inspect(store, &root.path, &self.context);
             if let Some((status, reason)) = &fresh.issue {
+                self.selection_revision += 1;
+                self.decision_revision += 1;
                 self.complete = false;
             self.routes_dirty = true;
             self.epoch += 1;
@@ -761,6 +780,8 @@ impl SourceCatalog {
                 budget.reserve(fresh.canonical.as_ref().expect("catalog root").as_os_str().len())?;
                 self.schedule(fresh.canonical.as_ref().expect("catalog root").clone(), fresh.stamp.expect("catalog root stamp"), budget)?;
             }
+            self.selection_revision += 1;
+            self.decision_revision += 1;
             let root = &mut self.roots[index];
             self.roots_bytes = self.roots_bytes - root.binding.payload_bytes() + fresh.payload_bytes();
             root.binding = fresh;
