@@ -3,7 +3,9 @@ fn source_spine_reuses_full_history_rows_for_a_tail_view() {
     let source = Source::new(&users(0..600));
     let store = windowed_store();
     let owner = context("spine-full-tail");
-    let whole = finish_prepared(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut full_request = acquire(&source.path);
+    full_request["limits"].insert("max_events", json!(4096));
+    let whole = finish_prepared(&store, store.request(&full_request, &owner, &Cancellation::default()), &owner);
     let full = store.pin(handle(&whole), &owner).unwrap();
     let before = store.state.lock().unwrap().counters;
     let window = finish_prepared(&store, store.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
@@ -61,7 +63,9 @@ fn source_spine_tail_matches_a_cold_parse_with_skipped_lines_and_a_provisional_t
         let store = windowed_store();
         let reference = windowed_store();
         let owner = context("spine-skipped-lines");
-        let whole = finish_prepared(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let mut full_request = acquire(&source.path);
+        full_request["limits"].insert("max_events", json!(4096));
+        let whole = finish_prepared(&store, store.request(&full_request, &owner, &Cancellation::default()), &owner);
         let _full = store.pin(handle(&whole), &owner).unwrap();
         let expected = finish_prepared(&reference, reference.request(&windowed_acquire(&source.path, 4096), &owner, &Cancellation::default()), &owner);
         let before = store.state.lock().unwrap().counters;
