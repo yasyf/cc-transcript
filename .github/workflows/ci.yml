@@ -65,6 +65,11 @@ jobs:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: cargo test -p cc-transcript-py --lib
 
+      - name: Test selective call projection work on Linux
+        run: |
+          cargo test -p cc-transcript-core --no-default-features --lib -- named_projection_does_not_clone_unrelated_call_payloads --nocapture
+          cargo test -p cc-transcript-core --no-default-features --lib -- selective_call_projection_allocates_only_selected_call_slots --nocapture
+
       - name: Test scalar admission work on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- admission_report_ --nocapture
 
