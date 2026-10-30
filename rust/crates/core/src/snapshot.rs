@@ -8469,6 +8469,7 @@ impl NativeStore {
                     load.prefix_checked = true;
                 } else {
                     load.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+                    self.lock_state().forget_source_spine(&previous.stamp.identity, previous);
                     load.previous = None;
                     load.previous_chunks = None;
                     usage[4] += 1;
@@ -21442,5 +21443,4 @@ mod tests {
         assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
     include!("snapshot_spine_tests.rs");
-
 }

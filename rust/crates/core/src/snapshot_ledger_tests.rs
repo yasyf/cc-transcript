@@ -1575,6 +1575,24 @@ fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocat
 }
 
 #[test]
+fn source_spine_rewrite_discards_the_prior_byte_provenance_and_keeps_its_old_view_immutable() {
+    let source = LedgerSource::new(&lines(0..200));
+    let store = fast_store();
+    let owner = context_for("spine-rewrite", false);
+    let (_, original) = acquired(&store, &source.path, &owner);
+    let prior_first = original.entry(0).meta().unwrap().uuid.clone();
+    std::fs::write(&source.path, lines(200..400)).unwrap();
+    let mut request = acquire(&source.path);
+    request.insert("tail_bytes", json!(4096));
+    let response = drive(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    let selected = store.pin(&ok_handle(&response), &owner).unwrap();
+    assert_eq!(original.entry(0).meta().unwrap().uuid, prior_first);
+    assert!(selected.entries().iter().all(|entry| entry.meta().unwrap().uuid.strip_prefix("event-").unwrap().parse::<usize>().unwrap() >= 200));
+    assert!(selected.chunks.iter().all(|fresh| original.chunks.iter().all(|old| !Arc::ptr_eq(&fresh.entries, &old.entries))));
+    store.assert_conserved();
+}
+
+#[test]
 fn observations_under_one_guard_drain_deaths_after_the_lock() {
     let source = LedgerSource::new(&line("guarded"));
     let store = fast_store();
