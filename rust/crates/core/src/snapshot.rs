@@ -12632,7 +12632,7 @@ mod tests {
         let source = Source::new(&format!(
             "{}\n{}",
             user("0").replace("hello", &"x".repeat(9 * 1024 * 1024)),
-            users(1..40)
+            users(1..100)
         ));
         let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
         let owner = context("a");
@@ -12650,8 +12650,8 @@ mod tests {
         let snapshot = store.pin(handle(&response), &owner).unwrap();
         assert_eq!(snapshot.window_start, start);
         assert_eq!(snapshot.committed_bytes, snapshot.stamp.size);
-        assert_eq!(uuids(&snapshot), (first..40).collect::<Vec<_>>());
-        assert_eq!(snapshot.activity.turn_count(), 40 - first);
+        assert_eq!(uuids(&snapshot), (first..100).collect::<Vec<_>>());
+        assert_eq!(snapshot.activity.turn_count(), 100 - first);
         let read = store.state.lock().unwrap().counters[1];
         assert_eq!(read, snapshot.stamp.size - start + 128 + 64 * 1024);
     }
@@ -12705,9 +12705,17 @@ mod tests {
                 Some(if cancel_next {
                     "cancelled"
                 } else {
-                    "source_limit"
+                    "incomplete"
                 }),
                 "{stopped:?}"
+            );
+            assert_eq!(
+                stopped["reason"].as_str(),
+                Some(if cancel_next {
+                    "request cancelled"
+                } else {
+                    "source_read_limit"
+                })
             );
             assert_eq!(stopped["usage"]["source_bytes_read"].as_u64(), Some(0));
             assert!(stopped["cursor"].is_null());
