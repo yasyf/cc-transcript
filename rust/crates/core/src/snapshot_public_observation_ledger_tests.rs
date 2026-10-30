@@ -10,7 +10,7 @@ fn public_observation_ledger_audit(store: &NativeStore) {
 }
 
 #[test]
-fn public_observation_retired_generation_is_charged_until_cancel_or_release_of_its_last_query_pin() {
+fn location_observation_retired_generation_is_charged_until_cancel_or_release_of_its_last_query_pin() {
     for release in [false, true] {
         let source = LedgerSource::new("");
         std::fs::remove_file(&source.path).unwrap();
@@ -74,7 +74,7 @@ fn public_observation_retired_generation_is_charged_until_cancel_or_release_of_i
 }
 
 #[test]
-fn public_observation_store_drop_releases_both_live_and_retired_generation_tokens() {
+fn location_observation_store_drop_releases_both_live_and_retired_generation_tokens() {
     let source = LedgerSource::new("");
     std::fs::remove_file(&source.path).unwrap();
     for index in 0..4 { source.file(&format!("ordinary-{index}.txt"), ""); }
@@ -152,7 +152,7 @@ fn public_observation_retirement_admission_attempt(headroom: usize, verify_recov
 }
 
 #[test]
-fn public_observation_generation_retirement_and_new_lease_obey_exact_admission() {
+fn location_observation_generation_retirement_and_new_lease_obey_exact_admission() {
     let exact = exact_fit(&|headroom| public_observation_retirement_admission_attempt(headroom, false));
     assert!(exact > 0);
     assert!(!public_observation_retirement_admission_attempt(exact - 1, true));
@@ -221,7 +221,7 @@ fn public_observation_raw_name_admission_attempt(headroom: usize, verify_recover
 }
 
 #[test]
-fn public_observation_raw_name_commit_refusal_preserves_owned_progress_at_exact_fit() {
+fn location_observation_raw_name_commit_refusal_preserves_owned_progress_at_exact_fit() {
     let exact = exact_fit(&|headroom| public_observation_raw_name_admission_attempt(headroom, false));
     assert!(exact > 0);
     assert!(!public_observation_raw_name_admission_attempt(exact - 1, true));

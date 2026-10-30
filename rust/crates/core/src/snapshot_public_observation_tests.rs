@@ -20,7 +20,7 @@ fn public_observation_collect(store: &NativeStore, mut response: Value, owner: &
 }
 
 #[test]
-fn public_observation_first_result_is_frozen_but_the_next_query_is_fresh() {
+fn public_catalog_observation_first_result_is_frozen_but_the_next_query_is_fresh() {
     for directory in [false, true] {
         let source = Source::new("");
         std::fs::remove_file(&source.path).unwrap();
@@ -70,7 +70,7 @@ fn public_observation_first_result_is_frozen_but_the_next_query_is_fresh() {
 }
 
 #[test]
-fn public_observation_foreign_prefetch_spends_the_remaining_private_name_budget() {
+fn public_catalog_observation_foreign_prefetch_spends_the_remaining_private_name_budget() {
     let source = Source::new("");
     std::fs::remove_file(&source.path).unwrap();
     for index in 0..128 {
@@ -103,7 +103,7 @@ fn public_observation_foreign_prefetch_spends_the_remaining_private_name_budget(
 }
 
 #[test]
-fn public_observation_warm_negative_at_initial_zero_discovery_is_still_incomplete() {
+fn public_catalog_observation_warm_negative_at_initial_zero_discovery_is_still_incomplete() {
     let source = Source::new("");
     let store = store();
     let owner = context("public-observation-zero-negative");
@@ -131,7 +131,7 @@ fn public_observation_warm_negative_at_initial_zero_discovery_is_still_incomplet
 }
 
 #[test]
-fn public_observation_old_alias_names_use_current_logical_child_metadata_after_foreign_rebuild() {
+fn public_catalog_observation_old_alias_names_use_current_logical_child_metadata_after_foreign_rebuild() {
     let source = Source::new("");
     let old = source.directory.join("old");
     let new = source.directory.join("new");
@@ -183,7 +183,7 @@ fn public_observation_old_alias_names_use_current_logical_child_metadata_after_f
 }
 
 #[test]
-fn public_observation_same_physical_directory_is_not_revisited_in_a_new_generation() {
+fn public_catalog_observation_same_physical_directory_is_not_revisited_in_a_new_generation() {
     let source = Source::new("");
     std::fs::remove_file(&source.path).unwrap();
     for index in 0..4 { std::fs::write(source.directory.join(format!("ordinary-{index}.txt")), "").unwrap(); }
@@ -220,7 +220,7 @@ fn public_observation_same_physical_directory_is_not_revisited_in_a_new_generati
 }
 
 #[test]
-fn public_observation_retargeted_unconsumed_alias_name_uses_current_authority() {
+fn public_catalog_observation_retargeted_unconsumed_alias_name_uses_current_authority() {
     let source = Source::new("");
     let outside = Source::new("");
     let old = source.directory.join("old");
@@ -259,7 +259,7 @@ fn public_observation_retargeted_unconsumed_alias_name_uses_current_authority() 
 }
 
 #[test]
-fn public_observation_open_parent_survives_narrowing_but_a_new_caller_cannot_borrow_it() {
+fn public_catalog_observation_open_parent_survives_narrowing_but_a_new_caller_cannot_borrow_it() {
     let source = Source::new("");
     std::fs::remove_file(&source.path).unwrap();
     let nested = source.directory.join("nested");
