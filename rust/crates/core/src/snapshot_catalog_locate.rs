@@ -335,6 +335,11 @@ impl SourceCatalog {
                 CatalogCheckKind::Root(index) if self.roots[index].binding.directory =>
                     self.roots[index].binding.stamp.expect("catalog authority root stamp").identity,
                 CatalogCheckKind::Directory(identity) => identity,
+                CatalogCheckKind::Edge(identity,index) => {
+                    let edge = &self.directories.get(&identity).expect("catalog authority parent").edges[index];
+                    if !edge.binding.directory { continue; }
+                    edge.binding.stamp.expect("catalog authority child stamp").identity
+                }
                 _ => continue,
             };
             let route = self.route_index.get(&identity).expect("catalog authority route");
@@ -361,6 +366,8 @@ impl SourceCatalog {
                 let path_bytes = route.path.as_os_str().len() + 1 + edge.name.len();
                 budget.reserve(size_of::<(Vec<usize>, PathBuf)>() + path_bytes)?;
                 let path = catalog_child_path(&route.path, &edge.name);
+                #[cfg(test)]
+                budget.store.authority_paths_materialized.fetch_add(1, Ordering::Relaxed);
                 query.authority_check_bytes += size_of::<(Vec<usize>, PathBuf)>()
                     + order.capacity() * size_of::<usize>() + path.capacity();
                 query.authority_checks.insert(order, path);

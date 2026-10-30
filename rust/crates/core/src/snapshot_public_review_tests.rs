@@ -426,16 +426,14 @@ fn public_catalog_review_narrowed_resume_checks_an_unconsumed_shared_regular_ent
 fn public_catalog_review_unrelated_root_mutation_keeps_a_consumed_prefix() {
     let source = LedgerSource::new("");
     let other = LedgerSource::new("");
+    let positive = LedgerSource::new("");
     std::fs::remove_file(&source.path).unwrap();
     source.file("consumed.txt", "");
-    let nested = source.directory.join("nested");
-    std::fs::create_dir(&nested).unwrap();
-    let wanted = nested.join("wanted.jsonl");
-    std::fs::write(&wanted, "").unwrap();
+    let wanted = positive.file("wanted.jsonl", "");
     let store = public_review_store(1);
     let owner = context_for("public-review-unrelated-root", false);
     let mut request = public_review_request(&source, &["wanted"]);
-    request.insert("roots", json!([other.directory, source.directory]));
+    request.insert("roots", json!([other.directory, wanted, source.directory]));
     let first = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(first["usage"]["discovery_entries_examined"].as_u64(), Some(1));
     assert!(first["data"]["sessions"].as_array().unwrap().is_empty());
@@ -446,7 +444,7 @@ fn public_catalog_review_unrelated_root_mutation_keeps_a_consumed_prefix() {
     other.file("added.txt", "");
     public_review_finish(&store, &missing, &owner);
     let mut narrowed = owner.clone();
-    narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[nested],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[positive.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
     let mut response = store.request(&json!({"schema":SCHEMA,"id":"unrelated-root-narrowed-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
     for _ in 0..8 {
         assert!(matches!(response["status"].as_str(), Some("ok" | "incomplete")), "{response:?}");
@@ -482,10 +480,39 @@ fn public_catalog_review_a_closed_positive_does_not_materialize_a_later_authorit
     public_review_finish(&store, &missing, &owner);
     let mut narrowed = owner.clone();
     narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[wanted.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let materialized = store.authority_paths_materialized.load(Ordering::Relaxed);
     let response = store.request(&json!({"schema":SCHEMA,"id":"lazy-authority-positive-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
     assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
     assert_eq!(response["data"]["sessions"][0]["status"].as_str(), Some("ok"));
     assert_eq!(Path::new(response["data"]["sessions"][0]["path"].as_str().unwrap()), wanted.path);
     assert_eq!(response["usage"]["discovery_entries_examined"].as_u64(), Some(0));
+    assert_eq!(store.authority_paths_materialized.load(Ordering::Relaxed) - materialized, 0);
+    store.assert_conserved();
+}
+
+#[test]
+fn public_catalog_review_narrowed_resume_checks_unconsumed_children_of_a_symlink() {
+    let source = LedgerSource::new("");
+    let outside = LedgerSource::new("");
+    std::fs::remove_file(&source.path).unwrap();
+    std::fs::remove_file(&outside.path).unwrap();
+    outside.file("first.txt", "");
+    outside.file("second.txt", "");
+    std::os::unix::fs::symlink(&outside.directory, source.directory.join("alias")).unwrap();
+    let store = public_review_store(1);
+    let owner = context_for("public-review-shared-symlink-children", false);
+    let request = public_review_request(&source, &["missing"]);
+    let first = store.request(&request, &owner, &Cancellation::default());
+    let cursor = first["cursor"].as_str().expect("symlink entry cursor");
+    let second = store.request(&json!({"schema":SCHEMA,"id":"consume-alias-child","operation":"resume","cursor":cursor}), &owner, &Cancellation::default());
+    assert_eq!(second["usage"]["discovery_entries_examined"].as_u64(), Some(1));
+    let cursor = second["cursor"].as_str().expect("first ordinary child cursor").to_owned();
+    public_review_finish(&store, &request, &owner);
+    let mut narrowed = owner.clone();
+    narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let response = store.request(&json!({"schema":SCHEMA,"id":"shared-alias-narrowed-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
+    assert_eq!(response["status"].as_str(), Some("permission_denied"), "{response:?}");
+    assert!(response["data"].is_null());
+    assert!(response["cursor"].is_null());
     store.assert_conserved();
 }
