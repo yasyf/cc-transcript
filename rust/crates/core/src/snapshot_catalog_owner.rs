@@ -6,7 +6,6 @@ enum CatalogCell {
 
 struct CatalogSlot {
     cell: Mutex<CatalogCell>,
-    released: Condvar,
     accounted: AtomicUsize,
 }
 
@@ -64,9 +63,9 @@ struct CatalogInput<'a> {
     roots: &'a [Value],
 }
 
-enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Public(&'a mut CatalogLocateQuery) }
+enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate }
 
-enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending, Public(CatalogLocatePage) }
+enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending }
 
 enum CatalogResolution<'a> {
     Indexed,
@@ -75,7 +74,6 @@ enum CatalogResolution<'a> {
         reservation: ProjectionReservation<'a>,
     },
     Pending(Arc<CatalogSlot>),
-    Public { page: CatalogLocatePage, slot: Arc<CatalogSlot>, reservation: ProjectionReservation<'a> },
 }
 
 struct RegisteredBuild {
@@ -150,7 +148,6 @@ impl NativeStore {
                 self.extend_projection_reservation_in(&mut state, &mut reservation, context, additional)?;
                 let slot = Arc::new(CatalogSlot {
                     cell: Mutex::new(CatalogCell::Empty),
-                    released: Condvar::new(),
                     accounted: AtomicUsize::new(0),
                 });
                 let owner_growth = state.catalog_owner_growth(&key, &slot);
@@ -164,16 +161,25 @@ impl NativeStore {
             }
         };
         let mut catalog = {
-            let mut cell = slot.cell.lock().expect("source catalog");
-            while matches!(*cell, CatalogCell::Busy) {
+            let mut state = self.lock_state();
+            loop {
                 cancel.check(remaining.deadline_unix_ms)?;
-                cell = slot.released.wait_timeout(cell, FACT_READ_WAIT_SLICE).expect("source catalog").0;
-            }
-            cancel.check(remaining.deadline_unix_ms)?;
-            match std::mem::replace(&mut *cell, CatalogCell::Busy) {
-                CatalogCell::Empty => None,
-                CatalogCell::Idle(catalog) => Some(catalog),
-                CatalogCell::Busy => unreachable!("claimed source catalog"),
+                let mut cell = slot.cell.lock().expect("source catalog");
+                if matches!(*cell, CatalogCell::Busy) {
+                    drop(cell);
+                    #[cfg(test)]
+                    {
+                        let hook = self.catalog_wait_hook.lock().expect("catalog wait hook").clone();
+                        if let Some(hook) = hook { hook(); }
+                    }
+                    state = self.fact_read_released.wait_timeout(state, FACT_READ_WAIT_SLICE).expect("source catalog").0;
+                    continue;
+                }
+                break match std::mem::replace(&mut *cell, CatalogCell::Busy) {
+                    CatalogCell::Empty => None,
+                    CatalogCell::Idle(catalog) => Some(catalog),
+                    CatalogCell::Busy => unreachable!("claimed source catalog"),
+                };
             }
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
@@ -195,9 +201,6 @@ impl NativeStore {
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }
                     return Ok(CatalogWorkResult::Pending);
-                }
-                CatalogMode::Public(query) => {
-                    return catalog.locate_page(self, ids, context, cancel, remaining, usage, query, &mut budget).map(CatalogWorkResult::Public);
                 }
                 CatalogMode::Locate => {}
             }
@@ -261,12 +264,11 @@ impl NativeStore {
                 None => CatalogCell::Empty,
             };
         }
-        slot.released.notify_all();
+        self.fact_read_released.notify_all();
         match outcome? {
             CatalogWorkResult::Paths(paths) => Ok(CatalogResolution::Ready { paths, reservation }),
             CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
             CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
-            CatalogWorkResult::Public(page) => Ok(CatalogResolution::Public { page, slot, reservation }),
         }
     }
 }
@@ -348,7 +350,7 @@ impl NativeStore {
                 build.request.insert("limits", build.remaining.to_json());
                 self.prepare_graph_ready(&build.request, &build.context, cancel, usage)
             }
-            CatalogResolution::Ready { .. } | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. } => unreachable!("catalog indexing does not materialize paths"),
             CatalogResolution::Pending(slot) => {
                 build.catalog = Some(slot);
                 let mut state = self.lock_state();

@@ -2848,6 +2848,8 @@ pub struct NativeStore {
     transport_bytes: AtomicU64,
     state: Mutex<StoreState>,
     fact_read_released: Condvar,
+    #[cfg(test)]
+    catalog_wait_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     classifiers: Mutex<HashMap<String, Arc<ClassifierCallback>>>,
     policies: Mutex<HashMap<String, Arc<PolicyCallback>>>,
     classified: Mutex<HashMap<String, Arc<TranscriptSnapshot>>>,
@@ -3339,6 +3341,8 @@ impl NativeStore {
             transport_bytes: AtomicU64::new(0),
             state: Mutex::new(state),
             fact_read_released: Condvar::new(),
+            #[cfg(test)]
+            catalog_wait_hook: Mutex::new(None),
             classifiers: Mutex::new(HashMap::new()),
             policies: Mutex::new(HashMap::new()),
             classified: Mutex::new(HashMap::new()),
@@ -10339,15 +10343,14 @@ impl NativeStore {
         Ok(metadata.is_file().then(|| SourceStamp::of(&metadata)))
     }
 
-    fn remember_locations(&self, entries: &[(String, PathBuf)], context: &Value) {
-        if entries.is_empty() {
+    fn remember_locations<'a>(&self, entries: impl Clone + ExactSizeIterator<Item = (&'a String, &'a PathBuf)>, context: &Value) {
+        if entries.len() == 0 {
             return;
         }
         let mut state = self.lock_state();
         Self::prune(&mut state);
         let remembered = || {
-            entries
-                .iter()
+            entries.clone()
                 .filter(|(id, path)| id.len() + path.as_os_str().len() <= 8192)
         };
         let added = remembered()
@@ -10534,7 +10537,7 @@ impl NativeStore {
             }
         }
         cancel.check(bound.deadline_unix_ms)?;
-        self.remember_locations(&refreshed, context);
+        self.remember_locations(refreshed.iter().map(|(id, path)| (id, path)), context);
         drop(refreshed);
         let token = self.token("location");
         let cursor = LocateCursor {
@@ -10816,7 +10819,7 @@ impl NativeStore {
             self.queue_unfound_locations(&mut cursor, reservation, status)?;
         }
         cancel.check(cursor.limits.deadline_unix_ms)?;
-        self.remember_locations(&updates, &cursor.context);
+        self.remember_locations(updates.iter().map(|(id, path)| (id, path)), &cursor.context);
         drop(updates);
         cancel.check(cursor.limits.deadline_unix_ms)?;
         let complete = cursor.finished && cursor.pending.is_empty();
@@ -21062,7 +21065,7 @@ mod tests {
         }
         let before = store.retained_work.load(Ordering::Relaxed);
         store.remember_locations(
-            &[("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))],
+            [("fresh".to_owned(), PathBuf::from("/locations/fresh.jsonl"))].iter().map(|(id, path)| (id, path)),
             &owner,
         );
         {

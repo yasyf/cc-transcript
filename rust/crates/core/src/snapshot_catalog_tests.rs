@@ -138,3 +138,106 @@ fn registered_catalog_cursor_charge_does_not_walk_its_immutable_request() {
         store.assert_conserved();
     }
 }
+
+#[test]
+fn registered_catalog_remembers_a_valid_winner_across_root_reordering() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let left = source.directory.join("left");
+    let right = source.directory.join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    std::fs::write(left.join("wanted.jsonl"), format!("{}\n{}\n", user("left"), tool_use_line("Read"))).unwrap();
+    std::fs::write(right.join("wanted.jsonl"), format!("{}\n{}\n", user("right"), tool_use_line("Grep"))).unwrap();
+    let store = store();
+    let owner = context("catalog-winner");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = registered_prepare(&source, &root, &["wanted"]);
+    request.insert("roots", json!([right.to_string_lossy().as_ref(), left.to_string_lossy().as_ref()]));
+    let first = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    assert!(graph_has_tool(&store, &source, &owner, &first, "Read"));
+    assert!(!graph_has_tool(&store, &source, &owner, &first, "Grep"));
+    request.insert("roots", json!([left.to_string_lossy().as_ref(), right.to_string_lossy().as_ref()]));
+    let reordered = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    assert!(graph_has_tool(&store, &source, &owner, &reordered, "Read"));
+    assert!(!graph_has_tool(&store, &source, &owner, &reordered, "Grep"));
+    store.assert_conserved();
+}
+
+struct CatalogOwnerRelease(Arc<(Mutex<bool>, Condvar)>);
+
+impl Drop for CatalogOwnerRelease {
+    fn drop(&mut self) {
+        *self.0.0.lock().unwrap() = true;
+        self.0.1.notify_all();
+    }
+}
+
+#[test]
+fn registered_catalog_waiter_cancels_without_releasing_the_busy_owner() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let store = Arc::new(store());
+    let owner = context("catalog-waiter");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let request = registered_prepare(&source, &root, &["missing"]);
+    let (entered, observed_entry) = std::sync::mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let release_on_drop = CatalogOwnerRelease(Arc::clone(&release));
+    let release_hook = Arc::clone(&release);
+    *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new(move || {
+        entered.send(()).unwrap();
+        let mut released = release_hook.0.lock().unwrap();
+        while !*released { released = release_hook.1.wait(released).unwrap(); }
+    })));
+    let first_store = Arc::clone(&store);
+    let first_request = request.clone();
+    let first_owner = owner.clone();
+    let first = std::thread::spawn(move || catalog_counted_request(&first_store, &first_request, &first_owner, &Cancellation::default()).0);
+    observed_entry.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (waiting, observed_wait) = std::sync::mpsc::channel();
+    *store.catalog_wait_hook.lock().unwrap() = Some(Arc::new(move || { waiting.send(()).unwrap(); }));
+    let second_store = Arc::clone(&store);
+    let cancel = Cancellation::default();
+    let second_cancel = cancel.clone();
+    let (settled, observed_settlement) = std::sync::mpsc::channel();
+    let second = std::thread::spawn(move || {
+        settled.send(second_store.request(&request, &owner, &second_cancel)).unwrap();
+    });
+    observed_wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    cancel.cancel();
+    let cancelled = observed_settlement.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(cancelled["status"].as_str(), Some("cancelled"), "{cancelled:?}");
+    *store.catalog_wait_hook.lock().unwrap() = None;
+    drop(release_on_drop);
+    second.join().unwrap();
+    let completed = first.join().unwrap();
+    assert_eq!(completed["status"].as_str(), Some("incomplete"), "{completed:?}");
+    *store.location_metadata_hook.lock().unwrap() = None;
+    store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_remembers_an_earlier_chunk_before_a_later_error() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let outside = Source::new("");
+    let good = source.directory.join("good");
+    let bad = source.directory.join("bad");
+    std::fs::create_dir(&good).unwrap();
+    std::fs::create_dir(&bad).unwrap();
+    let wanted = good.join("wanted.jsonl");
+    std::fs::write(&wanted, format!("{}\n", user("wanted"))).unwrap();
+    std::os::unix::fs::symlink(&outside.path, bad.join("unrelated.txt")).unwrap();
+    let store = store();
+    let mut owner = context("catalog-earlier-chunk");
+    owner.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory.to_string_lossy().as_ref()],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = registered_prepare(&source, &root, &["wanted", "missing"]);
+    request.insert("roots", json!([bad.to_string_lossy().as_ref(), good.to_string_lossy().as_ref()]));
+    request["limits"].insert("max_items", json!(1));
+    let denied = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    assert_eq!(denied["status"].as_str(), Some("permission_denied"), "{denied:?}");
+    {
+        let state = store.lock_state();
+        assert_eq!(state.locations.get("wanted").map(|location| &location.path), Some(&wanted));
+    }
+    store.assert_conserved();
+}
