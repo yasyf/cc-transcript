@@ -3995,7 +3995,9 @@ fn published_follower(path: &Path, background: bool, requests: usize) -> Fixture
             let state = parked.store.lock_state();
             state.latest.len() == state.latest.reserved()
         };
-        if padded { break; }
+        if padded {
+            break;
+        }
         let source = LedgerSource::new(&line(&format!("cache-padding-{}", padding.len())));
         let (handle, snapshot) = acquired(&parked.store, &source.path, &parked.owner);
         release_lease(&parked.store, &handle, &parked.owner);
@@ -4036,7 +4038,10 @@ fn latest_cache_write_is_skipped_when_its_index_growth_does_not_fit() {
         let skipped = build();
         let (growth, reserved) = {
             let state = skipped.store.lock_state();
-            (state.latest_growth(&identity, &skipped.pins[0]), state.latest.reserved())
+            (
+                state.latest_growth(&identity, &skipped.pins[0]),
+                state.latest.reserved(),
+            )
         };
         assert!(growth > 0);
         assert!(
@@ -8738,28 +8743,47 @@ fn location_parked(fixture: &Fixture) -> bool {
     }
 }
 
-fn location_open_directory(cursor: &LocateCursor, root: &Path) -> (usize,usize,usize) {
+fn location_open_directory(cursor: &LocateCursor, root: &Path) -> (usize, usize, usize) {
     let canonical = std::fs::canonicalize(root).unwrap();
-    let slot = cursor.catalog.as_ref().expect("location cursor catalog pin");
+    let slot = cursor
+        .catalog
+        .as_ref()
+        .expect("location cursor catalog pin");
     let cell = slot.cell.lock().unwrap();
-    let CatalogCell::Idle(catalog) = &*cell else { panic!("parked location catalog is not idle"); };
-    let node = catalog.directories.values().find(|node| node.canonical == canonical).expect("shared location directory");
-    let CatalogScan::Open(reader) = &node.scan else { panic!("shared location directory is not open"); };
-    assert_eq!(reader.retained_bytes(),NativeStore::audit_open_directory_bytes(reader));
-    (reader.root_capacity,catalog.next_root,
-        arc_mirror::<(*mut libc::DIR,PathBuf)>() + canonical.as_os_str().len()
-            + FILESYSTEM_PATH_BYTES + vec_growth(&catalog.retry_issues,1))
+    let CatalogCell::Idle(catalog) = &*cell else {
+        panic!("parked location catalog is not idle");
+    };
+    let node = catalog
+        .directories
+        .values()
+        .find(|node| node.canonical == canonical)
+        .expect("shared location directory");
+    let CatalogScan::Open(reader) = &node.scan else {
+        panic!("shared location directory is not open");
+    };
+    assert_eq!(
+        reader.retained_bytes(),
+        NativeStore::audit_open_directory_bytes(reader)
+    );
+    (
+        reader.root_capacity,
+        catalog.next_root,
+        arc_mirror::<(*mut libc::DIR, PathBuf)>()
+            + canonical.as_os_str().len()
+            + FILESYSTEM_PATH_BYTES
+            + vec_growth(&catalog.retry_issues, 1),
+    )
 }
 
 fn open_directory_reservation(cursor: &LocateCursor, root: &Path) -> usize {
-    location_open_directory(cursor,root).2
+    location_open_directory(cursor, root).2
 }
 
 #[derive(Debug)]
 struct LocationReservationSample {
     released: usize,
-    ledger: [usize;8],
-    audit: [usize;8],
+    ledger: [usize; 8],
+    audit: [usize; 8],
 }
 
 fn sample_location_releases(fixture: &Arc<Fixture>) -> Arc<Mutex<Vec<LocationReservationSample>>> {
@@ -8767,30 +8791,60 @@ fn sample_location_releases(fixture: &Arc<Fixture>) -> Arc<Mutex<Vec<LocationRes
     let observed = Arc::clone(&samples);
     let weak = Arc::downgrade(fixture);
     *fixture.store.release_hook.lock().unwrap() = Some(Arc::new(move |released| {
-        let fixture = weak.upgrade().expect("live location fixture during reservation release");
+        let fixture = weak
+            .upgrade()
+            .expect("live location fixture during reservation release");
         {
-            let state = fixture.store.state.try_lock().expect("reservation release holds the store state lock");
+            let state = fixture
+                .store
+                .state
+                .try_lock()
+                .expect("reservation release holds the store state lock");
             for slot in state.catalogs.values() {
-                let cell = slot.cell.try_lock().expect("reservation release holds a catalog cell lock");
-                assert!(!matches!(*cell,CatalogCell::Busy),
-                    "catalog audit requires a settled owner at reservation release");
+                let cell = slot
+                    .cell
+                    .try_lock()
+                    .expect("reservation release holds a catalog cell lock");
+                assert!(
+                    !matches!(*cell, CatalogCell::Busy),
+                    "catalog audit requires a settled owner at reservation release"
+                );
             }
         }
         let ledger = ledger(&fixture.store);
         let audit = audited(&fixture.store);
-        assert_eq!(ledger,audit,"catalog/cursor/bookkeeping audit differs before reservation release");
-        observed.lock().unwrap().push(LocationReservationSample { released,ledger,audit });
+        assert_eq!(
+            ledger, audit,
+            "catalog/cursor/bookkeeping audit differs before reservation release"
+        );
+        observed.lock().unwrap().push(LocationReservationSample {
+            released,
+            ledger,
+            audit,
+        });
     }));
     samples
 }
 
 fn assert_location_release_peak(site: &str, samples: &[LocationReservationSample], cap: usize) {
-    assert!(!samples.is_empty(),"{site}: no reservation release was observed");
-    assert_eq!(samples.iter().map(|sample| sample.ledger[TOTAL]).max(),Some(cap),
-        "{site}: exact-fit admission did not reach the cap: {samples:?}");
+    assert!(
+        !samples.is_empty(),
+        "{site}: no reservation release was observed"
+    );
+    assert_eq!(
+        samples.iter().map(|sample| sample.ledger[TOTAL]).max(),
+        Some(cap),
+        "{site}: exact-fit admission did not reach the cap: {samples:?}"
+    );
     for sample in samples {
-        assert_eq!(sample.ledger,sample.audit,"{site}: independent owner audit differs");
-        assert!(sample.ledger[TOTAL] <= cap,"{site}: admitted bytes exceeded the cap");
+        assert_eq!(
+            sample.ledger, sample.audit,
+            "{site}: independent owner audit differs"
+        );
+        assert!(
+            sample.ledger[TOTAL] <= cap,
+            "{site}: admitted bytes exceeded the cap"
+        );
     }
 }
 
@@ -8800,68 +8854,103 @@ fn assert_location_probe_boundary(
     attempt: &dyn Fn(&Fixture) -> bool,
     exact: usize,
 ) {
-    assert!(exact > 0,"{site}: no additional headroom was required");
+    assert!(exact > 0, "{site}: no additional headroom was required");
     let fitted = Arc::new(build());
-    let _filler = fill_to(&fitted.store,&fitted.owner,exact);
+    let _filler = fill_to(&fitted.store, &fitted.owner, exact);
     let samples = sample_location_releases(&fitted);
-    assert!(attempt(&fitted),"{site}: exact-fit admission was refused");
+    assert!(attempt(&fitted), "{site}: exact-fit admission was refused");
     *fitted.store.release_hook.lock().unwrap() = None;
-    assert_location_release_peak(site,&samples.lock().unwrap(),cap_of(&fitted.store,&fitted.owner));
+    assert_location_release_peak(
+        site,
+        &samples.lock().unwrap(),
+        cap_of(&fitted.store, &fitted.owner),
+    );
     fitted.store.assert_conserved();
-    assert_eq!(ledger(&fitted.store),audited(&fitted.store));
+    assert_eq!(ledger(&fitted.store), audited(&fitted.store));
 }
 
 #[test]
 fn location_cursor_park_admits_its_stored_key_exactly() {
     let source = LedgerSource::new(&line("locate"));
-    for name in ["a.jsonl","b.jsonl","c.jsonl"] { source.file(name,&line(name)); }
-    for background in [false,true] {
-        let build = || location_park_fixture(&source,background);
-        let exact = exact_headroom(&build,&location_parked);
+    for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+        source.file(name, &line(name));
+    }
+    for background in [false, true] {
+        let build = || location_park_fixture(&source, background);
+        let exact = exact_headroom(&build, &location_parked);
         assert!(exact > 0);
-        refused_at_site("location park",&build,&location_parked,0,exact);
+        refused_at_site("location park", &build, &location_parked, 0, exact);
         let fitted = Arc::new(build());
-        let _filler = fill_to(&fitted.store,&fitted.owner,exact);
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
         let before = audited(&fitted.store)[TOTAL];
         let samples = sample_location_releases(&fitted);
         traced(&fitted.store);
         assert!(location_parked(&fitted));
         *fitted.store.release_hook.lock().unwrap() = None;
         let trace = traced(&fitted.store);
-        assert_admitted_before_allocating("location park",&trace);
+        assert_admitted_before_allocating("location park", &trace);
         fitted.store.assert_conserved();
-        let (token,pledged) = {
+        let (token, pledged) = {
             let state = fitted.store.lock_state();
-            let (token,cursor) = state.locates.iter().next().expect("parked location cursor");
-            assert_eq!(token.capacity(),64);
+            let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
+            assert_eq!(token.capacity(), 64);
             assert!(reserved_traces(&trace).contains(&open_directory_reservation(cursor,&source.directory)),
                 "the shared directory handle, canonical root copy and path scratch were not reserved together: {trace:?}");
             let slot = cursor.catalog.as_ref().expect("location catalog pin");
-            let (key,owned) = state.catalogs.iter().find(|(_,owned)| Arc::ptr_eq(owned,slot)).expect("shared catalog owner");
-            assert_eq!(key.capacity()+owned.charge(),NativeStore::audit_catalog_bytes(key,owned));
-            assert!(NativeStore::audit_locate_bytes(token,cursor) > token.capacity());
-            (token.clone(),state.locates.pledged(token))
+            let (key, owned) = state
+                .catalogs
+                .iter()
+                .find(|(_, owned)| Arc::ptr_eq(owned, slot))
+                .expect("shared catalog owner");
+            assert_eq!(
+                key.capacity() + owned.charge(),
+                NativeStore::audit_catalog_bytes(key, owned)
+            );
+            assert!(NativeStore::audit_locate_bytes(token, cursor) > token.capacity());
+            (token.clone(), state.locates.pledged(token))
         };
         let after = audited(&fitted.store)[TOTAL];
-        let parked = after.checked_sub(before).expect("parked native owner allocation");
+        let parked = after
+            .checked_sub(before)
+            .expect("parked native owner allocation");
         let samples = samples.lock().unwrap();
-        assert_location_release_peak("location park",&samples,cap_of(&fitted.store,&fitted.owner));
+        assert_location_release_peak(
+            "location park",
+            &samples,
+            cap_of(&fitted.store, &fitted.owner),
+        );
         assert_eq!(exact,parked+samples.iter().map(|sample| sample.released).sum::<usize>(),
             "catalog/cursor/bookkeeping allocations plus returned reservations differ from exact headroom");
-        assert_eq!(ledger(&fitted.store)[TOTAL],cap_for(&fitted.owner)-exact+parked);
+        assert_eq!(
+            ledger(&fitted.store)[TOTAL],
+            cap_for(&fitted.owner) - exact + parked
+        );
         drop(samples);
         let before = delivered(&fitted.store);
         traced(&fitted.store);
-        fitted.store.track_delivery(&json!({"id":"ledger-delivery","status":"incomplete","cursor":token}),&fitted.owner,false).unwrap();
-        assert!(traced(&fitted.store).is_empty(),"converting the location pledge admitted or allocated");
-        assert_eq!(delivered(&fitted.store)-before,pledged);
+        fitted
+            .store
+            .track_delivery(
+                &json!({"id":"ledger-delivery","status":"incomplete","cursor":token}),
+                &fitted.owner,
+                false,
+            )
+            .unwrap();
+        assert!(
+            traced(&fitted.store).is_empty(),
+            "converting the location pledge admitted or allocated"
+        );
+        assert_eq!(delivered(&fitted.store) - before, pledged);
         let refused = build();
         {
-            let _filler = fill_to(&refused.store,&refused.owner,exact-1);
+            let _filler = fill_to(&refused.store, &refused.owner, exact - 1);
             assert!(!location_parked(&refused));
         }
         assert!(refused.store.lock_state().locates.is_empty());
-        assert!(location_parked(&refused),"the store was unusable after a refused location park");
+        assert!(
+            location_parked(&refused),
+            "the store was unusable after a refused location park"
+        );
         refused.store.assert_conserved();
     }
 }
@@ -9916,51 +10005,74 @@ fn location_root_fixture(root: &Path, background: bool) -> Fixture {
 #[test]
 fn location_cursor_charges_its_open_directory_root_copy() {
     let source = LedgerSource::new(&line("locate"));
-    let roots = ["r".to_owned(),nested_name("r")].map(|name| {
+    let roots = ["r".to_owned(), nested_name("r")].map(|name| {
         let root = source.directory.join(name);
         std::fs::create_dir_all(&root).unwrap();
-        for file in ["a.jsonl","b.jsonl","c.jsonl"] { std::fs::write(root.join(file),line(file)).unwrap(); }
+        for file in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+            std::fs::write(root.join(file), line(file)).unwrap();
+        }
         root
     });
-    for background in [false,true] {
+    for background in [false, true] {
         let mut roots_charged = Vec::new();
         for root in &roots {
-            let build = || location_root_fixture(root,background);
-            let exact = exact_headroom(&build,&location_parked);
+            let build = || location_root_fixture(root, background);
+            let exact = exact_headroom(&build, &location_parked);
             assert!(exact > 0);
-            refused_at_site("location root copy",&build,&location_parked,0,exact);
+            refused_at_site("location root copy", &build, &location_parked, 0, exact);
             let fitted = Arc::new(build());
-            let _filler = fill_to(&fitted.store,&fitted.owner,exact);
+            let _filler = fill_to(&fitted.store, &fitted.owner, exact);
             let before = audited(&fitted.store)[TOTAL];
             let samples = sample_location_releases(&fitted);
             traced(&fitted.store);
             assert!(location_parked(&fitted));
             *fitted.store.release_hook.lock().unwrap() = None;
             let trace = traced(&fitted.store);
-            assert_admitted_before_allocating("location root copy",&trace);
+            assert_admitted_before_allocating("location root copy", &trace);
             fitted.store.assert_conserved();
-            let (root_capacity,reservation) = {
+            let (root_capacity, reservation) = {
                 let state = fitted.store.lock_state();
-                let (_,cursor) = state.locates.iter().next().expect("parked location cursor");
-                let (root_capacity,remaining_roots,reservation) = location_open_directory(cursor,root);
-                assert_eq!(root_capacity,std::fs::canonicalize(root).unwrap().as_os_str().len());
-                assert_eq!(remaining_roots,0);
-                assert_eq!(cursor.request["roots"].as_array().unwrap().len(),1);
-                assert_eq!(cursor.query.scope.len(),1);
+                let (_, cursor) = state.locates.iter().next().expect("parked location cursor");
+                let (root_capacity, remaining_roots, reservation) =
+                    location_open_directory(cursor, root);
+                assert_eq!(
+                    root_capacity,
+                    std::fs::canonicalize(root).unwrap().as_os_str().len()
+                );
+                assert_eq!(remaining_roots, 0);
+                assert_eq!(cursor.request["roots"].as_array().unwrap().len(), 1);
+                assert_eq!(cursor.query.scope.len(), 1);
                 assert!(reserved_traces(&trace).contains(&reservation));
                 let slot = cursor.catalog.as_ref().expect("location catalog pin");
-                let (key,owned) = state.catalogs.iter().find(|(_,owned)| Arc::ptr_eq(owned,slot)).expect("shared catalog owner");
-                assert_eq!(key.capacity()+owned.charge(),NativeStore::audit_catalog_bytes(key,owned));
-                (root_capacity,reservation)
+                let (key, owned) = state
+                    .catalogs
+                    .iter()
+                    .find(|(_, owned)| Arc::ptr_eq(owned, slot))
+                    .expect("shared catalog owner");
+                assert_eq!(
+                    key.capacity() + owned.charge(),
+                    NativeStore::audit_catalog_bytes(key, owned)
+                );
+                (root_capacity, reservation)
             };
-            let parked = audited(&fitted.store)[TOTAL]-before;
+            let parked = audited(&fitted.store)[TOTAL] - before;
             let samples = samples.lock().unwrap();
-            assert_location_release_peak("location root copy",&samples,cap_of(&fitted.store,&fitted.owner));
-            assert_eq!(exact,parked+samples.iter().map(|sample| sample.released).sum::<usize>());
-            assert_eq!(ledger(&fitted.store)[TOTAL],cap_for(&fitted.owner)-exact+parked);
-            roots_charged.push((root_capacity,reservation));
+            assert_location_release_peak(
+                "location root copy",
+                &samples,
+                cap_of(&fitted.store, &fitted.owner),
+            );
+            assert_eq!(
+                exact,
+                parked + samples.iter().map(|sample| sample.released).sum::<usize>()
+            );
+            assert_eq!(
+                ledger(&fitted.store)[TOTAL],
+                cap_for(&fitted.owner) - exact + parked
+            );
+            roots_charged.push((root_capacity, reservation));
         }
-        assert_eq!(roots_charged[1].0-roots_charged[0].0,300);
+        assert_eq!(roots_charged[1].0 - roots_charged[0].0, 300);
         assert_eq!(roots_charged[1].1-roots_charged[0].1,300,
             "the shared open-directory admission does not charge the exact additional root-copy bytes");
     }
@@ -11117,9 +11229,19 @@ fn locate_record_bytes(cursor: &LocateCursor) -> usize {
         + cursor.query.ids.capacity() * size_of::<String>()
         + cursor.query.ids.iter().map(String::capacity).sum::<usize>()
         + cursor.query.wanted.capacity() * size_of::<String>()
-        + cursor.query.wanted.iter().map(String::capacity).sum::<usize>()
+        + cursor
+            .query
+            .wanted
+            .iter()
+            .map(String::capacity)
+            .sum::<usize>()
         + cursor.query.scope.capacity() * size_of::<PathBuf>()
-        + cursor.query.scope.iter().map(PathBuf::capacity).sum::<usize>()
+        + cursor
+            .query
+            .scope
+            .iter()
+            .map(PathBuf::capacity)
+            .sum::<usize>()
 }
 
 #[test]
@@ -11453,7 +11575,7 @@ fn fresh_location_cursor_admits_its_record_before_constructing_it() {
         let record = {
             let state = control.store.lock_state();
             let (_, cursor) = state.locates.iter().next().expect("parked location cursor");
-            assert_eq!(location_open_directory(cursor,&source.directory).1,0);
+            assert_eq!(location_open_directory(cursor, &source.directory).1, 0);
             assert!(cursor.query.found.is_empty());
             locate_record_bytes(cursor)
         };
@@ -11527,15 +11649,12 @@ fn resumed_location_step_admits_each_found_session_before_retaining_it() {
     for background in [false, true] {
         let build = || location_resume_fixture(&scenario, background);
         let control = build();
-        let (mut found,pending) = {
+        let (mut found, pending) = {
             let state = control.store.lock_state();
             let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
             assert!(cursor.query.pending.is_empty());
-            assert_eq!(token.capacity(),64);
-            (
-                cursor.query.found.clone(),
-                cursor.query.pending.capacity(),
-            )
+            assert_eq!(token.capacity(), 64);
+            (cursor.query.found.clone(), cursor.query.pending.capacity())
         };
         traced(&control.store);
         let reply = submit(&control);
@@ -11567,7 +11686,7 @@ fn resumed_location_step_admits_each_found_session_before_retaining_it() {
         assert!(Path::new(&path).starts_with(&root));
         assert!(reserved_traces(&trace).contains(&site),
             "the found row was not pre-admitted by its set, queue, row and update payload: {trace:?}");
-        assert_location_probe_boundary("resumed found session",&build,&attempt,exact);
+        assert_location_probe_boundary("resumed found session", &build, &attempt, exact);
         for headroom in [REPLY_RESERVATION, exact - 1] {
             let refused = build();
             let probe = refused.store.locate_items.load(Ordering::Relaxed);
@@ -11587,8 +11706,8 @@ fn resumed_location_step_admits_each_found_session_before_retaining_it() {
                     .expect("parked location cursor");
                 state.locates.remove(&token);
             }
-            evict_unpinned(&refused.store,&refused.owner);
-            evict_unpinned(&control.store,&control.owner);
+            evict_unpinned(&refused.store, &refused.owner);
+            evict_unpinned(&control.store, &control.owner);
             assert!(refused.store.lock_state().locates.is_empty());
             assert_eq!(
                 (
@@ -11642,14 +11761,17 @@ fn resumed_location_step_forgets_an_invalid_session_before_admitting_the_next_on
     for background in [false, true] {
         let build = || invalidated_location_fixture(&scenario, background);
         let control = build();
-        let (found,forgotten,pending) = {
+        let (found, forgotten, pending) = {
             let state = control.store.lock_state();
             let (token, cursor) = state.locates.iter().next().expect("parked location cursor");
-            assert_eq!(cursor.query.pending.len(),1);
-            assert_eq!(token.capacity(),64);
+            assert_eq!(cursor.query.pending.len(), 1);
+            assert_eq!(token.capacity(), 64);
             (
                 cursor.query.found.clone(),
-                cursor.query.pending[0]["session_id"].as_str().unwrap().to_owned(),
+                cursor.query.pending[0]["session_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
                 cursor.query.pending.capacity(),
             )
         };
@@ -11688,11 +11810,20 @@ fn resumed_location_step_forgets_an_invalid_session_before_admitting_the_next_on
         );
         let exact = exact_headroom(&build, &attempt);
         assert!(Path::new(&path).starts_with(&root));
-        assert!(reserved_traces(&trace).contains(&(found.len()*size_of::<String>())),
-            "the invalid row was not forgotten under an admitted rebuild: {trace:?}");
-        assert!(reserved_traces(&trace).contains(&site),
-            "the replacement row was not pre-admitted by its retained payload: {trace:?}");
-        assert_location_probe_boundary("resumed found session after an invalidation",&build,&attempt,exact);
+        assert!(
+            reserved_traces(&trace).contains(&(found.len() * size_of::<String>())),
+            "the invalid row was not forgotten under an admitted rebuild: {trace:?}"
+        );
+        assert!(
+            reserved_traces(&trace).contains(&site),
+            "the replacement row was not pre-admitted by its retained payload: {trace:?}"
+        );
+        assert_location_probe_boundary(
+            "resumed found session after an invalidation",
+            &build,
+            &attempt,
+            exact,
+        );
         for headroom in [REPLY_RESERVATION, exact - 1] {
             let refused = build();
             let probe = refused.store.locate_items.load(Ordering::Relaxed);
@@ -11712,8 +11843,8 @@ fn resumed_location_step_forgets_an_invalid_session_before_admitting_the_next_on
                     .expect("parked location cursor");
                 state.locates.remove(&token);
             }
-            evict_unpinned(&refused.store,&refused.owner);
-            evict_unpinned(&control.store,&control.owner);
+            evict_unpinned(&refused.store, &refused.owner);
+            evict_unpinned(&control.store, &control.owner);
             assert!(refused.store.lock_state().locates.is_empty());
             assert_eq!(
                 (

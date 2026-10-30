@@ -748,8 +748,11 @@ struct LocateCursor {
 
 impl LocateCursor {
     fn accounted_bytes(&self) -> usize {
-        size_of::<Self>() + self.claimant.capacity() + value_bytes(&self.context)
-            + value_bytes(&self.request) + self.query.accounted_bytes()
+        size_of::<Self>()
+            + self.claimant.capacity()
+            + value_bytes(&self.context)
+            + value_bytes(&self.request)
+            + self.query.accounted_bytes()
     }
 }
 
@@ -5883,8 +5886,11 @@ impl NativeStore {
     #[cfg(test)]
     fn audit_locate_bytes(token: &String, cursor: &LocateCursor) -> usize {
         let query = &cursor.query;
-        token.capacity() + size_of::<LocateCursor>() + cursor.claimant.capacity()
-            + value_bytes(&cursor.context) + value_bytes(&cursor.request)
+        token.capacity()
+            + size_of::<LocateCursor>()
+            + cursor.claimant.capacity()
+            + value_bytes(&cursor.context)
+            + value_bytes(&cursor.request)
             + query.ids.capacity() * size_of::<String>()
             + query.ids.iter().map(String::capacity).sum::<usize>()
             + query.wanted.capacity() * size_of::<String>()
@@ -5898,10 +5904,31 @@ impl NativeStore {
             + query.output.capacity() * size_of::<Value>()
             + query.output.iter().map(value_bytes).sum::<usize>()
             + query.choices.capacity() * size_of::<Reverse<CatalogChoice>>()
-            + query.choices.iter().map(|Reverse(choice)| choice.id.capacity() + choice.path.capacity() + choice.order.capacity() * size_of::<usize>()).sum::<usize>()
-            + query.floor.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
-            + query.validated_after.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
-            + query.capabilities.keys().map(|order| size_of::<(Vec<usize>,CatalogCapability)>() + order.capacity() * size_of::<usize>()).sum::<usize>()
+            + query
+                .choices
+                .iter()
+                .map(|Reverse(choice)| {
+                    choice.id.capacity()
+                        + choice.path.capacity()
+                        + choice.order.capacity() * size_of::<usize>()
+                })
+                .sum::<usize>()
+            + query
+                .floor
+                .as_ref()
+                .map_or(0, |order| order.capacity() * size_of::<usize>())
+            + query
+                .validated_after
+                .as_ref()
+                .map_or(0, |order| order.capacity() * size_of::<usize>())
+            + query
+                .capabilities
+                .keys()
+                .map(|order| {
+                    size_of::<(Vec<usize>, CatalogCapability)>()
+                        + order.capacity() * size_of::<usize>()
+                })
+                .sum::<usize>()
             + query.authority_checks.iter().map(|(order,path)| size_of::<(Vec<usize>,PathBuf)>() + order.capacity() * size_of::<usize>() + path.capacity()).sum::<usize>()
     }
 
@@ -7079,8 +7106,11 @@ impl NativeStore {
                     }
                     if locate.context["authority"]["kind"] != context["authority"]["kind"]
                         || (context["authority"]["kind"].as_str() == Some("restricted_roots")
-                            && locate.context["authority"]["roots"] != context["authority"]["roots"])
-                    { locate.query.authority_epoch += 1; }
+                            && locate.context["authority"]["roots"]
+                                != context["authority"]["roots"])
+                    {
+                        locate.query.authority_epoch += 1;
+                    }
                     locate.context = context.clone();
                     return self.locate_step(cursor, locate, &mut reservation, cancel, usage);
                 }
@@ -10832,7 +10862,8 @@ impl NativeStore {
                 + requested.len() * size_of::<String>()
                 + set_growth(&HashSet::<String>::new(), requested.len())
                 + 2 * id_bytes
-                + paths + value_bytes(request),
+                + paths
+                + value_bytes(request),
         )?;
         #[cfg(test)]
         self.locate_records.fetch_add(1, Ordering::Relaxed);
@@ -10940,12 +10971,33 @@ impl NativeStore {
             request: request.clone(),
             limits: bound,
             query: CatalogLocateQuery {
-                ids, wanted, found, scope, pending, output:Vec::new(), page_bytes:64,
-                choices:BinaryHeap::new(), choice_bytes:0, choices_ready:false, choice_version:0,
-                floor:None, frontier:None, validated_after:None, final_hold:false, authority_epoch:0,
-                authority_checks:BTreeMap::new(), authority_check_bytes:0, authority_view:None,
-                capabilities:BTreeMap::new(), capability_bytes:0, generation_seen:None, catalog_owner:None,
-                emitted: 0, output_bytes: 0, finished: false, exhausted: false,
+                ids,
+                wanted,
+                found,
+                scope,
+                pending,
+                output: Vec::new(),
+                page_bytes: 64,
+                choices: BinaryHeap::new(),
+                choice_bytes: 0,
+                choices_ready: false,
+                choice_version: 0,
+                floor: None,
+                frontier: None,
+                validated_after: None,
+                final_hold: false,
+                authority_epoch: 0,
+                authority_checks: BTreeMap::new(),
+                authority_check_bytes: 0,
+                authority_view: None,
+                capabilities: BTreeMap::new(),
+                capability_bytes: 0,
+                generation_seen: None,
+                catalog_owner: None,
+                emitted:  0,
+                output_bytes:  0,
+                finished:  false,
+                exhausted:  false,
             },
             catalog: None,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
@@ -10964,22 +11016,50 @@ impl NativeStore {
         cancel.check(cursor.limits.deadline_unix_ms)?;
         cursor.query.page_bytes = 64;
         {
-            let mut budget = CatalogBudget { store:self, context:&cursor.context, reservation:&mut *reservation,
-                attempt:self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0 };
-            cursor.query.drain(self, &cursor.context, &cursor.limits, cancel, &mut budget)?;
+            let mut budget = CatalogBudget {
+                store: self,
+                context: &cursor.context,
+                reservation: &mut *reservation,
+                attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64,
+                scratch_bytes: 0,
+            };
+            cursor
+                .query
+                .drain(self, &cursor.context, &cursor.limits, cancel, &mut budget)?;
         }
-        if cursor.query.found.len() == cursor.query.ids.len() { cursor.query.finished = true; }
-        let page = if cursor.query.finished || !cursor.query.pending.is_empty()
-            || cursor.query.page_bytes >= MAX_DATA_BYTES || cursor.query.output.len() >= 1024 {
+        if cursor.query.found.len() == cursor.query.ids.len() {
+            cursor.query.finished = true;
+        }
+        let page = if cursor.query.finished
+            || !cursor.query.pending.is_empty()
+            || cursor.query.page_bytes >= MAX_DATA_BYTES
+            || cursor.query.output.len() >= 1024
+        {
             cursor.query.page()
         } else {
             let input = CatalogInput {
-                ids:cursor.request["session_ids"].as_array().expect("validated location ids"),
-                roots:cursor.request["roots"].as_array().expect("validated location roots"),
+                ids: cursor.request["session_ids"]
+                    .as_array()
+                    .expect("validated location ids"),
+                roots: cursor.request["roots"]
+                    .as_array()
+                    .expect("validated location roots"),
             };
-            let CatalogResolution::Public { page, slot, reservation:mut held } =
-                self.catalog_access(input, &cursor.context, cancel, &mut cursor.limits, usage,
-                    CatalogMode::Public(&mut cursor.query))? else { unreachable!("public location result") };
+            let CatalogResolution::Public {
+                page,
+                slot,
+                reservation: mut held,
+            } = self.catalog_access(
+                input,
+                &cursor.context,
+                cancel,
+                &mut cursor.limits,
+                usage,
+                CatalogMode::Public(&mut cursor.query),
+            )?
+            else {
+                unreachable!("public location result")
+            };
             cursor.catalog = Some(slot);
             reservation.bytes += held.bytes;
             held.bytes = 0;
@@ -10988,7 +11068,12 @@ impl NativeStore {
         cancel.check(cursor.limits.deadline_unix_ms)?;
         let data = json!({"kind":"located","sessions":page.sessions});
         if page.complete {
-            return Ok((data, None, page.exhausted.then(|| "bounded location incomplete".to_owned())));
+            return Ok((
+                data,
+                None,
+                page.exhausted
+                    .then(|| "bounded location incomplete".to_owned()),
+            ));
         }
         let mut state = self.lock_state();
         cancel.check(cursor.limits.deadline_unix_ms)?;
@@ -11447,32 +11532,42 @@ mod tests {
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {
         let source = Source::new("");
         let outside = Source::new("");
-        std::os::unix::fs::symlink(&outside.path,source.directory.join("outside.jsonl")).unwrap();
+        std::os::unix::fs::symlink(&outside.path, source.directory.join("outside.jsonl")).unwrap();
         let store = store();
         let owner = context("public-physical-authority");
-        let request = public_catalog_request(&source,&["missing"]);
-        let (rows,_) = public_catalog_finish(&store,&request,&owner);
-        assert_eq!(rows[0]["status"].as_str(),Some("missing"));
+        let request = public_catalog_request(&source, &["missing"]);
+        let (rows, _) = public_catalog_finish(&store, &request, &owner);
+        assert_eq!(rows[0]["status"].as_str(), Some("missing"));
         let mut restricted = owner.clone();
         restricted.insert("authority",json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
-        let response = store.request(&request,&restricted,&Cancellation::default());
-        assert_eq!(response["status"].as_str(),Some("permission_denied"),"{response:?}");
+        let response = store.request(&request, &restricted, &Cancellation::default());
+        assert_eq!(
+            response["status"].as_str(),
+            Some("permission_denied"),
+            "{response:?}"
+        );
         assert!(response["data"].is_null());
         assert!(response["cursor"].is_null());
         store.assert_conserved();
     }
 
-#[test]
-fn public_catalog_location_hints_use_bytes_instead_of_a_4096_count_limit() {
-    let store = store();
-    let owner = context("public-catalog-hints");
-    let entries: Vec<_> = (0..4587).map(|index| (format!("session-{index:04}"), PathBuf::from(format!("/locations/session-{index:04}.jsonl")))).collect();
-    store.remember_locations(entries.iter().map(|(id, path)| (id, path)), &owner);
-    assert_eq!(store.lock_state().locations.len(), 4587);
-    assert!(store.lock_state().locations.contains_key("session-0000"));
-    store.assert_conserved();
-}
-
+    #[test]
+    fn public_catalog_location_hints_use_bytes_instead_of_a_4096_count_limit() {
+        let store = store();
+        let owner = context("public-catalog-hints");
+        let entries: Vec<_> = (0..4587)
+            .map(|index| {
+                (
+                    format!("session-{index:04}"),
+                    PathBuf::from(format!("/locations/session-{index:04}.jsonl")),
+                )
+            })
+            .collect();
+        store.remember_locations(entries.iter().map(|(id, path)| (id, path)), &owner);
+        assert_eq!(store.lock_state().locations.len(), 4587);
+        assert!(store.lock_state().locations.contains_key("session-0000"));
+        store.assert_conserved();
+    }
 
     fn context(claimant: &str) -> Value {
         json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint()})
