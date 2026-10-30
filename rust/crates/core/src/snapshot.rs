@@ -2311,7 +2311,7 @@ impl StoreState {
         self.carried_classifications.reserve_for(&lineage);
         self.carried_expiry.reserve(1);
         self.ledger.shared.reserve(carried.anchors());
-        if let Some(previous) = self.carried_classifications.remove(&lineage) {
+        if let Some(previous) = self.carried_classifications.get(&lineage).cloned() {
             self.detach_carried_owner(&lineage, &previous);
             for anchor in previous.anchors() {
                 self.ledger.shared.release(anchor.id);
