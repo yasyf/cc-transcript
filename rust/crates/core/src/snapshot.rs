@@ -11230,6 +11230,7 @@ mod tests {
     }
 
     include!("snapshot_catalog_tests.rs");
+    include!("snapshot_public_catalog_tests.rs");
 
     fn context(claimant: &str) -> Value {
         json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint()})
