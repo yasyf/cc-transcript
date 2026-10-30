@@ -241,3 +241,52 @@ fn registered_catalog_remembers_an_earlier_chunk_before_a_later_error() {
     }
     store.assert_conserved();
 }
+
+#[test]
+fn registered_catalog_key_admits_escaped_capacity_before_encoding() {
+    let source = Source::new("");
+    let directory = source.directory.join("\u{01}".repeat(240));
+    std::fs::create_dir(&directory).unwrap();
+    let roots: Vec<_> = (0..64).map(|_| directory.to_str().unwrap()).collect();
+    let request = json!({"roots":roots,"thread_ids":["missing"]});
+    for background in [false, true] {
+        let mut owner = context("catalog-key-capacity");
+        if background { owner.insert("work_class", json!("background")); }
+        let control = store();
+        let (key, reservation) = control.catalog_key(request["roots"].as_array().unwrap(), &owner).unwrap();
+        let bound = reservation.bytes;
+        let binding = json!({"authority":owner["authority"],"roots":request["roots"]});
+        let expected = crate::ids::canonical_json(&binding).unwrap();
+        let old_bound = LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&owner["authority"])
+            + 2 * value_bytes(&request["roots"]) + 1024;
+        assert!(expected.len() > old_bound);
+        assert_eq!(key, format!("{:x}", Sha256::digest(expected.as_bytes())));
+        drop(reservation);
+        control.assert_conserved();
+        for (headroom, expected_encodes) in [(bound - 1, 0), (bound, 1)] {
+            let store = store();
+            let encoded = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&encoded);
+            *store.decode_hook.lock().unwrap() = Some(Arc::new(move |stage| {
+                if stage == "catalog_key" { observed.fetch_add(1, Ordering::Relaxed); }
+            }));
+            let cap = store.config.retained - if background { store.config.hook_bytes } else { 0 };
+            let baseline = store.retained_accounted_bytes();
+            let filler = store.reserve_projection(&owner, cap - baseline - headroom).unwrap();
+            let before = store.retained_accounted_bytes();
+            let mut limits = WorkLimits {
+                max_read_bytes: 8192, max_source_read_bytes: 8192, max_events: 128,
+                max_items: 1024, max_output_bytes: 8192, max_discovery_entries: 128,
+                max_sources: 128, deadline_unix_ms: now_ms() + 30_000,
+            };
+            let outcome = store.catalog_access(CatalogInput { ids: request["thread_ids"].as_array().unwrap(), roots: request["roots"].as_array().unwrap() }, &owner, &Cancellation::default(),
+                &mut limits, &mut [0;20], CatalogMode::Locate);
+            assert!(matches!(outcome, Err(error) if error.status == Status::RetainedLimit));
+            assert_eq!(encoded.load(Ordering::Relaxed), expected_encodes);
+            assert_eq!(store.retained_accounted_bytes(), before);
+            assert!(store.lock_state().catalogs.is_empty());
+            drop(filler);
+            store.assert_conserved();
+        }
+    }
+}
