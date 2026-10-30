@@ -1793,6 +1793,7 @@ impl NativeStore {
         };
         let mut members = Vec::new();
         let mut seen = HashSet::new();
+        let mut dirs = ResolvedDirs::new(self, context);
         for path in ids
             .iter()
             .filter_map(Value::as_str)
@@ -1800,10 +1801,17 @@ impl NativeStore {
             .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
         {
             cancel.check(remaining.deadline_unix_ms)?;
-            let canonical = self.canonical_path(&path).map_err(io_error)?;
-            self.authority(context, Some(&canonical))?;
-            let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-            self.after_source_resolved(&path);
+            let (canonical, metadata) = if context["authority"]["kind"].as_str() == Some("user") {
+                let resolved = dirs.resolve(&path)?;
+                self.authority(context, Some(&resolved.0))?;
+                resolved
+            } else {
+                let canonical = self.canonical_path(&path).map_err(io_error)?;
+                self.authority(context, Some(&canonical))?;
+                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+                self.after_source_resolved(&path);
+                (canonical, metadata)
+            };
             if !metadata.is_file() {
                 return Err(invalid("registered source must be a file"));
             }
@@ -1908,6 +1916,10 @@ impl NativeStore {
             }
             examined += 1;
         }
+        if !dirs.hold(|| cancel.check(remaining.deadline_unix_ms))? {
+            return Err(SnapshotError::new(Status::Changed, "registered source parent changed during preparation"));
+        }
+        drop(dirs);
         if members.iter().filter(|member| active(member, since)).count() > remaining.max_sources {
             return Err(SnapshotError::new(
                 Status::Incomplete,
@@ -3071,7 +3083,7 @@ impl<'a> ResolvedDirs<'a> {
     fn resolve(&mut self, path: &Path) -> Result<(PathBuf, std::fs::Metadata), SnapshotError> {
         let resolved = match self.context["authority"]["kind"].as_str() {
             Some("user") => match std::fs::symlink_metadata(path).map_err(io_error)? {
-                metadata if metadata.is_symlink() => self.exact(path)?,
+                metadata if metadata.is_symlink() || path.file_name().is_none() => self.exact(path)?,
                 metadata => (self.memoized(path)?, metadata),
             },
             _ => self.exact(path)?,
