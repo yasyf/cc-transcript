@@ -2856,6 +2856,8 @@ pub struct NativeStore {
     #[cfg(test)]
     location_entry_canonicalizations: AtomicUsize,
     #[cfg(test)]
+    location_canonicalizations: AtomicUsize,
+    #[cfg(test)]
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
     resolve_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
@@ -3344,6 +3346,8 @@ impl NativeStore {
             location_metadata_hook: Mutex::new(None),
             #[cfg(test)]
             location_entry_canonicalizations: AtomicUsize::new(0),
+            #[cfg(test)]
+            location_canonicalizations: AtomicUsize::new(0),
             #[cfg(test)]
             release_hook: Mutex::new(None),
             #[cfg(test)]
@@ -10266,6 +10270,9 @@ impl NativeStore {
         if !scope.iter().any(|root| path.starts_with(root)) {
             return Ok(None);
         }
+        #[cfg(test)]
+        self.location_canonicalizations
+            .fetch_add(1, Ordering::Relaxed);
         let canonical = match std::fs::canonicalize(path) {
             Ok(path) => path,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -10397,6 +10404,9 @@ impl NativeStore {
         for root in roots.iter() {
             cancel.check(bound.deadline_unix_ms)?;
             let path = PathBuf::from(root.as_str().ok_or_else(|| invalid("invalid root"))?);
+            #[cfg(test)]
+            self.location_canonicalizations
+                .fetch_add(1, Ordering::Relaxed);
             let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
             #[cfg(test)]
@@ -10592,6 +10602,9 @@ impl NativeStore {
                         self.location_entry_canonicalizations
                             .fetch_add(1, Ordering::Relaxed);
                     }
+                    #[cfg(test)]
+                    self.location_canonicalizations
+                        .fetch_add(1, Ordering::Relaxed);
                     let canonical = match std::fs::canonicalize(&path) {
                         Ok(path) => path,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -11568,7 +11581,7 @@ mod tests {
     }
 
     #[test]
-    fn location_nonmatching_regular_files_skip_canonicalization() {
+    fn location_nonmatching_regular_files_share_parent_canonicalization() {
         let source = Source::new("");
         std::fs::remove_file(&source.path).unwrap();
         for index in 0..20 {
@@ -11578,7 +11591,7 @@ mod tests {
             )
             .unwrap();
         }
-        let store = store();
+        let store = NativeStore::new(&json!({"max_events_per_step":64})).unwrap();
         let owner = context("a");
         let template = acquire(&source.path);
         let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["absent"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
@@ -11590,6 +11603,8 @@ mod tests {
         assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
         assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
         assert_eq!(store.lock_state().counters[17], 20);
+        assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 3);
+        store.assert_conserved();
         assert_eq!(
             store
                 .location_entry_canonicalizations
