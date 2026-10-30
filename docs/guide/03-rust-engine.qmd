@@ -78,11 +78,11 @@ time instead of compiling.
 The lexicon needs no spec at all: `rust/crates/py/src/lexicon.rs` compiles the two
 packaged TSVs in at build time, and tokenization runs a real NLP pipeline —
 tokenizer, POS tagger, lemmatizer, and dependency parse — over the embedded
-UD-English-EWT model, via `udpipe-rs`. The model ships in the wheel
-(`cc_transcript/sentiment/data/en-ewt.udpipe`) and compiles into the
-extension the same way the TSVs do: no download, no runtime file read. One
-engine is what makes a real pipeline affordable again — there is no Python
-toolchain left to hold at parity. The tokenizer splits contractions the way
+UD-English-EWT model, via `udpipe-rs`. Like the TSV data, the model is embedded
+into the native extension at compile time, requiring no runtime downloads or
+file reads. The standalone `cc_transcript/sentiment/data/en-ewt.udpipe` input
+remains in source distributions for compilation, while built wheels rely solely
+on the embedded copy. One engine is what makes a real pipeline affordable again — there is no Python toolchain left to hold at parity. The tokenizer splits contractions the way
 Universal Dependencies does (`can't` yields `ca` and `n't`), and
 `Lexicon.has_hit` is negation-aware: a negated token's polarity is
 sign-flipped, so "isn't great" reaches the negative floor, not the positive
