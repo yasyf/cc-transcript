@@ -953,7 +953,7 @@ impl NativeStore {
         dirs.hold(|| cancel.check(deadline))
     }
 
-    fn prepare_graph(
+    fn prepare_graph_ready(
         &self,
         request: &Value,
         context: &Value,
@@ -1596,7 +1596,7 @@ impl NativeStore {
         reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut state = self.lock_state();
-        if state.prepared_builds.len() >= self.lease_cap(&build.context)? {
+        if state.prepared_builds.len() + state.registered_builds.len() >= self.lease_cap(&build.context)? {
             return Err(SnapshotError::new(
                 Status::LeaseLimit,
                 "prepared build admission exhausted",
@@ -1619,34 +1619,6 @@ impl NativeStore {
             Some(token),
             Some("prepared graph work incomplete".to_owned()),
         ))
-    }
-
-    fn collect_located(
-        page: &Value,
-        located: &mut HashMap<String, PathBuf>,
-    ) -> Result<(), SnapshotError> {
-        for item in page["sessions"]
-            .as_array()
-            .ok_or_else(|| invalid("invalid registered location result"))?
-        {
-            match str_field(item, "status")? {
-                "ok" => {
-                    located.insert(
-                        str_field(item, "session_id")?.to_owned(),
-                        PathBuf::from(str_field(item, "path")?),
-                    );
-                }
-                "missing" => {}
-                "incomplete" => {
-                    return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "registered location incomplete",
-                    ));
-                }
-                _ => return Err(invalid("invalid registered location status")),
-            }
-        }
-        Ok(())
     }
 
     fn registered_membership(
@@ -1799,7 +1771,7 @@ impl NativeStore {
         let ids = request["thread_ids"]
             .as_array()
             .ok_or_else(|| invalid("missing registered thread ids"))?;
-        let roots = request["roots"]
+        request["roots"]
             .as_array()
             .ok_or_else(|| invalid("missing registered roots"))?;
         let direct = request["direct_paths"]
@@ -1813,45 +1785,12 @@ impl NativeStore {
         #[cfg(test)]
         self.warm_records.fetch_add(1, Ordering::Relaxed);
         let since = active_since_ns(request)?;
-        let mut located = HashMap::new();
-        for chunk in ids.chunks(1024.min(remaining.max_items)) {
-            let mut bounds = *remaining;
-            bounds.max_sources = chunk.len();
-            let location = json!({"schema":SCHEMA,"id":"warm-registered-locate","operation":"locate","session_ids":chunk,"roots":roots,"deadline_unix_ms":remaining.deadline_unix_ms,"limits":bounds.to_json()});
-            let before = usage[17];
-            let mut outcome = self.locate(&location, context, cancel, usage)?;
-            loop {
-                let page = Self::collect_located(&outcome.0, &mut located);
-                let Some(cursor) = outcome.1.take() else {
-                    page?;
-                    if outcome.2.is_some() {
-                        return Err(SnapshotError::new(
-                            Status::Incomplete,
-                            "registered location incomplete",
-                        ));
-                    }
-                    break;
-                };
-                let resumed = page.and_then(|()| {
-                    self.dispatch(
-                        &json!({"schema":SCHEMA,"id":"warm-registered-locate-resume","operation":"resume","cursor":&cursor}),
-                        context,
-                        cancel,
-                        usage,
-                    )
-                });
-                outcome = match resumed {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        self.lock_state().locates.remove(&cursor);
-                        return Err(error);
-                    }
-                };
-            }
-            remaining.max_discovery_entries = remaining
-                .max_discovery_entries
-                .saturating_sub((usage[17] - before) as usize);
-        }
+        let (located, _catalog_reservation) = match self.catalog_paths(
+            request, context, cancel, remaining, usage, CatalogMode::Locate,
+        )? {
+            CatalogResolution::Ready { paths, reservation } => (paths, reservation),
+            CatalogResolution::Indexed | CatalogResolution::Pending(_) => unreachable!("synchronous catalog lookup"),
+        };
         let mut members = Vec::new();
         let mut seen = HashSet::new();
         for path in ids
