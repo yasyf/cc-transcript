@@ -1165,6 +1165,8 @@ struct OpenedDirectory {
     directory: std::ptr::NonNull<libc::DIR>,
     root: PathBuf,
     stamp: SourceStamp,
+    #[cfg(test)]
+    parent_metadata_attempts: AtomicUsize,
 }
 
 // Only OpenDirectory owns the iteration capability. Entries share immutable root/name hints;
@@ -1211,6 +1213,8 @@ impl OpenDirectoryEntry {
 impl OpenedDirectory {
     fn current_stamp(&self) -> std::io::Result<SourceStamp> {
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        #[cfg(test)]
+        self.parent_metadata_attempts.fetch_add(1,Ordering::Relaxed);
         if unsafe { libc::fstat(libc::dirfd(self.directory.as_ptr()),metadata.as_mut_ptr()) } != 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -1251,7 +1255,10 @@ impl OpenDirectory {
         }
         let metadata = unsafe { metadata.assume_init() };
         let stamp = CatalogChildMetadata::from_descriptor(&metadata).stamp;
-        Ok(Self { entries:Arc::new(OpenedDirectory { directory,root:path.to_owned(),stamp }),end_of_stream:false })
+        Ok(Self { entries:Arc::new(OpenedDirectory { directory,root:path.to_owned(),stamp,
+            #[cfg(test)]
+            parent_metadata_attempts:AtomicUsize::new(0),
+        }),end_of_stream:false })
     }
 
     fn stamp(&self) -> SourceStamp { self.entries.stamp }
@@ -11695,6 +11702,7 @@ mod tests {
     include!("snapshot_public_observation_tests.rs");
     include!("snapshot_public_unknown_dtype_tests.rs");
     include!("snapshot_public_child_provenance_tests.rs");
+    include!("snapshot_common_borrowed_parent_tests.rs");
 
     #[test]
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {
