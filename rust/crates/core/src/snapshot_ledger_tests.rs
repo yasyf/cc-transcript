@@ -1535,7 +1535,7 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
 #[test]
 fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocation() {
     let source = LedgerSource::new(&lines(0..200));
-    let store = fast_store();
+    let store = store_with(1024, 4096, &[]);
     let owner = context_for("spine-wrapper-escape", false);
     let (whole_handle, full) = acquired(&store, &source.path, &owner);
     let mut request = acquire(&source.path);
@@ -9645,10 +9645,15 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         .as_ref()
         .expect("the load extends a published snapshot");
     assert!(load.result.is_none() && load.codex_raw.is_none() && load.codex_append.is_none());
-    let shared: HashSet<usize> = previous
+    let shared_rows: HashSet<usize> = previous
         .chunks
         .iter()
         .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
+        .collect();
+    let shared_wrappers: HashSet<usize> = previous
+        .chunks
+        .iter()
+        .map(|chunk| Arc::as_ptr(chunk) as usize)
         .collect();
     let prior: HashSet<usize> = previous
         .activity
@@ -9663,11 +9668,23 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
         + load.fence.capacity()
         + load.session_id.as_ref().map_or(0, String::capacity)
         + load.chunks.capacity() * size_of::<Arc<EntryChunk>>()
+        + load.source_chunks.capacity() * size_of::<SourceChunkSpan>()
         + load
             .chunks
             .iter()
-            .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
-            .map(|chunk| NativeStore::audit_chunk_bytes(chunk))
+            .map(|chunk| {
+                let rows = if shared_rows.contains(&(Arc::as_ptr(&chunk.entries) as usize)) {
+                    0
+                } else {
+                    NativeStore::audit_chunk_rows_bytes(&chunk.entries)
+                };
+                let metadata = if shared_wrappers.contains(&(Arc::as_ptr(chunk) as usize)) {
+                    0
+                } else {
+                    NativeStore::audit_chunk_metadata_bytes(chunk)
+                };
+                rows + metadata
+            })
             .sum::<usize>()
         + load
             .activity
@@ -14471,7 +14488,7 @@ fn retained_line_arenas_are_charged_whole_until_their_rows_drop() {
     let charged: usize = snapshot
         .chunks
         .iter()
-        .map(|chunk| chunk_charge(chunk))
+        .map(|chunk| NativeStore::audit_chunk_rows_bytes(&chunk.entries))
         .sum();
     let rows: Vec<_> = snapshot
         .chunks
@@ -14483,7 +14500,7 @@ fn retained_line_arenas_are_charged_whole_until_their_rows_drop() {
     evict_unpinned(&store, &owner);
     store.assert_conserved();
     let escaped = ledger(&store)[ENTRIES];
-    assert!(escaped >= charged, "{escaped} < {charged}");
+    assert_eq!(escaped, charged);
     assert!(
         rows.iter().all(|rows| Arc::strong_count(rows) == 1),
         "the escaped rows are held past their last clone"

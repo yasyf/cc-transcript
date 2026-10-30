@@ -925,6 +925,7 @@ struct PreparedSourceRef {
 
 #[derive(Clone)]
 struct WarmMembership {
+    catalog: Option<CatalogCertificate>,
     members: Arc<[PreparedSourceRef]>,
     positions: Arc<[(SourceIdentity, usize)]>,
     sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
@@ -1895,6 +1896,7 @@ impl Delivery {
 }
 
 pub(crate) struct StoreState {
+    gauge_reports: Work,
     latest: Table<SourceIdentity, usize>,
     source_spines: Table<SourceIdentity, BTreeSet<SourceView>>,
     source_view_nodes: usize,
@@ -1968,6 +1970,7 @@ fn carried_deadline(carried: &CarriedClassification) -> u64 {
 impl StoreState {
     fn new(work: Work) -> Self {
         Self {
+            gauge_reports: Work::default(),
             latest: Table::new(work.clone()),
             source_spines: Table::new(work.clone()),
             source_view_nodes: 0,
@@ -2276,7 +2279,7 @@ impl StoreState {
         self.carried_classifications.reserve_for(&lineage);
         self.carried_expiry.reserve(1);
         self.ledger.shared.reserve(carried.anchors());
-        if let Some(previous) = self.carried_classifications.remove(&lineage) {
+        if let Some(previous) = self.carried_classifications.get(&lineage).cloned() {
             self.detach_carried_owner(&lineage, &previous);
             for anchor in previous.anchors() {
                 self.ledger.shared.release(anchor.id);
@@ -3084,12 +3087,32 @@ struct GaugeTerms {
 }
 
 impl GaugeTerms {
-    fn report(&self, state: &StoreState) -> Value {
+    fn totals(&self, state: &StoreState) -> (usize, usize, usize) {
         let metadata = self.metadata + NativeStore::fixed_metadata_bytes(state);
         let owned = state.owned.accounted_bytes();
+        (
+            self.projections + self.discovery + self.graph + metadata + owned,
+            self.pending + self.classifier + self.label + state.transient_bytes,
+            self.entries
+                + self.indexes
+                + self.pending
+                + self.classifier
+                + self.label
+                + self.projections
+                + self.discovery
+                + self.graph
+                + metadata
+                + state.transient_bytes
+                + owned,
+        )
+    }
+
+    fn report(&self, state: &StoreState) -> Value {
+        state.gauge_reports.tick(1);
+        let (projections, pending, total) = self.totals(state);
         json!({"retained_entry_capacity_bytes": self.entries, "retained_index_capacity_bytes": self.indexes,
-            "retained_projection_bytes": self.projections + self.discovery + self.graph + metadata + owned, "pending_input_capacity_bytes": self.pending + self.classifier + self.label + state.transient_bytes,
-            "retained_total_accounted_bytes": self.entries + self.indexes + self.pending + self.classifier + self.label + self.projections + self.discovery + self.graph + metadata + state.transient_bytes + owned,
+            "retained_projection_bytes": projections, "pending_input_capacity_bytes": pending,
+            "retained_total_accounted_bytes": total,
             "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": self.live_generations})
     }
 }
@@ -3139,6 +3162,8 @@ pub struct NativeStore {
     location_canonicalizations: AtomicUsize,
     #[cfg(test)]
     authority_paths_materialized: AtomicUsize,
+    #[cfg(test)]
+    catalog_id_comparisons: AtomicUsize,
     #[cfg(test)]
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
@@ -3581,7 +3606,7 @@ impl NativeStore {
                 );
             }
         }
-        let footprint = number(&Self::gauges(&mut state), "retained_total_accounted_bytes")?;
+        let footprint = Self::retained_total(&mut state);
         if footprint > config.retained {
             return Err(invalid("retained cap below startup footprint"));
         }
@@ -3635,6 +3660,8 @@ impl NativeStore {
             location_canonicalizations: AtomicUsize::new(0),
             #[cfg(test)]
             authority_paths_materialized: AtomicUsize::new(0),
+            #[cfg(test)]
+            catalog_id_comparisons: AtomicUsize::new(0),
             #[cfg(test)]
             release_hook: Mutex::new(None),
             #[cfg(test)]
@@ -3948,7 +3975,7 @@ impl NativeStore {
         let additional = required - reservation.bytes;
         self.admit_memory(&mut state, context, additional)?;
         let cap = self.memory_cap(context)?;
-        let used = number(&Self::gauges(&mut state), "retained_total_accounted_bytes")?;
+        let used = Self::retained_total(&mut state);
         let available = cap.saturating_sub(used);
         let preferred_growth = preferred.saturating_sub(reservation.bytes);
         let growth = preferred_growth.min(available);
@@ -4985,7 +5012,7 @@ impl NativeStore {
         "live_generations",
     ];
 
-    fn gauges(state: &mut StoreState) -> Value {
+    fn gauge_terms(state: &mut StoreState) -> GaugeTerms {
         state.drain();
         GaugeTerms {
             entries: state.ledger.shared.entries(),
@@ -5020,7 +5047,15 @@ impl NativeStore {
                 + state.registered_builds.charged(),
             live_generations: state.generations.len(),
         }
-        .report(state)
+    }
+
+    fn retained_total(state: &mut StoreState) -> usize {
+        let (_, _, total) = Self::gauge_terms(state).totals(state);
+        total
+    }
+
+    fn gauges(state: &mut StoreState) -> Value {
+        Self::gauge_terms(state).report(state)
     }
 
     #[cfg(test)]
@@ -5733,6 +5768,7 @@ impl NativeStore {
     #[cfg(test)]
     fn audit_warm_membership_bytes(key: &String, membership: &WarmMembership) -> usize {
         let WarmMembership {
+            catalog: _,
             members: _,
             positions: _,
             sidechain_dirs: _,
@@ -5997,7 +6033,7 @@ impl NativeStore {
     #[cfg(test)]
     pub(crate) fn retained_accounted_bytes(&self) -> usize {
         let mut state = self.lock_state();
-        number(&Self::gauges(&mut state), "retained_total_accounted_bytes").unwrap()
+        Self::retained_total(&mut state)
     }
 
     #[cfg(test)]
@@ -6111,26 +6147,17 @@ impl NativeStore {
     ) -> Result<(), SnapshotError> {
         let cap = self.memory_cap(context)?;
         let bookkeeping = cfg!(debug_assertions).then(|| Self::bookkeeping_bytes(state));
-        if number(&Self::gauges(state), "retained_total_accounted_bytes")?
-            .saturating_add(additional)
-            <= cap
-        {
+        if Self::retained_total(state).saturating_add(additional) <= cap {
             state.ledger.shared.work().admitted(additional);
             return Ok(());
         }
-        while number(&Self::gauges(state), "retained_total_accounted_bytes")?
-            .saturating_add(additional)
-            > cap
-        {
+        while Self::retained_total(state).saturating_add(additional) > cap {
             let Some(owner) = state.next_cache_victim() else {
                 break;
             };
             state.evict_cache_owner(owner);
         }
-        if number(&Self::gauges(state), "retained_total_accounted_bytes")?
-            .saturating_add(additional)
-            > cap
-        {
+        if Self::retained_total(state).saturating_add(additional) > cap {
             debug_assert!(
                 bookkeeping.is_some_and(|before| Self::bookkeeping_bytes(state) <= before),
                 "a refused admission grew retained bookkeeping"
@@ -7819,14 +7846,7 @@ impl NativeStore {
                         self.config.read_step.min(stamp.size as usize)
                     };
                 self.admit_memory(&mut state, context, additional)?;
-                let previous = state.source_spine(&stamp.identity).filter(|old| {
-                    old.event_count > 0
-                        && Self::matches_prefix(stamp, old.stamp)
-                        && (old.provider == Provider::Claude
-                            || old.provider == Provider::Codex
-                                && old.codex_raw.is_some()
-                                && old.stamp.size < stamp.size)
-                });
+                let previous = state.source_spine(stamp);
                 let previous_chunks = previous.as_ref().and_then(|previous| {
                     state
                         .generations
@@ -9080,11 +9100,10 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
-                    self.extend_load_reservation(
-                        slot,
-                        context,
-                        vec_growth(&load.source_chunks, 1),
-                    )?;
+                    let source_growth = vec_growth(&load.source_chunks, 1);
+                    if source_growth > 0 {
+                        self.extend_load_reservation(slot, context, source_growth)?;
+                    }
                     load.source_chunks.push(SourceChunkSpan {
                         start: load.pending_start,
                         end: load.pending_start + consumed as u64,
@@ -9149,11 +9168,10 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
-                    self.extend_load_reservation(
-                        slot,
-                        context,
-                        vec_growth(&load.source_chunks, 1),
-                    )?;
+                    let source_growth = vec_growth(&load.source_chunks, 1);
+                    if source_growth > 0 {
+                        self.extend_load_reservation(slot, context, source_growth)?;
+                    }
                     load.source_chunks.push(SourceChunkSpan {
                         start: load.pending_start,
                         end: slot.stamp.size,
@@ -11482,6 +11500,8 @@ mod tests {
     use super::*;
     use crate::snapshot_prepared::TextState;
     use std::io::Write;
+
+    include!("snapshot_admission_report_tests.rs");
 
     struct Source {
         directory: PathBuf,
@@ -13969,7 +13989,7 @@ mod tests {
             handle(&whole)["snapshot_id"].as_str(),
             handle(&window)["snapshot_id"].as_str()
         );
-        let before = store.state.lock().unwrap().counters[1];
+        let before = store.state.lock().unwrap().counters;
         let whole_again = finish(
             &store,
             store.request(&acquire(&source.path), &owner, &Cancellation::default()),
@@ -13986,8 +14006,8 @@ mod tests {
         );
         {
             let state = store.state.lock().unwrap();
-            assert_eq!(state.counters[1], before);
-            assert_eq!(state.counters[7], 2);
+            assert_eq!(state.counters[1], before[1]);
+            assert_eq!(state.counters[7] - before[7], 2);
             assert_eq!(state.latest.len(), 2);
         }
         let covering = finish(

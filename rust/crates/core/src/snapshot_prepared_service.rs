@@ -963,8 +963,8 @@ impl NativeStore {
         context: &Value,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
+        remaining: WorkLimits,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let remaining = limits(request)?;
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
         if !view["attachments"]
             .as_array()
@@ -1625,6 +1625,25 @@ impl NativeStore {
         ))
     }
 
+    fn catalog_membership_valid(
+        &self,
+        certificate: Option<CatalogCertificate>,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        remaining: &mut WorkLimits,
+    ) -> Result<bool, SnapshotError> {
+        let Some(certificate) = certificate else { return Ok(true); };
+        let ids = request["thread_ids"].as_array().ok_or_else(|| invalid("missing registered thread ids"))?;
+        let roots = request["roots"].as_array().ok_or_else(|| invalid("missing registered roots"))?;
+        match self.catalog_access(CatalogInput { ids, roots }, context, cancel, remaining,
+            &mut [0; 20], CatalogMode::Check(certificate))?
+        {
+            CatalogResolution::Checked(valid) => Ok(valid),
+            _ => unreachable!("catalog certificate validation"),
+        }
+    }
+
     fn registered_membership(
         &self,
         key: &str,
@@ -1637,22 +1656,28 @@ impl NativeStore {
     ) -> Result<(WarmMembership, Option<ProjectionReservation<'_>>), SnapshotError> {
         let cached = self.lock_state().warm_memberships.get(key).cloned();
         if let Some(cached) = cached {
-            if !revalidate
+            let namespace_valid = self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)?;
+            if namespace_valid && (!revalidate
                 || self.validate_warm_membership(
                     &cached.members,
                     &cached.sidechain_dirs,
                     context,
                     cancel,
                     remaining.deadline_unix_ms,
-                )?
+                )?)
             {
+                if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)? {
+                    return Err(SnapshotError::new(Status::Changed, "registered catalog changed during member validation"));
+                }
                 return Ok((cached, None));
             }
             self.lock_state().remove_warm_membership(key);
-            if let Some((membership, reservation)) =
-                self.refreshed_warm_membership(key, &cached, request, context, cancel, remaining)?
-            {
-                return Ok((membership, Some(reservation)));
+            if namespace_valid {
+                if let Some((membership, reservation)) =
+                    self.refreshed_warm_membership(key, &cached, request, context, cancel, remaining)?
+                {
+                    return Ok((membership, Some(reservation)));
+                }
             }
         }
         let (membership, reservation) =
@@ -1673,9 +1698,10 @@ impl NativeStore {
         request: &Value,
         context: &Value,
         cancel: &Cancellation,
-        remaining: &WorkLimits,
+        remaining: &mut WorkLimits,
     ) -> Result<Option<(WarmMembership, ProjectionReservation<'_>)>, SnapshotError> {
-        if cached.expires <= now_ms()
+        if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)?
+            || cached.expires <= now_ms()
             || !self.validate_sidechain_dirs(
                 &cached.sidechain_dirs,
                 context,
@@ -1730,6 +1756,9 @@ impl NativeStore {
         {
             return Ok(None);
         }
+        if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)? {
+            return Ok(None);
+        }
         self.extend_projection_reservation(
             &mut reservation,
             context,
@@ -1737,6 +1766,7 @@ impl NativeStore {
         )?;
         Ok(Some((
             WarmMembership {
+                catalog: cached.catalog,
                 revision: Self::warm_membership_revision(&members),
                 members: members.into(),
                 positions: Arc::clone(&cached.positions),
@@ -1789,11 +1819,15 @@ impl NativeStore {
         #[cfg(test)]
         self.warm_records.fetch_add(1, Ordering::Relaxed);
         let since = active_since_ns(request)?;
-        let (located, _catalog_reservation) = match self.catalog_access(
-            CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
-        )? {
-            CatalogResolution::Ready { paths, reservation } => (paths, reservation),
-            CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Public { .. } => unreachable!("synchronous catalog lookup"),
+        let (located, _catalog_reservation, certificate) = if ids.is_empty() {
+            (HashMap::new(), None, None)
+        } else {
+            match self.catalog_access(
+                CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
+            )? {
+                CatalogResolution::Ready { paths, reservation, certificate } => (paths, Some(reservation), certificate),
+                CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Checked(_) | CatalogResolution::Public { .. } => unreachable!("synchronous catalog lookup"),
+            }
         };
         let mut members = Vec::new();
         let mut seen = HashSet::new();
@@ -1804,9 +1838,10 @@ impl NativeStore {
             .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
         {
             cancel.check(remaining.deadline_unix_ms)?;
-            let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
+            let canonical = self.canonical_path(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
             let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+            self.after_source_resolved(&path);
             if !metadata.is_file() {
                 return Err(invalid("registered source must be a file"));
             }
@@ -1911,6 +1946,9 @@ impl NativeStore {
             }
             examined += 1;
         }
+        if !self.catalog_membership_valid(certificate, request, context, cancel, remaining)? {
+            return Err(SnapshotError::new(Status::Changed, "registered catalog changed during member preparation"));
+        }
         if members.iter().filter(|member| active(member, since)).count() > remaining.max_sources {
             return Err(SnapshotError::new(
                 Status::Incomplete,
@@ -1926,6 +1964,7 @@ impl NativeStore {
         )?;
         Ok((
             WarmMembership {
+                catalog: certificate,
                 revision: Self::warm_membership_revision(&members),
                 positions: member_positions(&members),
                 members: members.into(),
@@ -1946,6 +1985,17 @@ impl NativeStore {
     ) -> Result<(), SnapshotError> {
         let mut state = self.lock_state();
         Self::prune(&mut state);
+        let _catalog_pin = membership.catalog.map(|certificate| {
+            let slot = state.catalogs.get(certificate.key()).ok_or_else(||
+                SnapshotError::new(Status::Changed, "registered catalog was evicted before publication"))?;
+            let slot = Arc::clone(slot);
+            let cell = slot.cell.lock().expect("source catalog");
+            if !matches!(&*cell, CatalogCell::Idle(catalog) if certificate.matches(catalog)) {
+                return Err(SnapshotError::new(Status::Changed, "registered catalog changed before publication"));
+            }
+            drop(cell);
+            Ok(slot)
+        }).transpose()?;
         if state.warm_memberships.contains_key(key) {
             return Ok(());
         }
@@ -2869,8 +2919,7 @@ impl NativeStore {
     fn admit_spare(&self, context: &Value, bytes: usize) -> bool {
         let mut state = self.lock_state();
         let fits = self.memory_cap(context).is_ok_and(|cap| {
-            number(&Self::gauges(&mut state), "retained_total_accounted_bytes")
-                .is_ok_and(|retained| retained.saturating_add(bytes) <= cap)
+            Self::retained_total(&mut state).saturating_add(bytes) <= cap
         });
         if fits {
             state.ledger.shared.work().admitted(bytes);

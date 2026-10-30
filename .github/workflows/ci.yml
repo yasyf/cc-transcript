@@ -65,6 +65,9 @@ jobs:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: cargo test -p cc-transcript-py --lib
 
+      - name: Test scalar admission work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- admission_report_ --nocapture
+
       - name: Test prepared-facts disk cache on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- snapshot_prepared_disk restarted_owner_reuses_prepared_facts
 

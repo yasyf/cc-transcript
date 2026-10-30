@@ -1,3 +1,20 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CatalogCertificate {
+    scope: [u8; 64],
+    incarnation: u64,
+    revision: u64,
+}
+
+impl CatalogCertificate {
+    fn matches(&self, catalog: &SourceCatalog) -> bool {
+        self.incarnation == catalog.incarnation && self.revision == catalog.decision_revision
+    }
+
+    fn key(&self) -> &str {
+        std::str::from_utf8(&self.scope).expect("catalog scope digest")
+    }
+}
+
 enum CatalogCell {
     Empty,
     Idle(SourceCatalog),
@@ -29,15 +46,14 @@ struct CatalogProbe {
 }
 
 impl CatalogProbe {
-    fn new(store: &NativeStore, ids: &[Value], chunk_size: usize, context: &Value,
-        reservation: &mut ProjectionReservation<'_>) -> Result<Self, SnapshotError> {
-        if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
-        NativeStore::validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?;
+    fn allocation_bound(ids: &[Value], chunk_size: usize) -> usize {
+        ids.len().div_ceil(chunk_size) * size_of::<HashSet<String>>()
+            + ids.chunks(chunk_size).map(|chunk| set_growth(&HashSet::<String>::new(), chunk.len())).sum::<usize>()
+            + ids.iter().filter_map(Value::as_str).map(str::len).sum::<usize>()
+    }
+
+    fn new(ids: &[Value], chunk_size: usize) -> Self {
         let count = ids.len().div_ceil(chunk_size);
-        store.extend_projection_reservation(reservation, context,
-            count * size_of::<HashSet<String>>()
-                + ids.chunks(chunk_size).map(|chunk| set_growth(&HashSet::<String>::new(), chunk.len())).sum::<usize>()
-                + ids.iter().filter_map(Value::as_str).map(str::len).sum::<usize>())?;
         let mut chunks = Vec::with_capacity(count);
         let mut owned_bytes = chunks.capacity() * size_of::<HashSet<String>>();
         let mut invalid_chunk = None;
@@ -49,12 +65,11 @@ impl CatalogProbe {
                 };
                 if !wanted.insert(id.to_owned()) { invalid_chunk = Some(index); break; }
             }
-            if invalid_chunk == Some(0) { return Err(invalid("invalid or duplicate session id")); }
             owned_bytes += wanted.capacity() * size_of::<String>() + wanted.iter().map(String::capacity).sum::<usize>();
             chunks.push(wanted);
             if invalid_chunk.is_some() { break; }
         }
-        Ok(Self { chunks, next_id: 0, use_hints: true, epoch: 0, invalid_chunk, owned_bytes })
+        Self { chunks, next_id: 0, use_hints: true, epoch: 0, invalid_chunk, owned_bytes }
     }
 }
 
@@ -63,15 +78,17 @@ struct CatalogInput<'a> {
     roots: &'a [Value],
 }
 
-enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Public(&'a mut CatalogLocateQuery) }
+enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Check(CatalogCertificate), Public(&'a mut CatalogLocateQuery) }
 
-enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>), Pending, Public(CatalogLocatePage) }
+enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>, CatalogCertificate), Checked(bool), Pending, Public(CatalogLocatePage) }
 
 enum CatalogResolution<'a> {
     Indexed,
+    Checked(bool),
     Ready {
         paths: HashMap<String, PathBuf>,
         reservation: ProjectionReservation<'a>,
+        certificate: Option<CatalogCertificate>,
     },
     Pending(Arc<CatalogSlot>),
     Public { page:CatalogLocatePage, slot:Arc<CatalogSlot>, reservation:ProjectionReservation<'a> },
@@ -114,12 +131,35 @@ fn catalog_canonical_scratch(value: &Value) -> usize {
 }
 
 impl NativeStore {
-    fn validate_catalog_chunk(ids: &[Value]) -> Result<(), SnapshotError> {
-        for (index, value) in ids.iter().enumerate() {
-            let id = value.as_str().ok_or_else(|| invalid("invalid session id"))?;
-            if id.is_empty() || id.len() > 256 || ids[..index].iter().any(|prior| prior.as_str() == Some(id)) {
+    fn validate_catalog_chunk(&self, ids: &[Value]) -> Result<(), SnapshotError> {
+        let mut ordered = [""; 1024];
+        let mut count = 0;
+        let mut invalid_type = false;
+        for value in ids {
+            let Some(id) = value.as_str() else {
+                invalid_type = true;
+                break;
+            };
+            if id.is_empty() || id.len() > 256 {
                 return Err(invalid("invalid or duplicate session id"));
             }
+            ordered[count] = id;
+            count += 1;
+        }
+        ordered[..count].sort_unstable_by(|left, right| {
+            #[cfg(test)]
+            self.catalog_id_comparisons.fetch_add(1, Ordering::Relaxed);
+            left.cmp(right)
+        });
+        if ordered[..count].windows(2).any(|pair| {
+            #[cfg(test)]
+            self.catalog_id_comparisons.fetch_add(1, Ordering::Relaxed);
+            pair[0] == pair[1]
+        }) {
+            return Err(invalid("invalid or duplicate session id"));
+        }
+        if invalid_type {
+            return Err(invalid("invalid session id"));
         }
         Ok(())
     }
@@ -160,14 +200,14 @@ impl NativeStore {
     ) -> Result<CatalogResolution<'a>, SnapshotError> {
         let CatalogInput { ids, roots } = input;
         if ids.is_empty() {
-            return Ok(CatalogResolution::Ready { paths: HashMap::new(), reservation: ProjectionReservation { store: self, bytes: 0 } });
+            return Ok(CatalogResolution::Ready { paths: HashMap::new(), reservation: ProjectionReservation { store: self, bytes: 0 }, certificate: None });
         }
         if roots.is_empty() || roots.len() > 64 {
             return Err(invalid("invalid root count"));
         }
         let chunk_size = 1024.min(remaining.max_items);
         if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
-        if matches!(mode, CatalogMode::Locate) { Self::validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?; }
+        if matches!(mode, CatalogMode::Locate) { self.validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?; }
         let (key, mut reservation) = self.catalog_key(roots, context)?;
         let slot = {
             let mut state = self.lock_state();
@@ -246,14 +286,20 @@ impl NativeStore {
                     return Ok(CatalogWorkResult::Pending);
                 }
                 CatalogMode::Public(query) => return catalog.locate_page(self,ids,context,cancel,remaining,usage,query,&mut budget).map(CatalogWorkResult::Public),
+                CatalogMode::Check(expected) => {
+                    catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    return Ok(CatalogWorkResult::Checked(expected.key() == key && expected.matches(catalog)));
+                }
                 CatalogMode::Locate => {}
             }
             let mut paths = HashMap::new();
             let mut plan = None;
             let mut plan_epoch = 0;
+            let mut selected_revision = None;
             for chunk in ids.chunks(chunk_size) {
-                Self::validate_catalog_chunk(chunk)?;
-                let mut probe = CatalogProbe::new(self, chunk, chunk.len(), context, budget.reservation)?;
+                self.validate_catalog_chunk(chunk)?;
+                budget.reserve(CatalogProbe::allocation_bound(chunk, chunk.len()))?;
+                let mut probe = CatalogProbe::new(chunk, chunk.len());
                 loop {
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if plan_epoch != catalog.epoch { plan = None; }
@@ -268,6 +314,10 @@ impl NativeStore {
                         if let Some(located) = catalog.try_locate(self, chunk, context, cancel,
                             remaining.deadline_unix_ms, plan.as_ref().expect("catalog read plan"), &mut budget)?
                         {
+                            if selected_revision.is_some_and(|revision| revision != catalog.selection_revision) {
+                                return Err(SnapshotError::new(Status::Changed, "registered catalog changed during selection"));
+                            }
+                            selected_revision = Some(catalog.selection_revision);
                             self.remember_locations(located.iter(), context);
                             budget.reserve(map_growth(&paths, located.len()))?;
                             paths.extend(located);
@@ -287,11 +337,15 @@ impl NativeStore {
                 }
             }
             catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-            if plan_epoch != catalog.epoch {
+            if plan_epoch != catalog.epoch || selected_revision != Some(catalog.selection_revision) {
                 return Err(SnapshotError::new(Status::Changed, "registered catalog changed during lookup"));
             }
             cancel.check(remaining.deadline_unix_ms)?;
-            Ok(CatalogWorkResult::Paths(paths))
+            Ok(CatalogWorkResult::Paths(paths, CatalogCertificate {
+                scope: key.as_bytes().try_into().expect("catalog scope digest size"),
+                incarnation: catalog.incarnation,
+                revision: catalog.decision_revision,
+            }))
         })();
         {
             let mut state = self.lock_state();
@@ -310,7 +364,8 @@ impl NativeStore {
         }
         self.fact_read_released.notify_all();
         match outcome? {
-            CatalogWorkResult::Paths(paths) => Ok(CatalogResolution::Ready { paths, reservation }),
+            CatalogWorkResult::Paths(paths, certificate) => Ok(CatalogResolution::Ready { paths, reservation, certificate: Some(certificate) }),
+            CatalogWorkResult::Checked(valid) => Ok(CatalogResolution::Checked(valid)),
             CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
             CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
             CatalogWorkResult::Public(page) => Ok(CatalogResolution::Public { page,slot,reservation }),
@@ -342,7 +397,7 @@ impl NativeStore {
         &self, request: &Value, context: &Value, cancel: &Cancellation, usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         if request.get("thread_ids").and_then(Value::as_array).is_some_and(|ids| ids.is_empty()) {
-            return self.prepare_graph_ready(request, context, cancel, usage);
+            return self.prepare_graph_ready(request, context, cancel, usage, limits(request)?);
         }
         let remaining = limits(request)?;
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
@@ -358,20 +413,46 @@ impl NativeStore {
         let roots = request.get("roots").and_then(Value::as_array).ok_or_else(|| invalid("missing roots"))?;
         request.get("direct_paths").and_then(Value::as_array).ok_or_else(|| invalid("missing direct_paths"))?;
         if roots.len() > 64 { return Err(invalid("prepared registry input exceeds its bound")); }
-        let mut reservation = self.reserve_projection(context,
-            size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
-                + str_field(context, "claimant")?.len())?;
-        let probe = CatalogProbe::new(self, ids, 1024.min(remaining.max_items), context, &mut reservation)?;
-        let mut build = RegisteredBuild {
-            claimant: str_field(context, "claimant")?.to_owned(),
-            request: request.clone(), context: context.clone(),
-            request_bytes: 0, context_bytes: 0, probe,
-            root: scope.snapshot, catalog: None,
-            remaining, expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
-        };
-        build.request_bytes = value_bytes(&build.request);
-        build.context_bytes = value_bytes(&build.context);
-        self.registered_graph_step(&self.token("registered-build"), build, &mut reservation, cancel, usage)
+        let chunk_size = 1024.min(remaining.max_items);
+        if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
+        self.validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?;
+        let mut reservation = self.reserve_projection(context, CatalogProbe::allocation_bound(ids, chunk_size))?;
+        let mut probe = CatalogProbe::new(ids, chunk_size);
+        let mut remaining = remaining;
+        {
+            let current = self.renew_scope_for_work(handle, context, remaining.deadline_unix_ms)?;
+            if current.snapshot.stamp != scope.snapshot.stamp
+                || !classifier_eq(&view["classifier"], &current.classifier)?
+            {
+                return Err(SnapshotError::new(Status::Changed, "prepared graph root generation changed"));
+            }
+        }
+        match self.catalog_access(CatalogInput { ids, roots }, context, cancel,
+            &mut remaining, usage, CatalogMode::Index(&mut probe))?
+        {
+            CatalogResolution::Indexed => {
+                drop(probe);
+                drop(reservation);
+                drop(scope);
+                self.prepare_graph_ready(request, context, cancel, usage, remaining)
+            }
+            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Pending(slot) => {
+                self.extend_projection_reservation(&mut reservation, context,
+                    size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
+                        + str_field(context, "claimant")?.len())?;
+                let mut build = RegisteredBuild {
+                    claimant: str_field(context, "claimant")?.to_owned(),
+                    request: request.clone(), context: context.clone(),
+                    request_bytes: 0, context_bytes: 0, probe,
+                    root: scope.snapshot, catalog: None,
+                    remaining, expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
+                };
+                build.request_bytes = value_bytes(&build.request);
+                build.context_bytes = value_bytes(&build.context);
+                self.retain_registered_build(&self.token("registered-build"), build, slot, &mut reservation)
+            }
+        }
     }
 
     fn registered_graph_step(
@@ -392,31 +473,34 @@ impl NativeStore {
         }, &build.context, cancel, &mut build.remaining, usage, CatalogMode::Index(&mut build.probe))?
         {
             CatalogResolution::Indexed => {
-                self.extend_projection_reservation(reservation, &build.context,
-                    value_bytes(&build.request["limits"]))?;
-                build.request.insert("limits", build.remaining.to_json());
-                self.prepare_graph_ready(&build.request, &build.context, cancel, usage)
+                self.prepare_graph_ready(&build.request, &build.context, cancel, usage, build.remaining)
             }
-            CatalogResolution::Ready { .. } | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
-            CatalogResolution::Pending(slot) => {
-                build.catalog = Some(slot);
-                let mut state = self.lock_state();
-                if state.registered_builds.len() + state.prepared_builds.len() >= self.lease_cap(&build.context)? {
-                    return Err(SnapshotError::new(Status::LeaseLimit, "prepared build admission exhausted"));
-                }
-                build.expires = (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms);
-                let token = token.to_owned();
-                let pledge = Delivery::cursor_pledge(&build.claimant, &token);
-                let additional = charged_bytes(&token, &build) + state.registered_builds.growth_for(&token) + pledge;
-                let covered = additional.min(reservation.bytes);
-                self.admit_memory(&mut state, &build.context, additional - covered)?;
-                state.transient_bytes -= covered;
-                reservation.bytes -= covered;
-                state.registered_builds.reserve_for(&token);
-                state.registered_builds.insert(token.clone(), build);
-                state.registered_builds.pledge(&token, pledge);
-                Ok((Value::new_null(), Some(token), Some("prepared graph work incomplete".to_owned())))
-            }
+            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Pending(slot) => self.retain_registered_build(token, build, slot, reservation),
         }
     }
+
+    fn retain_registered_build(
+        &self, token: &str, mut build: RegisteredBuild, slot: Arc<CatalogSlot>,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        build.catalog = Some(slot);
+        let mut state = self.lock_state();
+        if state.registered_builds.len() + state.prepared_builds.len() >= self.lease_cap(&build.context)? {
+            return Err(SnapshotError::new(Status::LeaseLimit, "prepared build admission exhausted"));
+        }
+        build.expires = (now_ms() + self.config.ttl).min(build.remaining.deadline_unix_ms);
+        let token = token.to_owned();
+        let pledge = Delivery::cursor_pledge(&build.claimant, &token);
+        let additional = charged_bytes(&token, &build) + state.registered_builds.growth_for(&token) + pledge;
+        let covered = additional.min(reservation.bytes);
+        self.admit_memory(&mut state, &build.context, additional - covered)?;
+        state.transient_bytes -= covered;
+        reservation.bytes -= covered;
+        state.registered_builds.reserve_for(&token);
+        state.registered_builds.insert(token.clone(), build);
+        state.registered_builds.pledge(&token, pledge);
+        Ok((Value::new_null(), Some(token), Some("prepared graph work incomplete".to_owned())))
+    }
+
 }
