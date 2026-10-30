@@ -7,12 +7,12 @@ fn source_cache_evicting_the_widest_source_keeps_the_next_retained_view_availabl
     release_lease(&store, handle(&whole), &owner);
     let window = windowed(&store, &source.path, 4096, &owner);
     release_lease(&store, handle(&window), &owner);
-    let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
+    let stamp = SourceStamp::of(&std::fs::metadata(&source.path).unwrap());
     {
         let mut state = store.lock_state();
         let used = number(&NativeStore::gauges(&mut state), "retained_total_accounted_bytes").unwrap();
         store.admit_memory(&mut state, &owner, store.config.retained - used + 1).unwrap();
-        let retained = state.source_spine(&identity).unwrap();
+        let retained = state.source_spine(stamp).unwrap();
         assert_eq!(retained.id, handle(&window)["snapshot_id"].as_str().unwrap());
         assert_eq!(state.source_view_nodes, 1);
     }
@@ -70,8 +70,8 @@ fn source_cache_truncation_retires_stale_coverage_before_reusing_its_new_full_vi
     {
         let mut state = store.lock_state();
         assert_eq!(state.source_view_nodes, 1);
-        let identity = SourceStamp::of(&std::fs::metadata(&source.path).unwrap()).identity;
-        assert_eq!(state.source_spine(&identity).unwrap().id, handle(&fresh)["snapshot_id"].as_str().unwrap());
+        let stamp = SourceStamp::of(&std::fs::metadata(&source.path).unwrap());
+        assert_eq!(state.source_spine(stamp).unwrap().id, handle(&fresh)["snapshot_id"].as_str().unwrap());
     }
     let before = store.lock_state().counters;
     let tail = windowed(&store, &source.path, 4096, &owner);
