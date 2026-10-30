@@ -21311,5 +21311,4 @@ mod tests {
         assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
     include!("snapshot_spine_tests.rs");
-
 }
