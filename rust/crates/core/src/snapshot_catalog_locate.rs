@@ -281,6 +281,15 @@ impl SourceCatalog {
             }
             if !query.observation_started {
                 self.sync_routes(budget)?;
+                if query.frames.iter().any(|frame| {
+                    !self.directories.get(&frame.identity).is_some_and(|node| node.generation == frame.generation)
+                        || !self.route_index.get(&frame.identity).is_some_and(|route| route.path == frame.raw_parent && route.order == frame.order)
+                }) {
+                    query.observation_started = true;
+                    query.cache_bridge = false;
+                    query.cache_bridge_depth = None;
+                    continue;
+                }
                 if !query.choices_ready || query.choice_version != self.candidate_version {
                     let choices = self.choices(&query.wanted,cancel,remaining.deadline_unix_ms,budget)?;
                     query.choices.clear(); query.choice_bytes = 0;
