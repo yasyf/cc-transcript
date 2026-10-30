@@ -1,7 +1,8 @@
 fn public_observation_ledger_slot(store: &NativeStore) -> Arc<CatalogSlot> {
     let state = store.lock_state();
     assert_eq!(state.catalogs.len(), 1);
-    Arc::clone(state.catalogs.values().next().unwrap())
+    let slot = Arc::clone(state.catalogs.values().next().unwrap());
+    slot
 }
 
 fn public_observation_ledger_audit(store: &NativeStore) {
@@ -91,7 +92,8 @@ fn location_observation_store_drop_releases_both_live_and_retired_generation_tok
         let cell = slot.cell.lock().unwrap();
         let CatalogCell::Idle(catalog) = &*cell else { panic!("settled catalog"); };
         assert_eq!(catalog.retired_generations.len(), 1);
-        (Arc::downgrade(&catalog.directories.values().next().unwrap().lease), Arc::downgrade(&catalog.retired_generations.values().next().unwrap().lease))
+        let tokens = (Arc::downgrade(&catalog.directories.values().next().unwrap().lease), Arc::downgrade(&catalog.retired_generations.values().next().unwrap().lease));
+        tokens
     };
     let owner_token = Arc::downgrade(&slot);
     public_observation_ledger_audit(&store);
@@ -117,7 +119,8 @@ fn location_observation_last_pin_release_while_owner_busy_reclaims_at_settlement
     let old_token = {
         let cell = slot.cell.lock().unwrap();
         let CatalogCell::Idle(catalog) = &*cell else { panic!("settled original generation"); };
-        Arc::downgrade(&catalog.directories.values().next().unwrap().lease)
+        let token = Arc::downgrade(&catalog.directories.values().next().unwrap().lease);
+        token
     };
     source.file("new-name.txt", "");
     let weak_store = Arc::downgrade(&store);

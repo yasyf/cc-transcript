@@ -30,7 +30,8 @@ fn public_catalog_restricted_symlink_unchanged_negative_reuses_names() {
         let slot = {
             let state = store.lock_state();
             assert_eq!(state.catalogs.len(), 1);
-            state.catalogs.values().next().cloned().unwrap()
+            let slot = state.catalogs.values().next().cloned().unwrap();
+            slot
         };
         let cold_appends = {
             let cell = slot.cell.lock().unwrap();
