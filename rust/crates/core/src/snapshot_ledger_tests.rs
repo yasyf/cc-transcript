@@ -11844,7 +11844,18 @@ fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocatio
         };
         let site = reached(
             |store| store.registered_sources.load(Ordering::Relaxed),
-            |fixture| settled_or_refused(&submit(fixture)),
+            |fixture| {
+                let catalog_pins: Vec<_> = fixture
+                    .store
+                    .lock_state()
+                    .catalogs
+                    .values()
+                    .map(Arc::clone)
+                    .collect();
+                assert_eq!(catalog_pins.len(), 1);
+                settled_or_refused(&submit(fixture));
+                drop(catalog_pins);
+            },
         );
         let exact = exact_headroom(&build, &site);
         assert_eq!(
