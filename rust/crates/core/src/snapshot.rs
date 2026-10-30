@@ -3193,6 +3193,8 @@ pub struct NativeStore {
     #[cfg(test)]
     location_canonicalizations: AtomicUsize,
     #[cfg(test)]
+    catalog_id_comparisons: AtomicUsize,
+    #[cfg(test)]
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
     resolve_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
@@ -3684,6 +3686,8 @@ impl NativeStore {
             location_entry_canonicalizations: AtomicUsize::new(0),
             #[cfg(test)]
             location_canonicalizations: AtomicUsize::new(0),
+            #[cfg(test)]
+            catalog_id_comparisons: AtomicUsize::new(0),
             #[cfg(test)]
             release_hook: Mutex::new(None),
             #[cfg(test)]

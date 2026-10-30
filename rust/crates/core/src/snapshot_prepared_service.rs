@@ -959,8 +959,8 @@ impl NativeStore {
         context: &Value,
         cancel: &Cancellation,
         usage: &mut [u64; 20],
+        remaining: WorkLimits,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
-        let remaining = limits(request)?;
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
         if !view["attachments"]
             .as_array()
