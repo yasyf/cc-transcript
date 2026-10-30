@@ -798,3 +798,28 @@ fn registered_catalog_membership_certificate_validation_honors_cancellation() {
         &Cancellation::default(), &mut remaining).unwrap());
     store.assert_conserved();
 }
+
+#[test]
+fn registered_catalog_certificate_allows_later_chunk_discovery_after_a_certified_prefix() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let later = source.directory.join("later");
+    std::fs::create_dir(&later).unwrap();
+    let first = source.directory.join("first.jsonl");
+    let second = later.join("second.jsonl");
+    for path in [&first, &second] {
+        std::fs::write(path, format!("{}\n", user("member"))).unwrap();
+    }
+    let store = store();
+    let owner = context("catalog-certificate-chunk-prefix");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["first".to_owned(), "second".to_owned()]);
+    request.insert("roots", json!([later, first]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    request["limits"].insert("max_items", json!(1));
+    let membership = catalog_cached_membership(&store, &request, &owner, true);
+    assert!(membership.complete);
+    assert_eq!(membership.members.len(), 2);
+    assert_eq!(membership.members[0].path, std::fs::canonicalize(first).unwrap());
+    assert_eq!(membership.members[1].path, std::fs::canonicalize(second).unwrap());
+    store.assert_conserved();
+}
