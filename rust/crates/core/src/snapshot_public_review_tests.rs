@@ -421,3 +421,43 @@ fn public_catalog_review_narrowed_resume_checks_an_unconsumed_shared_regular_ent
     assert!(response["cursor"].is_null());
     store.assert_conserved();
 }
+
+#[test]
+fn public_catalog_review_unrelated_root_mutation_keeps_a_consumed_prefix() {
+    let source = LedgerSource::new("");
+    let other = LedgerSource::new("");
+    std::fs::remove_file(&source.path).unwrap();
+    source.file("consumed.txt", "");
+    let nested = source.directory.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let wanted = nested.join("wanted.jsonl");
+    std::fs::write(&wanted, "").unwrap();
+    let store = public_review_store(1);
+    let owner = context_for("public-review-unrelated-root", false);
+    let mut request = public_review_request(&source, &["wanted"]);
+    request.insert("roots", json!([other.directory, source.directory]));
+    let first = store.request(&request, &owner, &Cancellation::default());
+    assert_eq!(first["usage"]["discovery_entries_examined"].as_u64(), Some(1));
+    assert!(first["data"]["sessions"].as_array().unwrap().is_empty());
+    let cursor = first["cursor"].as_str().expect("consumed prefix cursor").to_owned();
+    let mut missing = request.clone();
+    missing.insert("session_ids", json!(["missing"]));
+    public_review_finish(&store, &missing, &owner);
+    other.file("added.txt", "");
+    public_review_finish(&store, &missing, &owner);
+    let mut narrowed = owner.clone();
+    narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[nested],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let mut response = store.request(&json!({"schema":SCHEMA,"id":"unrelated-root-narrowed-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
+    for _ in 0..8 {
+        assert!(matches!(response["status"].as_str(), Some("ok" | "incomplete")), "{response:?}");
+        if let Some(cursor) = response["cursor"].as_str() {
+            response = store.request(&json!({"schema":SCHEMA,"id":"unrelated-root-narrowed-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
+        } else {
+            assert_eq!(response["data"]["sessions"][0]["status"].as_str(), Some("ok"), "{response:?}");
+            assert_eq!(Path::new(response["data"]["sessions"][0]["path"].as_str().unwrap()), wanted);
+            store.assert_conserved();
+            return;
+        }
+    }
+    panic!("closed allowed prefix did not settle");
+}

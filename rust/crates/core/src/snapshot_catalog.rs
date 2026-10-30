@@ -814,6 +814,7 @@ impl SourceCatalog {
                         query.remember_capability(order,&path,generation,&edge.binding,budget)?;
                     }
                     query.position(&route.order,Some(edge_index),budget)?;
+                    query.frontier = self.public_query_frontier(query);
                 }
                 if choice.is_some() { return Ok(choice); }
                 continue;
@@ -843,6 +844,7 @@ impl SourceCatalog {
                     } else { 0 };
                     query.remember_capability(vec![self.roots.len() - index - 1],&root.path,generation,&root.binding,budget)?;
                     query.position(&[self.roots.len() - index - 1],None,budget)?;
+                    query.frontier = self.public_query_frontier(query);
                 }
                 if choice.is_some() { return Ok(choice); }
                 continue;
@@ -1164,6 +1166,7 @@ impl SourceCatalog {
                     budget.reserve(parent.len() * size_of::<usize>())?;
                     let parent = parent.clone();
                     query.rewind_parent(&parent,budget)?;
+                    query.frontier = self.public_query_frontier(query);
                     self.restart_issue(identity,budget)?;
                     query.generation_seen = Some(self.generation_version);
                     return Ok(false);
@@ -1224,6 +1227,7 @@ impl SourceCatalog {
             budget.reserve(parent.len() * size_of::<usize>())?;
             let parent = parent.clone();
             query.rewind_parent(&parent,budget)?;
+            query.frontier = self.public_query_frontier(query);
             match check.kind {
                 CatalogCheckKind::Root(index) => self.update_root(index,fresh,budget)?,
                 CatalogCheckKind::Directory(identity) => self.invalidate_directory(identity,fresh,budget)?,

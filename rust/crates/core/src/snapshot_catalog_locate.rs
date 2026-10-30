@@ -15,6 +15,7 @@ struct CatalogLocateQuery {
     choices_ready: bool,
     choice_version: u64,
     floor: Option<Vec<usize>>,
+    frontier: Option<CatalogQueryFrontier>,
     validated_after: Option<Vec<usize>>,
     final_hold: bool,
     authority_epoch: u64,
@@ -25,6 +26,12 @@ struct CatalogLocateQuery {
     capability_bytes: usize,
     generation_seen: Option<u64>,
     catalog_owner: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum CatalogQueryFrontier {
+    Directory { identity: SourceIdentity, generation: u64, route_digest: [u8;32] },
+    Root { index: usize, stamp: SourceStamp, canonical_digest: [u8;32] },
 }
 
 struct CatalogCapability {
@@ -133,7 +140,7 @@ impl CatalogLocateQuery {
     }
 
     fn rewind_generation(&mut self) {
-        self.floor = None; self.validated_after = None;
+        self.floor = None; self.frontier = None; self.validated_after = None;
         self.choices_ready = false; self.final_hold = false;
     }
 
@@ -259,6 +266,51 @@ impl SourceCatalog {
         Ok(choices)
     }
 
+    fn public_query_frontier(&self, query: &CatalogLocateQuery) -> Option<CatalogQueryFrontier> {
+        let floor = query.floor.as_ref()?;
+        for length in (1..=floor.len()).rev() {
+            let Some(check) = self.checks.get(&floor[..length]) else { continue; };
+            let identity = match check.kind {
+                CatalogCheckKind::Root(index) => {
+                    let root = &self.roots[index];
+                    let stamp = root.binding.stamp?;
+                    if !root.binding.directory {
+                        return Some(CatalogQueryFrontier::Root { index, stamp,
+                            canonical_digest:Sha256::digest(root.binding.canonical.as_ref()?.as_os_str().as_encoded_bytes()).into() });
+                    }
+                    stamp.identity
+                }
+                CatalogCheckKind::Directory(identity) => identity,
+                CatalogCheckKind::Edge(identity,index) => {
+                    let edge = &self.directories.get(&identity)?.edges[index];
+                    if edge.binding.directory { edge.binding.stamp?.identity } else { identity }
+                }
+                CatalogCheckKind::ReadIssue(identity) => identity,
+            };
+            let route = self.route_index.get(&identity)?;
+            let node = self.directories.get(&identity)?;
+            return Some(CatalogQueryFrontier::Directory { identity, generation:node.generation,
+                route_digest:Sha256::digest(route.path.as_os_str().as_encoded_bytes()).into() });
+        }
+        None
+    }
+
+    fn public_frontier_unchanged(&self, query: &CatalogLocateQuery) -> bool {
+        let Some(floor) = query.floor.as_ref() else { return false; };
+        match query.frontier {
+            Some(CatalogQueryFrontier::Directory { identity, generation, route_digest }) =>
+                self.directories.get(&identity).zip(self.route_index.get(&identity)).is_some_and(|(node,route)|
+                    node.generation == generation && floor.starts_with(&route.order)
+                        && route_digest == <[u8;32]>::from(Sha256::digest(route.path.as_os_str().as_encoded_bytes()))),
+            Some(CatalogQueryFrontier::Root { index, stamp, canonical_digest }) => {
+                let root = &self.roots[index];
+                root.binding.stamp == Some(stamp) && root.binding.canonical.as_ref().is_some_and(|path|
+                    canonical_digest == <[u8;32]>::from(Sha256::digest(path.as_os_str().as_encoded_bytes())))
+            }
+            None => false,
+        }
+    }
+
     fn public_authority_view(&self, query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
         if query.authority_epoch == 0 || query.authority_view == Some((query.authority_epoch, self.candidate_version)) {
             return Ok(());
@@ -291,7 +343,14 @@ impl SourceCatalog {
         cancel: &Cancellation, remaining: &mut WorkLimits, usage: &mut [u64;20],
         query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogLocatePage, SnapshotError> {
         if query.generation_seen.is_some_and(|generation| generation != self.generation_version) {
-            query.rewind_generation();
+            if self.public_frontier_unchanged(query) {
+                query.validated_after = None;
+                query.choices_ready = false;
+                query.final_hold = false;
+            } else {
+                query.rewind_generation();
+            }
+            query.authority_view = None;
         }
         query.generation_seen = Some(self.generation_version);
         let mut updates = Vec::new();
@@ -328,6 +387,7 @@ impl SourceCatalog {
                     }
                     let stamp = store.location_candidate(&choice.path,&query.scope,context)?;
                     query.position(&choice.order,None,budget)?;
+                    query.frontier = self.public_query_frontier(query);
                     if let Some(stamp) = stamp {
                         query.queue_candidate(store,&choice.id,choice.path,stamp,&mut updates,budget)?;
                     }
