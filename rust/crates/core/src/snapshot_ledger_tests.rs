@@ -8869,6 +8869,113 @@ fn assert_location_probe_boundary(
     assert_eq!(ledger(&fitted.store), audited(&fitted.store));
 }
 
+fn location_refusal_state(store: &NativeStore) -> ([usize; 8], [usize; 8], usize) {
+    store.assert_conserved();
+    let mut counted = ledger(store);
+    let mut walked = audited(store);
+    let state = store.lock_state();
+    let mut count = 0;
+    let mut charge = 0;
+    let mut audit = 0;
+    for (key, slot) in state.catalogs.iter() {
+        if Arc::strong_count(slot) != 1 {
+            continue;
+        }
+        let identity = Arc::as_ptr(slot) as usize;
+        let owner = state.catalog_owners.get(&identity).expect("shared catalog owner");
+        assert_eq!(owner.key.as_ref(), key.as_str());
+        assert!(state.cache_order.contains(&(owner.touched, CacheOwner::Catalog(identity))));
+        let slot_charge = key.capacity() + slot.charge();
+        let slot_audit = NativeStore::audit_catalog_bytes(key, slot);
+        let owner_audit = arc_slice_mirror::<u8>(owner.key.len());
+        assert_eq!(slot_charge, slot_audit);
+        assert_eq!(owner.charge(), owner_audit);
+        count += 1;
+        charge += slot_charge + owner.charge();
+        audit += slot_audit + owner_audit;
+    }
+    let tables = if count == state.catalogs.len() {
+        state.catalogs.capacity_bytes() + state.catalog_owners.capacity_bytes()
+    } else {
+        0
+    };
+    let metadata = tables + count * size_of::<(u64, CacheOwner)>();
+    for term in [PROJECTION, TOTAL] {
+        counted[term] -= charge + metadata;
+        walked[term] -= audit + metadata;
+    }
+    (counted, walked, NativeStore::fixed_metadata_bytes(&state) - metadata)
+}
+
+fn assert_location_refused_at(
+    site: &str,
+    fixture: &Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    headroom: usize,
+) {
+    let cap = cap_of(&fixture.store, &fixture.owner);
+    let _filler = fill_to(&fixture.store, &fixture.owner, headroom);
+    let before = location_refusal_state(&fixture.store);
+    traced(&fixture.store);
+    assert!(!attempt(fixture), "{site}: refused headroom {headroom} was admitted");
+    assert!(fixture.store.lock_state().locates.is_empty(), "{site}: refusal kept a private cursor");
+    assert_eq!(location_refusal_state(&fixture.store), before,
+        "{site}: refusal retained more than independently audited unpinned catalog ownership");
+    let trace = traced(&fixture.store);
+    if trace.iter().any(|entry| matches!(entry, Trace::Allocated(_))) {
+        assert_admitted_before_allocating(site, &trace);
+    }
+    assert_eq!(ledger(&fixture.store), audited(&fixture.store));
+    assert!(audited(&fixture.store)[TOTAL] <= cap, "{site}: refusal exceeded its cap");
+}
+
+fn assert_location_refusals(
+    site: &str,
+    build: &dyn Fn() -> Fixture,
+    attempt: &dyn Fn(&Fixture) -> bool,
+    exact: usize,
+) {
+    for headroom in [0, exact - 1] {
+        assert_location_refused_at(site, &build(), attempt, headroom);
+    }
+    assert_fitted_at(site, &build(), attempt, exact);
+}
+
+fn location_open_handle_count(store: &NativeStore) -> usize {
+    let state = store.lock_state();
+    state.catalogs.values().map(|slot| {
+        let cell = slot.cell.lock().unwrap();
+        match &*cell {
+            CatalogCell::Empty => 0,
+            CatalogCell::Idle(catalog) => catalog.directories.values().filter(|node| {
+                if let CatalogScan::Open(reader) = &node.scan {
+                    assert_eq!(reader.retained_bytes(), NativeStore::audit_open_directory_bytes(reader));
+                    true
+                } else {
+                    false
+                }
+            }).count(),
+            CatalogCell::Busy => panic!("directory admission probe requires a settled catalog"),
+        }
+    }).sum()
+}
+
+#[test]
+fn location_refusal_normalization_preserves_a_private_catalog_pin() {
+    let source = LedgerSource::new(&line("locate"));
+    for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+        source.file(name, &line(name));
+    }
+    for background in [false, true] {
+        let fixture = location_park_fixture(&source, background);
+        assert!(location_parked(&fixture));
+        assert_eq!(location_refusal_state(&fixture.store), (
+            ledger(&fixture.store), audited(&fixture.store), bookkeeping(&fixture.store)
+        ));
+        fixture.store.assert_conserved();
+    }
+}
+
 #[test]
 fn location_cursor_park_admits_its_stored_key_exactly() {
     let source = LedgerSource::new(&line("locate"));
@@ -8879,7 +8986,7 @@ fn location_cursor_park_admits_its_stored_key_exactly() {
         let build = || location_park_fixture(&source, background);
         let exact = exact_headroom(&build, &location_parked);
         assert!(exact > 0);
-        refused_at_site("location park", &build, &location_parked, 0, exact);
+        assert_location_refusals("location park", &build, &location_parked, exact);
         let fitted = Arc::new(build());
         let _filler = fill_to(&fitted.store, &fitted.owner, exact);
         let before = audited(&fitted.store)[TOTAL];
@@ -10019,7 +10126,7 @@ fn location_cursor_charges_its_open_directory_root_copy() {
             let build = || location_root_fixture(root, background);
             let exact = exact_headroom(&build, &location_parked);
             assert!(exact > 0);
-            refused_at_site("location root copy", &build, &location_parked, 0, exact);
+            assert_location_refusals("location root copy", &build, &location_parked, exact);
             let fitted = Arc::new(build());
             let _filler = fill_to(&fitted.store, &fitted.owner, exact);
             let before = audited(&fitted.store)[TOTAL];
@@ -12778,15 +12885,53 @@ fn denied_location_directory_admission_opens_nothing_and_retries() {
     for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
         source.file(name, &line(name));
     }
-    let directory =
-        first_directory_reservation(&source.directory, source.directory.as_os_str().len());
+    let directory = arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + std::fs::canonicalize(&source.directory).unwrap().as_os_str().len()
+        + FILESYSTEM_PATH_BYTES + vec_growth(&Vec::<SourceIdentity>::new(), 1);
     for background in [false, true] {
-        assert_denied_directory_admission_opens_nothing(
-            "location directory",
-            &|| location_park_fixture(&source, background),
-            &location_parked,
-            directory,
-        );
+        let build = || location_park_fixture(&source, background);
+        let opened = reached(location_open_handle_count, |fixture| {
+            location_parked(fixture);
+        });
+        let fit = exact_headroom(&build, &opened);
+        assert!(fit > 0, "the shared directory opened without admitted headroom");
+        let fixture = build();
+        {
+            let _filler = fill_to(&fixture.store, &fixture.owner, fit - 1);
+            let before = location_refusal_state(&fixture.store);
+            traced(&fixture.store);
+            assert!(!location_parked(&fixture), "the denied directory admission parked a cursor");
+            assert_eq!(location_open_handle_count(&fixture.store), 0);
+            assert!(fixture.store.lock_state().locates.is_empty());
+            let trace = traced(&fixture.store);
+            assert!(!reserved_traces(&trace).contains(&directory),
+                "the denied handle was reserved anyway: {trace:?}");
+            if trace.iter().any(|entry| matches!(entry, Trace::Allocated(_))) {
+                assert_admitted_before_allocating("location directory refusal", &trace);
+            }
+            assert_eq!(location_refusal_state(&fixture.store), before,
+                "the denied directory admission retained private state");
+            assert_eq!(ledger(&fixture.store), audited(&fixture.store));
+            assert!(audited(&fixture.store)[TOTAL] <= cap_of(&fixture.store, &fixture.owner));
+        }
+        let retained_owner = {
+            let state = fixture.store.lock_state();
+            let slot = state.catalogs.values().next().expect("retained partial catalog");
+            assert_eq!(Arc::strong_count(slot), 1);
+            Arc::as_ptr(slot) as usize
+        };
+        traced(&fixture.store);
+        assert!(location_parked(&fixture), "the retry after directory refusal failed");
+        assert_eq!(location_open_handle_count(&fixture.store), 1);
+        assert!(reserved_traces(&traced(&fixture.store)).contains(&directory));
+        {
+            let state = fixture.store.lock_state();
+            let (_, cursor) = state.locates.iter().next().expect("retry location cursor");
+            let slot = cursor.catalog.as_ref().expect("retry catalog pin");
+            assert_eq!(Arc::as_ptr(slot) as usize, retained_owner);
+            assert!(Arc::strong_count(slot) >= 2);
+        }
+        fixture.store.assert_conserved();
     }
 }
 

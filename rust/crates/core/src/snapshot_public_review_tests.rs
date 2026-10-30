@@ -296,7 +296,10 @@ fn public_review_ordinary_error_batch(headroom: Option<usize>) -> bool {
         name
     }).collect();
     let store = Arc::new(public_review_store(ERRORS));
-    let owner = context_for("public-review-ordinary-errors",false);
+    let mut owner = context_for("public-review-ordinary-errors",false);
+    // Restricted authority must resolve every ordinary entry; the user-authority
+    // dual-inode parent proof intentionally avoids these full-path resolutions.
+    owner.insert("authority",json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
     let (root,_pin) = acquired(&store,&source.path,&owner);
     let mut seed = public_review_request(&source,&["missing"]);
     seed.insert("roots",json!([inputs]));
