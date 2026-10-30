@@ -53,12 +53,45 @@ impl CatalogBinding {
     }
 
     fn inspect(store: &NativeStore, path: &Path, context: &Value) -> Result<Self,SnapshotError> {
+        Self::inspect_entry(store, path, context, false)
+    }
+
+    fn inspect_entry(store: &NativeStore, path: &Path, context: &Value, defer_denial: bool) -> Result<Self,SnapshotError> {
         let canonical = match Self::canonical_path(store,path) {
             Ok(canonical) => canonical,
             Err(error) => return Ok(Self { issue:Some((error.status,error.reason)), ..Self::empty() }),
         };
-        store.authority(context,Some(&canonical))?;
+        if let Err(error) = store.authority(context,Some(&canonical)) {
+            if !defer_denial { return Err(error); }
+            // Index the ordered refusal, never inspect or traverse its target.
+            return Ok(Self { canonical:Some(canonical), issue:Some((error.status,error.reason)), ..Self::empty() });
+        }
         Ok(Self::metadata(canonical))
+    }
+
+    fn entry(store: &NativeStore, path: &Path, parent: Option<&Path>, context: &Value,
+        defer_denial: bool) -> Result<(Self,bool),SnapshotError> {
+        if context["authority"]["kind"].as_str() == Some("user") {
+            if let Some(parent) = parent {
+                let canonical = catalog_child_path(parent,path.file_name().expect("catalog entry name"));
+                if let Ok(metadata) = std::fs::symlink_metadata(&canonical) {
+                    #[cfg(test)]
+                    store.after_location_metadata("canonical_prefilter");
+                    if let Ok(raw) = std::fs::symlink_metadata(path) {
+                        if metadata.is_file() && raw.is_file()
+                            && SourceStamp::of(&metadata).identity == SourceStamp::of(&raw).identity {
+                            #[cfg(test)]
+                            store.after_location_metadata("prefilter");
+                            return Ok((Self { canonical:Some(canonical), stamp:Some(SourceStamp::of(&metadata)),
+                                directory:false, regular:true, issue:None },true));
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
+        store.location_entry_canonicalizations.fetch_add(1,Ordering::Relaxed);
+        Self::inspect_entry(store,path,context,defer_denial).map(|binding| (binding,false))
     }
 
     fn unchanged(&self, fresh: &Self) -> bool {
@@ -743,6 +776,7 @@ impl SourceCatalog {
         if self.issues_dirty { self.rebuild_issue_bound(); }
         if self.complete { return Ok(None); }
         let mut examined = 0;
+        let mut parent_hint: Option<(SourceIdentity,Option<PathBuf>)> = None;
         loop {
             cancel.check(deadline)?;
             if let Some(issue) = self.pending_issue.as_ref() {
@@ -769,11 +803,18 @@ impl SourceCatalog {
                 continue;
             }
             if let Some(raw) = self.pending_raw.take() {
-                let path = catalog_child_path(&self.route_index.get(&raw.directory).expect("catalog pending route").path,&raw.name);
-                let binding = match CatalogBinding::inspect(store, &path, budget.context) {
+                let route = self.route_index.get(&raw.directory).expect("catalog pending route");
+                let path = catalog_child_path(&route.path,&raw.name);
+                if budget.context["authority"]["kind"].as_str() == Some("user")
+                    && parent_hint.as_ref().is_none_or(|(identity,_)| *identity != raw.directory) {
+                    parent_hint = Some((raw.directory,CatalogBinding::canonical_path(store,&route.path).ok()));
+                }
+                let parent = parent_hint.as_ref().and_then(|(_,path)| path.as_deref());
+                let (binding,shared_parent) = match CatalogBinding::entry(store, &path, parent, budget.context, query.is_none()) {
                     Ok(binding) => binding,
                     Err(error) => { self.pending_raw = Some(raw); return Err(error); }
                 };
+                if !shared_parent { parent_hint = None; }
                 self.pending_edge = Some(CatalogPendingEdge { directory:raw.directory,
                     edge:CatalogEdge { name:raw.name, binding }, symlink:raw.symlink });
             }
@@ -819,6 +860,9 @@ impl SourceCatalog {
                 if choice.is_some() { return Ok(choice); }
                 continue;
             }
+            #[cfg(test)]
+            store.after_location_metadata("walk");
+            cancel.check(deadline)?;
             if self.next_is_root() {
                 let context = budget.context;
                 let index = self.observe_root(store, context, budget)?;
@@ -1009,34 +1053,25 @@ impl SourceCatalog {
         for index in 0..self.roots.len() {
             cancel.check(deadline)?;
             let root = &self.roots[index];
-            let known = root.binding.canonical.is_some() || root.binding.issue.is_some();
             let fresh = CatalogBinding::inspect(store, &root.path, budget.context)?;
             if let Some((status, reason)) = &fresh.issue {
                 self.complete = false;
-            self.routes_dirty = true;
-            self.epoch += 1;
+                self.routes_dirty = true;
+                self.epoch += 1;
                 return Err(SnapshotError::new(*status, reason));
             }
             if root.binding.unchanged(&fresh) { continue; }
-            if known { self.generation_version += 1; }
-            budget.reserve(fresh.payload_bytes())?;
-            if fresh.directory {
-                budget.reserve(fresh.canonical.as_ref().expect("catalog root").as_os_str().len())?;
-                self.schedule(fresh.canonical.as_ref().expect("catalog root").clone(), fresh.stamp.expect("catalog root stamp"), budget)?;
-            }
-            let root = &mut self.roots[index];
-            self.roots_bytes = self.roots_bytes - root.binding.payload_bytes() + fresh.payload_bytes();
-            root.binding = fresh;
-            self.complete = false;
-            self.routes_dirty = true;
-            self.epoch += 1;
+            self.update_root(index, fresh, budget)?;
         }
+        // This registered/full-generation path has observed every declared root.
+        self.next_root = 0;
         Ok(())
     }
 
     fn check_frontier(&mut self, store: &NativeStore, cancel: &Cancellation, deadline: u64,
         budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
         self.check_roots(store, cancel, deadline, budget)?;
+        self.sync_routes(budget)?;
         let Some(identity) = self.pending.last().copied() else { return Ok(()); };
         let node = self.directories.get(&identity).expect("catalog frontier directory");
         let fresh = match CatalogBinding::inspect(store, &node.canonical, budget.context) {

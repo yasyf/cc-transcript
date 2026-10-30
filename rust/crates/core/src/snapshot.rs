@@ -10994,10 +10994,10 @@ impl NativeStore {
                 capability_bytes: 0,
                 generation_seen: None,
                 catalog_owner: None,
-                emitted:  0,
-                output_bytes:  0,
-                finished:  false,
-                exhausted:  false,
+                emitted: 0,
+                output_bytes: 0,
+                finished: false,
+                exhausted: false,
             },
             catalog: None,
             expires: (now_ms() + self.config.ttl).min(bound.deadline_unix_ms),
@@ -12088,7 +12088,8 @@ mod tests {
         );
         assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
         assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
-        assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 3);
+        // Constructor, physical root observation, parent proof, and final generation hold.
+        assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 4);
         store.assert_conserved();
     }
 
@@ -12134,35 +12135,38 @@ mod tests {
 
     #[test]
     fn location_nonmatching_regular_files_share_parent_canonicalization() {
-        let source = Source::new("");
-        std::fs::remove_file(&source.path).unwrap();
-        for index in 0..20 {
-            std::fs::write(
-                source.directory.join(format!("unrelated-{index}.jsonl")),
-                b"",
-            )
-            .unwrap();
+        for count in [20, 40] {
+            let source = Source::new("");
+            std::fs::remove_file(&source.path).unwrap();
+            for index in 0..count {
+                std::fs::write(
+                    source.directory.join(format!("unrelated-{index}.jsonl")),
+                    b"",
+                )
+                .unwrap();
+            }
+            let store = NativeStore::new(&json!({"max_events_per_step":64})).unwrap();
+            let owner = context("a");
+            let template = acquire(&source.path);
+            let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["absent"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
+            let response = finish(
+                &store,
+                store.request(&request, &owner, &Cancellation::default()),
+                &owner,
+            );
+            assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+            assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
+            assert_eq!(store.lock_state().counters[17], count);
+            // Constructor, physical root observation, parent proof, and final generation hold.
+            assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 4);
+            store.assert_conserved();
+            assert_eq!(
+                store
+                    .location_entry_canonicalizations
+                    .load(Ordering::Relaxed),
+                0
+            );
         }
-        let store = NativeStore::new(&json!({"max_events_per_step":64})).unwrap();
-        let owner = context("a");
-        let template = acquire(&source.path);
-        let request = json!({"schema":SCHEMA,"id":"locate","operation":"locate","session_ids":["absent"],"roots":[source.directory],"deadline_unix_ms":template["deadline_unix_ms"],"limits":template["limits"]});
-        let response = finish(
-            &store,
-            store.request(&request, &owner, &Cancellation::default()),
-            &owner,
-        );
-        assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
-        assert_eq!(response["data"]["sessions"][0]["status"], json!("missing"));
-        assert_eq!(store.lock_state().counters[17], 20);
-        assert_eq!(store.location_canonicalizations.load(Ordering::Relaxed), 3);
-        store.assert_conserved();
-        assert_eq!(
-            store
-                .location_entry_canonicalizations
-                .load(Ordering::Relaxed),
-            0
-        );
     }
 
     #[test]
@@ -12237,7 +12241,9 @@ mod tests {
             assert_eq!(store.lock_state().counters[17], count);
             assert_eq!(
                 store.location_canonicalizations.load(Ordering::Relaxed),
-                2 + count as usize / 2
+                // Initial validation + physical root observation + final complete-generation hold,
+                // plus one parent proof per nonempty two-entry page.
+                3 + count as usize / 2
             );
             store.assert_conserved();
         }
