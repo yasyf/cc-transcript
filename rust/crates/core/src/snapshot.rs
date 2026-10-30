@@ -1221,11 +1221,7 @@ impl OpenedDirectory {
         Ok(CatalogChildMetadata::from_descriptor(&unsafe { metadata.assume_init() }).stamp)
     }
 
-    fn object_metadata(&self, name: &OsStr, store: &NativeStore) -> std::io::Result<CatalogChildMetadata> {
-        self.descriptor_metadata(name,false,store)
-    }
-
-    fn descriptor_metadata(&self, name: &OsStr, follow: bool, _store: &NativeStore) -> std::io::Result<CatalogChildMetadata> {
+    fn object_metadata(&self, name: &OsStr, _store: &NativeStore) -> std::io::Result<CatalogChildMetadata> {
         let name = std::ffi::CString::new(name.as_encoded_bytes()).expect("directory name contains no NUL");
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
         #[cfg(test)]
@@ -1234,7 +1230,7 @@ impl OpenedDirectory {
             _store.after_location_metadata("descriptor_metadata");
         }
         let result = unsafe { libc::fstatat(libc::dirfd(self.directory.as_ptr()),name.as_ptr(),
-            metadata.as_mut_ptr(),if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW }) };
+            metadata.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW) };
         if result != 0 { return Err(std::io::Error::last_os_error()); }
         let metadata = unsafe { metadata.assume_init() };
         Ok(CatalogChildMetadata::from_descriptor(&metadata))
@@ -11704,6 +11700,7 @@ mod tests {
     include!("snapshot_public_child_provenance_tests.rs");
     include!("snapshot_common_borrowed_parent_tests.rs");
     include!("snapshot_public_restricted_symlink_tests.rs");
+    include!("snapshot_public_conditional_target_tests.rs");
 
     #[test]
     fn public_catalog_a_broad_physical_index_does_not_expand_restricted_authority() {

@@ -289,7 +289,8 @@ impl NativeStore {
                 CatalogMode::Public(query) => return catalog.locate_page(self,ids,context,cancel,remaining,usage,query,&mut budget).map(CatalogWorkResult::Public),
                 CatalogMode::Check(expected) => {
                     catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-                    return Ok(CatalogWorkResult::Checked(expected.key() == key && expected.matches(catalog)));
+                    let plan = catalog.read_plan(self,context,cancel,remaining.deadline_unix_ms,&mut budget)?;
+                    return Ok(CatalogWorkResult::Checked(plan.issue.is_none() && expected.key() == key && expected.matches(catalog)));
                 }
                 CatalogMode::Locate => {}
             }
