@@ -828,3 +828,47 @@ fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_
     assert!(!store.lock_state().warm_memberships.contains_key(&key));
     store.assert_conserved();
 }
+
+#[test]
+fn registered_catalog_certificate_rejects_a_regular_root_retarget_after_public_lookup() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let original = Source::new(&format!("{}\n", user("original-member")));
+    let replacement = Source::new(&format!("{}\n", user("replacement-member")));
+    let alias = source.directory.join("wanted.jsonl");
+    std::os::unix::fs::symlink(&original.path, &alias).unwrap();
+    let store = store();
+    let owner = context("catalog-public-certificate");
+    let mut locate = public_catalog_request(&source, &["missing"]);
+    locate.insert("roots", json!([alias]));
+    let (negative, entries) = public_catalog_finish(&store, &locate, &owner);
+    assert_eq!(negative[0]["status"].as_str(), Some("missing"));
+    assert_eq!(entries, 0);
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = registered_prepare(&source, &root, &["wanted"]);
+    request.insert("roots", json!([alias]));
+    let first = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let initial = store.lock_state().warm_memberships.get(&key).cloned().expect("initial registered membership");
+    let certificate = initial.catalog.expect("initial catalog certificate");
+    assert_eq!(initial.members.len(), 1);
+    assert_eq!(initial.members[0].path, std::fs::canonicalize(&original.path).unwrap());
+    release_graph(&store, &first, &owner);
+    std::fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink(&replacement.path, &alias).unwrap();
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&original.path).unwrap()), initial.members[0].stamp);
+    locate.insert("session_ids", json!(["wanted"]));
+    let (positive, entries) = public_catalog_finish(&store, &locate, &owner);
+    assert_eq!(positive[0]["status"].as_str(), Some("ok"));
+    assert_eq!(entries, 0);
+    assert_eq!(std::fs::canonicalize(Path::new(positive[0]["path"].as_str().unwrap())).unwrap(), std::fs::canonicalize(&replacement.path).unwrap());
+    let second = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
+    assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
+    let fresh = store.lock_state().warm_memberships.get(&key).cloned().expect("updated registered membership");
+    assert_eq!(fresh.members.len(), 1);
+    assert_eq!(fresh.members[0].path, std::fs::canonicalize(&replacement.path).unwrap());
+    assert_ne!(fresh.catalog, Some(certificate));
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&original.path).unwrap()), initial.members[0].stamp);
+    release_graph(&store, &second, &owner);
+    store.assert_conserved();
+}
