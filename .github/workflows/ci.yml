@@ -71,6 +71,9 @@ jobs:
       - name: Test location traversal on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- location_
 
+      - name: Test unpublished load charge work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- load_charge_ --nocapture
+
       - name: Generate native type stubs
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python

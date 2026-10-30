@@ -591,6 +591,7 @@ impl LoadSlot {
 }
 
 struct Load {
+    charge_work: Work,
     file: File,
     offset: u64,
     pending: Vec<u8>,
@@ -7432,6 +7433,7 @@ impl NativeStore {
                     attached: AtomicBool::new(false),
                     deadline: AtomicU64::new(now + self.config.preparation),
                     work: Mutex::new(Load {
+                        charge_work: Work::default(),
                         file,
                         offset: 0,
                         pending: Vec::new(),
@@ -7955,6 +7957,7 @@ impl NativeStore {
     }
 
     fn unpublished_load_charge(load: &Load) -> usize {
+        load.charge_work.tick(1);
         let shared: HashSet<_> = load
             .previous
             .as_ref()
@@ -7963,7 +7966,10 @@ impl NativeStore {
                 snapshot
                     .chunks
                     .iter()
-                    .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
+                    .map(|chunk| {
+                        load.charge_work.tick(1);
+                        Arc::as_ptr(&chunk.entries) as usize
+                    })
             })
             .collect();
         let charge = load.pending.capacity()
@@ -8000,7 +8006,10 @@ impl NativeStore {
             + load
                 .chunks
                 .iter()
-                .filter(|chunk| !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize)))
+                .filter(|chunk| {
+                    load.charge_work.tick(1);
+                    !shared.contains(&(Arc::as_ptr(&chunk.entries) as usize))
+                })
                 .map(|chunk| {
                     chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes
                 })
@@ -8009,12 +8018,18 @@ impl NativeStore {
             .previous
             .as_ref()
             .into_iter()
-            .flat_map(|snapshot| snapshot.activity.heap_allocations().map(|(id, _)| id))
+            .flat_map(|snapshot| snapshot.activity.heap_allocations().map(|(id, _)| {
+                load.charge_work.tick(1);
+                id
+            }))
             .collect();
         let index_charge: usize = load
             .activity
             .heap_allocations()
-            .filter(|(id, _)| !prior_indexes.contains(id))
+            .filter(|(id, _)| {
+                load.charge_work.tick(1);
+                !prior_indexes.contains(id)
+            })
             .map(|(_, bytes)| bytes)
             .sum();
         charge + index_charge
@@ -21310,4 +21325,5 @@ mod tests {
         assert_eq!(merged[14] - before[14], 128);
         assert_eq!(store.state.lock().unwrap().counters[14], 0);
     }
+    include!("snapshot_load_charge_work_tests.rs");
 }
