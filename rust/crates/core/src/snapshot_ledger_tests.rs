@@ -8109,7 +8109,7 @@ fn exact_fill_refuses_one_more_byte_and_reuses_released_capacity() {
 }
 
 #[test]
-fn pressure_eviction_frees_unleased_latest_within_the_cap() {
+fn pressure_eviction_reclaims_one_unleased_generation_within_the_cap() {
     let sources: Vec<_> = (0..6)
         .map(|index| LedgerSource::new(&lines(index * 3..index * 3 + 3)))
         .collect();
@@ -8120,6 +8120,7 @@ fn pressure_eviction_frees_unleased_latest_within_the_cap() {
             .iter()
             .map(|source| acquired(&store, &source.path, &owner))
             .collect();
+        let victim_entries = entry_bytes(&[&retained[2].1]);
         for (handle, snapshot) in retained.split_off(2) {
             release_lease(&store, &handle, &owner);
             drop(snapshot);
@@ -8134,11 +8135,11 @@ fn pressure_eviction_frees_unleased_latest_within_the_cap() {
             .unwrap();
         let after = ledger(&store);
         store.assert_conserved();
-        assert_eq!(after[GENERATIONS], 2);
+        assert_eq!(after[GENERATIONS], before[GENERATIONS] - 1);
+        assert_eq!(after[LEASES], before[LEASES]);
         assert!(after[TOTAL] <= cap);
         assert!(audited(&store)[TOTAL] <= cap);
-        let kept: Vec<_> = retained.iter().map(|(_, snapshot)| snapshot).collect();
-        assert_eq!(after[ENTRIES], entry_bytes(&kept));
+        assert_eq!(after[ENTRIES], before[ENTRIES] - victim_entries);
         drop(pressure);
         store.assert_conserved();
         assert_eq!(
