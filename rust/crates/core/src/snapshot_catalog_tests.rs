@@ -592,3 +592,42 @@ fn registered_catalog_membership_rejects_a_directory_source() {
     assert!(matches!(result, Err(error) if error.reason == "registered source must be a file"));
     store.assert_conserved();
 }
+
+#[test]
+fn registered_catalog_membership_rejects_a_parent_retargeted_during_its_pin() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let left = source.directory.join("left");
+    let right = source.directory.join("right");
+    let alias = source.directory.join("alias");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    for directory in [&left, &right] {
+        for id in ["first", "second"] {
+            std::fs::write(directory.join(format!("{id}.jsonl")), format!("{}\n", user(id))).unwrap();
+        }
+    }
+    std::os::unix::fs::symlink(&left, &alias).unwrap();
+    let store = store();
+    let owner = context("membership-parent-retarget");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["first".to_owned(), "second".to_owned()]);
+    request.insert("roots", json!([alias]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let retargeted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *store.resolve_hook.lock().unwrap() = Some(Arc::new({
+        let (alias, right, retargeted) = (alias.clone(), right.clone(), Arc::clone(&retargeted));
+        move |path| {
+            if path.parent() == Some(alias.as_path()) && !retargeted.swap(true, Ordering::Relaxed) {
+                std::fs::remove_file(&alias).unwrap();
+                std::os::unix::fs::symlink(&right, &alias).unwrap();
+            }
+        }
+    }));
+    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let mut remaining = limits(&request).unwrap();
+    let result = store.build_warm_membership(&key, &request, &owner, &Cancellation::default(),
+        &mut [0;20], &mut remaining);
+    assert!(retargeted.load(Ordering::Relaxed));
+    assert!(matches!(result, Err(error) if error.status == Status::Changed));
+    store.assert_conserved();
+}

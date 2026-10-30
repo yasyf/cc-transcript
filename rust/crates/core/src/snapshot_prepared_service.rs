@@ -1803,6 +1803,7 @@ impl NativeStore {
             let canonical = self.canonical_path(&path).map_err(io_error)?;
             self.authority(context, Some(&canonical))?;
             let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
+            self.after_source_resolved(&path);
             if !metadata.is_file() {
                 return Err(invalid("registered source must be a file"));
             }
