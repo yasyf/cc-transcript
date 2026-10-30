@@ -402,7 +402,7 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
     let store = store();
     let owner = context("catalog-retry-order");
     let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
-    let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 2, scratch_bytes:0 };
+    let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 2, scratch_bytes:0, observed_issue:false };
     let roots = [json!(late),json!(early)];
     let deadline = now_ms() + 750;
     let mut catalog = SourceCatalog::new(&store, &roots, &owner, &mut budget).unwrap();
@@ -444,7 +444,7 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
         let mut owner = context("catalog-retry-admission");
         if background { owner.insert("work_class", json!("background")); }
         let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
-        let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 1, scratch_bytes:0 };
+        let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 1, scratch_bytes:0, observed_issue:false };
         let roots = [json!(source.directory)];
         let mut catalog = SourceCatalog::new(&store, &roots, &owner, &mut budget).unwrap();
         let root_identity = SourceStamp::of(&std::fs::metadata(&source.directory).unwrap()).identity;
