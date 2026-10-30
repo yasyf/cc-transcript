@@ -711,6 +711,12 @@ impl SourceCatalog {
         max_entries: usize, usage: &mut [u64;20], budget: &mut CatalogBudget<'_, '_>,
         mut query: Option<&mut CatalogLocateQuery>) -> Result<Option<CatalogChoice>, SnapshotError> {
         budget.scratch(LOCATE_USER_PATH_SLOTS)?;
+        let retries = if query.is_none() {
+            self.retry_issues.iter().filter(|identity| self.directories.get(*identity).is_some_and(|node|
+                matches!(node.scan,CatalogScan::Issue { attempt,.. } if attempt != budget.attempt))).count()
+        } else { 0 };
+        budget.reserve(vec_growth(&self.pending,retries))?;
+        self.pending.reserve(retries);
         let mut position = 0;
         let mut requeued = false;
         while query.is_none() && position < self.retry_issues.len() {
@@ -720,7 +726,6 @@ impl SourceCatalog {
             });
             if issue.is_none() { self.retry_issues.swap_remove(position); continue; }
             if issue == Some(budget.attempt) { position += 1; continue; }
-            budget.reserve(vec_growth(&self.pending, 1))?;
             self.retry_issues.swap_remove(position);
             self.remove_directory_index(identity);
             self.directory_sequence += 1;

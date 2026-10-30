@@ -341,6 +341,9 @@ impl NativeStore {
     fn prepare_graph(
         &self, request: &Value, context: &Value, cancel: &Cancellation, usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        if request.get("thread_ids").and_then(Value::as_array).is_some_and(|ids| ids.is_empty()) {
+            return self.prepare_graph_ready(request, context, cancel, usage);
+        }
         let remaining = limits(request)?;
         let view = request.get("view").ok_or_else(|| invalid("missing view"))?;
         if !view["attachments"].as_array().is_some_and(|attachments| attachments.is_empty()) {
@@ -355,7 +358,6 @@ impl NativeStore {
         let roots = request.get("roots").and_then(Value::as_array).ok_or_else(|| invalid("missing roots"))?;
         request.get("direct_paths").and_then(Value::as_array).ok_or_else(|| invalid("missing direct_paths"))?;
         if roots.len() > 64 { return Err(invalid("prepared registry input exceeds its bound")); }
-        if ids.is_empty() { return self.prepare_graph_ready(request, context, cancel, usage); }
         let mut reservation = self.reserve_projection(context,
             size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
                 + str_field(context, "claimant")?.len())?;

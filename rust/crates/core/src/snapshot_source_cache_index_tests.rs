@@ -96,16 +96,16 @@ fn source_cache_retirement_checks_each_mixed_coverage_candidate_once() {
         let owner = context("source-view-retirement-work");
         let mut next = 200;
         for _ in 0..count {
-            source.append(&users(next..next + 4));
-            next += 4;
+            source.append(&users(next..next + 8));
+            next += 8;
             let response = windowed(&store, &source.path, 1024, &owner);
             release_lease(&store, handle(&response), &owner);
         }
         source.append(&users(next..1000));
         next = 1000;
         for _ in 0..count {
-            source.append(&users(next..next + 4));
-            next += 4;
+            source.append(&users(next..next + 8));
+            next += 8;
             let response = windowed(&store, &source.path, 1024, &owner);
             release_lease(&store, handle(&response), &owner);
         }
