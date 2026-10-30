@@ -366,9 +366,14 @@ impl SourceCatalog {
             + path.capacity() + order.capacity() * size_of::<usize>()
             + self.route_index.growth_for(&stamp.identity) + path.capacity() + order.capacity() * size_of::<usize>()
             + Self::check_growth(order.len()))?;
-        if self.directories.get(&stamp.identity).is_some_and(|node| !node.observed.unchanged(binding)) {
+        if self.directories.get(&stamp.identity).is_some_and(|node| !node.observed.unchanged(binding)
+            || node.stream_identity.is_some_and(|opened| opened != stamp.identity)) {
             budget.reserve(binding.payload_bytes())?;
             self.invalidate_directory(stamp.identity,binding.clone(),budget)?;
+        }
+        if self.directories.get(&stamp.identity).is_some_and(|node|
+            matches!(node.scan,CatalogScan::Issue { attempt,.. } if attempt != budget.attempt)) {
+            self.restart_issue(stamp.identity,budget)?;
         }
         budget.reserve(canonical.capacity())?;
         self.schedule(canonical.clone(),stamp,budget)?;
@@ -434,7 +439,7 @@ impl SourceCatalog {
         let node = self.generation(identity,generation);
         // A name lease has no authority or physical-fact provenance. The current raw parent
         // must name the generation's physical directory before its successful target fact is shared.
-        let proven = binding.issue.is_none() && binding.stamp.is_some()
+        let proven = binding.issue.is_none() && binding.stamp.is_some() && node.stream_identity == Some(identity)
             && physical_parent.is_some_and(|(canonical,parent_identity)| canonical == node.canonical.as_path() && parent_identity == identity);
         let current = self.directories.get(&identity).is_some_and(|node| node.generation == generation);
         if current && proven {

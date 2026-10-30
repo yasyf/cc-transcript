@@ -8766,9 +8766,9 @@ fn location_open_directory(cursor: &LocateCursor, root: &Path) -> (usize, usize,
         NativeStore::audit_open_directory_bytes(reader)
     );
     (
-        reader.root_capacity,
+        reader.entries.root.capacity(),
         catalog.next_root,
-        arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        arc_mirror::<OpenedDirectory>()
             + canonical.as_os_str().len()
             + FILESYSTEM_PATH_BYTES
             + vec_growth(&catalog.retry_issues, 1),
@@ -11376,7 +11376,7 @@ fn fresh_graph_cursor_admits_its_record_before_constructing_it() {
         .join("s")
         .join("subagents");
     let listed_directory =
-        2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
+        2 * directory.as_os_str().len() + arc_mirror::<OpenedDirectory>();
     for background in [false, true] {
         let build = || graph_fixture(&source, background, json!([]));
         let control = build();
@@ -12700,7 +12700,7 @@ fn discovery_step_peak(token: &String, scan: &DiscoveryCursor, root: &Path) -> u
 fn discovery_directory_reservation(scan: &DiscoveryCursor, root: &Path) -> usize {
     scan.seen_directories.capacity() * size_of::<SourceIdentity>()
         + scan.directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<OpenedDirectory>()
         + std::fs::canonicalize(root).unwrap().as_os_str().len()
 }
 
@@ -12802,7 +12802,7 @@ fn first_directory_reservation(root: &Path, root_len: usize) -> usize {
     directories.push([0; size_of::<OpenDirectory>()]);
     seen.capacity() * size_of::<SourceIdentity>()
         + directories.capacity() * size_of::<OpenDirectory>()
-        + arc_mirror::<(*mut libc::DIR, PathBuf)>()
+        + arc_mirror::<OpenedDirectory>()
         + root_len
 }
 
@@ -12902,7 +12902,7 @@ fn denied_location_directory_admission_opens_nothing_and_retries() {
     for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
         source.file(name, &line(name));
     }
-    let directory = arc_mirror::<(*mut libc::DIR, PathBuf)>()
+    let directory = arc_mirror::<OpenedDirectory>()
         + std::fs::canonicalize(&source.directory).unwrap().as_os_str().len()
         + FILESYSTEM_PATH_BYTES + vec_growth(&Vec::<SourceIdentity>::new(), 1);
     for background in [false, true] {
@@ -12959,7 +12959,7 @@ fn denied_graph_listing_admission_opens_nothing_and_retries() {
         .unwrap()
         .join("s")
         .join("subagents");
-    let listed = 2 * directory.as_os_str().len() + arc_mirror::<(*mut libc::DIR, PathBuf)>();
+    let listed = 2 * directory.as_os_str().len() + arc_mirror::<OpenedDirectory>();
     for background in [false, true] {
         assert_denied_directory_admission_opens_nothing(
             "graph listing",

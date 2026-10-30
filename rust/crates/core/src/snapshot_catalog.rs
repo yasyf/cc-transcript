@@ -21,6 +21,9 @@ impl CatalogBudget<'_, '_> {
 
 }
 
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum CatalogIssueProvenance { Physical, Authority }
+
 #[derive(Clone)]
 struct CatalogBinding {
     canonical: Option<PathBuf>,
@@ -28,11 +31,12 @@ struct CatalogBinding {
     directory: bool,
     regular: bool,
     issue: Option<(Status, String)>,
+    issue_provenance: CatalogIssueProvenance,
 }
 
 impl CatalogBinding {
     fn empty() -> Self {
-        Self { canonical:None, stamp:None, directory:false, regular:false, issue:None }
+        Self { canonical:None, stamp:None, directory:false, regular:false, issue:None, issue_provenance:CatalogIssueProvenance::Physical }
     }
 
     fn canonical_path(store: &NativeStore, path: &Path) -> Result<PathBuf,SnapshotError> {
@@ -44,7 +48,7 @@ impl CatalogBinding {
     fn metadata(canonical: PathBuf) -> Self {
         match std::fs::metadata(&canonical) {
             Ok(metadata) => Self { canonical:Some(canonical), stamp:Some(SourceStamp::of(&metadata)),
-                directory:metadata.is_dir(), regular:metadata.is_file(), issue:None },
+                directory:metadata.is_dir(), regular:metadata.is_file(), issue:None, issue_provenance:CatalogIssueProvenance::Physical },
             Err(error) => {
                 let error = io_error(error);
                 Self { canonical:Some(canonical), issue:Some((error.status,error.reason)), ..Self::empty() }
@@ -68,7 +72,7 @@ impl CatalogBinding {
         if let Err(error) = store.authority(context,Some(&canonical)) {
             if !defer_denial { return Err(error); }
             // Index the ordered refusal, never inspect or traverse its target.
-            return Ok(Self { canonical:Some(canonical), issue:Some((error.status,error.reason)), ..Self::empty() });
+            return Ok(Self { canonical:Some(canonical), issue:Some((error.status,error.reason)), issue_provenance:CatalogIssueProvenance::Authority, ..Self::empty() });
         }
         Ok(Self::metadata(canonical))
     }
@@ -87,7 +91,7 @@ impl CatalogBinding {
                             #[cfg(test)]
                             store.after_location_metadata("prefilter");
                             return Ok((Self { canonical:Some(canonical), stamp:Some(SourceStamp::of(&metadata)),
-                                directory:false, regular:true, issue:None },true));
+                                directory:false, regular:true, issue:None, issue_provenance:CatalogIssueProvenance::Physical },true));
                         }
                     }
                 }
@@ -101,6 +105,7 @@ impl CatalogBinding {
     fn unchanged(&self, fresh: &Self) -> bool {
         self.canonical == fresh.canonical && self.directory == fresh.directory
             && self.regular == fresh.regular && self.issue == fresh.issue
+            && self.issue_provenance == fresh.issue_provenance
             && match (self.stamp, fresh.stamp) {
                 (Some(old), Some(new)) if !self.directory => old.identity == new.identity,
                 (old, new) => old == new,
@@ -118,7 +123,7 @@ struct CatalogPhysicalEntryFact(Option<CatalogBinding>);
 impl std::ops::Deref for CatalogPhysicalEntryFact {
     type Target = CatalogBinding;
     fn deref(&self) -> &CatalogBinding {
-        static UNOBSERVED: CatalogBinding = CatalogBinding { canonical:None,stamp:None,directory:false,regular:false,issue:None };
+        static UNOBSERVED: CatalogBinding = CatalogBinding { canonical:None,stamp:None,directory:false,regular:false,issue:None, issue_provenance:CatalogIssueProvenance::Physical };
         self.0.as_ref().unwrap_or(&UNOBSERVED)
     }
 }
@@ -127,6 +132,8 @@ struct CatalogNameRecord {
     name: OsString,
     binding: CatalogPhysicalEntryFact,
     issue: Option<(Status,String)>,
+    issue_canonical: Option<PathBuf>,
+    issue_provenance: CatalogIssueProvenance,
 }
 
 type CatalogEdge = CatalogNameRecord;
@@ -134,21 +141,26 @@ type CatalogEdge = CatalogNameRecord;
 impl CatalogNameRecord {
     fn canonical(name: OsString, mut observation: CatalogBinding) -> Self {
         let issue = observation.issue.take();
-        let binding = CatalogPhysicalEntryFact(observation.stamp.is_some().then_some(observation));
-        Self { name,binding,issue }
+        let issue_provenance = observation.issue_provenance;
+        let issue_canonical = if issue.is_some() { observation.canonical.take() } else { None };
+        let binding = CatalogPhysicalEntryFact((issue.is_none() && observation.stamp.is_some()).then_some(observation));
+        Self { name,binding,issue,issue_canonical,issue_provenance }
     }
 
     fn unobserved(name: OsString) -> Self {
-        Self { name,binding:CatalogPhysicalEntryFact(None),issue:None }
+        Self { name,binding:CatalogPhysicalEntryFact(None),issue:None,issue_canonical:None,issue_provenance:CatalogIssueProvenance::Physical }
     }
 
     fn payload_bytes(&self) -> usize {
         self.name.capacity() + self.binding.payload_bytes() + self.issue.as_ref().map_or(0,|(_,reason)| reason.capacity())
+            + self.issue_canonical.as_ref().map_or(0,PathBuf::capacity)
     }
 
     fn unchanged(&self, fresh: &CatalogBinding) -> bool {
         if self.issue.is_some() {
-            return self.issue == fresh.issue && fresh.canonical.is_none() && fresh.stamp.is_none();
+            return self.issue_provenance == CatalogIssueProvenance::Physical && self.issue == fresh.issue
+                && self.issue_canonical == fresh.canonical && fresh.stamp.is_none()
+                && fresh.issue_provenance == CatalogIssueProvenance::Physical;
         }
         self.binding.unchanged(fresh)
     }
@@ -176,6 +188,7 @@ struct CatalogDirectory {
     generation: u64,
     lease: Arc<()>,
     pending_name: Option<(OsString, bool)>,
+    stream_identity: Option<SourceIdentity>,
     physical_complete: bool,
     first_unproven: Option<usize>,
     canonical: PathBuf,
@@ -319,9 +332,16 @@ impl SourceCatalog {
             + self.directories.values().chain(self.retired_generations.values()).map(|node| {
                 arc_mirror::<()>() + node.pending_name.as_ref().map_or(0, |(name,_)| name.capacity()) + node.canonical.capacity() + node.observed.payload_bytes()
                     + node.edges.capacity() * size_of::<CatalogEdge>()
-                    + node.edges.iter().map(|edge| edge.payload_bytes()).sum::<usize>()
+                    + node.edges.iter().map(|edge| edge.name.capacity()
+                        + edge.binding.canonical.as_ref().map_or(0,PathBuf::capacity)
+                        + edge.issue.as_ref().map_or(0,|(_,reason)| reason.capacity())
+                        + edge.issue_canonical.as_ref().map_or(0,PathBuf::capacity)).sum::<usize>()
                     + (node.directories.capacity() + node.symlinks.capacity() + node.issues.capacity()) * size_of::<usize>()
-                    + node.scan.owned_bytes()
+                    + match &node.scan {
+                        CatalogScan::Open(reader) => arc_mirror::<OpenedDirectory>() + reader.entries.root.capacity(),
+                        CatalogScan::Issue { reason,.. } => reason.capacity(),
+                        _ => 0,
+                    }
             }).sum::<usize>()
             + self.retired_generations.reserved_bytes()
             + self.retirement_queue.capacity() * size_of::<u64>()
@@ -385,7 +405,7 @@ impl SourceCatalog {
         let live = observed.directory && observed.stamp.is_some_and(|stamp| stamp.identity == identity);
         self.retire_directory(identity,budget)?;
         self.directory_sequence += 1;
-        let node = CatalogDirectory { generation:self.directory_sequence, lease:Arc::new(()), pending_name:None,
+        let node = CatalogDirectory { generation:self.directory_sequence, lease:Arc::new(()), pending_name:None, stream_identity:None,
             physical_complete:true, first_unproven:None, canonical, observed, edges:Vec::new(), directories:Vec::new(), symlinks:Vec::new(),
             issues:Vec::new(), scan:if live { CatalogScan::Queued } else { CatalogScan::Gone }, payload_bytes:0 };
         self.directory_bytes += node.owned_bytes();
@@ -421,11 +441,24 @@ impl SourceCatalog {
         store.authority(budget.context,Some(&self.generation(identity,generation).canonical))?;
         budget.reserve(READ_DIR_HANDLE_BYTES + path.as_os_str().len() + FILESYSTEM_PATH_BYTES)?;
         let before = self.generation(identity,generation).owned_bytes();
-        let scan = match OpenDirectory::open(path) {
-            Ok(reader) => CatalogScan::Open(reader),
-            Err(error) => CatalogScan::Issue { status:error.status,reason:error.reason,position:0,attempt:budget.attempt },
+        #[cfg(test)]
+        store.after_location_metadata("directory_open");
+        let (scan,opened_identity) = match OpenDirectory::open(path) {
+            Ok(reader) => {
+                let opened = reader.identity();
+                #[cfg(test)]
+                store.after_location_metadata("directory_opened");
+                (CatalogScan::Open(reader),Some(opened))
+            }
+            Err(error) => (CatalogScan::Issue { status:error.status,reason:error.reason,position:0,attempt:budget.attempt },None),
         };
-        self.generation_mut(identity,generation).scan = scan;
+        let node = self.generation_mut(identity,generation);
+        node.scan = scan;
+        node.stream_identity = opened_identity;
+        if opened_identity.is_some_and(|opened| opened != identity) {
+            node.physical_complete = false;
+            node.first_unproven = Some(0);
+        }
         self.update_generation_charge(identity,generation,before);
         Ok(())
     }
@@ -734,7 +767,7 @@ impl SourceCatalog {
             node.canonical = canonical;
             if matches!(node.scan, CatalogScan::Gone) {
                 node.generation = generation;
-                node.observed = CatalogBinding { canonical: Some(node.canonical.clone()), stamp: Some(stamp), directory: true, regular: false, issue: None };
+                node.observed = CatalogBinding { canonical: Some(node.canonical.clone()), stamp: Some(stamp), directory: true, regular: false, issue: None, issue_provenance:CatalogIssueProvenance::Physical };
                 node.scan = CatalogScan::Queued;
                 self.pending.push(stamp.identity);
                 self.complete = false;
@@ -753,9 +786,9 @@ impl SourceCatalog {
             self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
             return;
         }
-        let observed = CatalogBinding { canonical: Some(canonical.clone()), stamp: Some(stamp), directory: true, regular: false, issue: None };
+        let observed = CatalogBinding { canonical: Some(canonical.clone()), stamp: Some(stamp), directory: true, regular: false, issue: None, issue_provenance:CatalogIssueProvenance::Physical };
         let node = CatalogDirectory {
-            generation, lease:Arc::new(()), pending_name:None, physical_complete:true, first_unproven:None, canonical, observed, edges: Vec::new(), directories: Vec::new(), symlinks: Vec::new(), issues: Vec::new(),
+            generation, lease:Arc::new(()), pending_name:None, stream_identity:None, physical_complete:true, first_unproven:None, canonical, observed, edges: Vec::new(), directories: Vec::new(), symlinks: Vec::new(), issues: Vec::new(),
             scan: CatalogScan::Queued, payload_bytes: 0,
         };
         self.directory_bytes += node.owned_bytes();
@@ -881,6 +914,7 @@ impl SourceCatalog {
         self.retry_issues.retain(|candidate| *candidate != identity);
         self.remove_directory_index(identity);
         self.replace_generation(identity, None, budget)?;
+        self.pending.retain(|pending| *pending != identity);
         self.pending.push(identity);
         self.complete = false;
         self.routes_dirty = true;
@@ -946,10 +980,14 @@ impl SourceCatalog {
                     #[cfg(test)]
                     store.after_location_metadata("entry");
                     let path = catalog_child_path(&canonical,&name);
-                    let (binding,_) = CatalogBinding::entry(store,&path,Some(&canonical),budget.context,true)?;
-                    let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,binding),symlink };
-                    self.install_edge(&pending,budget)?;
-                    self.commit_edge(pending);
+                    if self.directories.get(&identity).expect("physical stream").stream_identity != Some(identity) {
+                        self.publish_observed_name(identity,generation,name,&CatalogBinding::empty(),symlink,None,budget)?;
+                    } else {
+                        let (binding,_) = CatalogBinding::entry(store,&path,Some(&canonical),budget.context,true)?;
+                        let pending = CatalogPendingEdge { directory:identity,edge:CatalogNameRecord::canonical(name,binding),symlink };
+                        self.install_edge(&pending,budget)?;
+                        self.commit_edge(pending);
+                    }
                 }
                 CatalogNameStep::End => { self.pending.pop(); }
                 CatalogNameStep::Issue { .. } => {

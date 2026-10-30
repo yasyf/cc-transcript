@@ -44,7 +44,7 @@ const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
 const FILESYSTEM_PATH_BYTES: usize = 2 * (libc::PATH_MAX as usize + size_of::<libc::dirent>());
 const LOCATE_PATH_SLOTS: usize = 2 * FILESYSTEM_PATH_BYTES;
 const LOCATE_USER_PATH_SLOTS: usize = 3 * FILESYSTEM_PATH_BYTES;
-const READ_DIR_HANDLE_BYTES: usize = arc_bytes::<(*mut libc::DIR, PathBuf)>();
+const READ_DIR_HANDLE_BYTES: usize = arc_bytes::<OpenedDirectory>();
 const LOAD_SLOT_BYTES: usize = arc_bytes::<LoadSlot>() + MUTEX_STORAGE_BYTES;
 const CLASSIFIER_SLOT_BYTES: usize = arc_bytes::<ClassifierSlot>() + MUTEX_STORAGE_BYTES;
 const PREPARED_GRAPH_BYTES: usize = arc_bytes::<Mutex<PreparedGraph>>() + MUTEX_STORAGE_BYTES;
@@ -1161,29 +1161,114 @@ struct GraphListing {
     depth: usize,
 }
 
+struct OpenedDirectory {
+    directory: std::ptr::NonNull<libc::DIR>,
+    root: PathBuf,
+    identity: SourceIdentity,
+}
+
+// Only OpenDirectory owns the iteration capability. Entries share immutable root/identity and
+// descriptor-relative metadata; their Arc keeps the descriptor alive through those operations.
+unsafe impl Send for OpenedDirectory {}
+unsafe impl Sync for OpenedDirectory {}
+
+impl Drop for OpenedDirectory {
+    fn drop(&mut self) {
+        unsafe { libc::closedir(self.directory.as_ptr()); }
+    }
+}
+
 struct OpenDirectory {
-    entries: std::fs::ReadDir,
-    root_capacity: usize,
+    entries: Arc<OpenedDirectory>,
+    end_of_stream: bool,
+}
+
+struct OpenDirectoryEntry {
+    directory: Arc<OpenedDirectory>,
+    name: OsString,
+    kind: u8,
+}
+
+struct OpenDirectoryEntryType {
+    symlink: bool,
+}
+
+impl OpenDirectoryEntryType {
+    fn is_symlink(&self) -> bool { self.symlink }
+}
+
+impl OpenDirectoryEntry {
+    fn path(&self) -> PathBuf { self.directory.root.join(&self.name) }
+    fn file_name(&self) -> OsString { self.name.clone() }
+
+    fn file_type(&self) -> std::io::Result<OpenDirectoryEntryType> {
+        if self.kind != libc::DT_UNKNOWN {
+            return Ok(OpenDirectoryEntryType { symlink:self.kind == libc::DT_LNK });
+        }
+        let name = std::ffi::CString::new(self.name.as_encoded_bytes()).expect("directory name contains no NUL");
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let result = unsafe { libc::fstatat(libc::dirfd(self.directory.directory.as_ptr()),name.as_ptr(),
+            metadata.as_mut_ptr(),libc::AT_SYMLINK_NOFOLLOW) };
+        if result != 0 { return Err(std::io::Error::last_os_error()); }
+        let metadata = unsafe { metadata.assume_init() };
+        Ok(OpenDirectoryEntryType { symlink:metadata.st_mode & libc::S_IFMT == libc::S_IFLNK })
+    }
 }
 
 impl OpenDirectory {
     fn open(path: &Path) -> Result<Self, SnapshotError> {
-        Ok(Self {
-            entries: std::fs::read_dir(path).map_err(io_error)?,
-            root_capacity: path.as_os_str().len(),
-        })
+        let encoded = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| io_error(
+            std::io::Error::new(std::io::ErrorKind::InvalidInput,"file name contained an unexpected NUL byte")))?;
+        let directory = std::ptr::NonNull::new(unsafe { libc::opendir(encoded.as_ptr()) })
+            .ok_or_else(|| io_error(std::io::Error::last_os_error()))?;
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(libc::dirfd(directory.as_ptr()),metadata.as_mut_ptr()) } != 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe { libc::closedir(directory.as_ptr()); }
+            return Err(io_error(error));
+        }
+        let metadata = unsafe { metadata.assume_init() };
+        let identity = SourceIdentity { device:metadata.st_dev as u64,inode:metadata.st_ino as u64,window_base:0 };
+        Ok(Self { entries:Arc::new(OpenedDirectory { directory,root:path.to_owned(),identity }),end_of_stream:false })
     }
 
+    fn identity(&self) -> SourceIdentity { self.entries.identity }
+
     fn retained_bytes(&self) -> usize {
-        READ_DIR_HANDLE_BYTES + self.root_capacity
+        READ_DIR_HANDLE_BYTES + self.entries.root.capacity()
     }
 }
 
+fn directory_errno() -> *mut libc::c_int {
+    #[cfg(any(target_vendor = "apple",target_os = "freebsd"))]
+    unsafe { libc::__error() }
+    #[cfg(any(target_os = "android",target_os = "openbsd",target_os = "netbsd"))]
+    unsafe { libc::__errno() }
+    #[cfg(not(any(target_vendor = "apple",target_os = "freebsd",target_os = "android",target_os = "openbsd",target_os = "netbsd")))]
+    unsafe { libc::__errno_location() }
+}
+
 impl Iterator for OpenDirectory {
-    type Item = std::io::Result<std::fs::DirEntry>;
+    type Item = std::io::Result<OpenDirectoryEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.entries.next()
+        if self.end_of_stream { return None; }
+        loop {
+            let entry = unsafe {
+                *directory_errno() = 0;
+                libc::readdir(self.entries.directory.as_ptr())
+            };
+            if entry.is_null() {
+                self.end_of_stream = true;
+                let error = std::io::Error::last_os_error();
+                return (error.raw_os_error() != Some(0)).then_some(Err(error));
+            }
+            // dirent may have a dynamically sized trailing name; never form a reference to its full layout.
+            let name = unsafe { std::ffi::CStr::from_ptr(std::ptr::addr_of!((*entry).d_name).cast()) }.to_bytes();
+            if name == b"." || name == b".." { continue; }
+            return Some(Ok(OpenDirectoryEntry { directory:Arc::clone(&self.entries),
+                name:OsString::from_vec(name.to_vec()),kind:unsafe { (*entry).d_type } }));
+        }
     }
 }
 
@@ -5532,11 +5617,7 @@ impl NativeStore {
 
     #[cfg(test)]
     fn audit_open_directory_bytes(directory: &OpenDirectory) -> usize {
-        let OpenDirectory {
-            entries: _,
-            root_capacity,
-        } = directory;
-        arc_mirror::<(*mut libc::DIR, PathBuf)>() + root_capacity
+        arc_mirror::<OpenedDirectory>() + directory.entries.root.capacity()
     }
 
     #[cfg(test)]
