@@ -60,6 +60,11 @@ jobs:
               assert result.returncode == 1 and payload["outcome"]["complete"]
           PYPROBE
 
+      - name: Test bounded request body projection
+        run: |
+          cargo test -p cc-transcript-core --no-default-features --lib -- request_projection_ --nocapture
+          uv run --no-sync pytest tests/test_request_body_projection.py -q -s
+
       - name: Test native Python bridge
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python

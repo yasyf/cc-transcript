@@ -29,6 +29,7 @@ pub mod protocol;
 pub mod pystr;
 pub mod query;
 pub mod render;
+pub mod request_body;
 pub mod rng;
 pub mod scan;
 pub mod scan_checkpoint;

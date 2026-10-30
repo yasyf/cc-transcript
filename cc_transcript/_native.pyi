@@ -159,6 +159,7 @@ __all__ = [
     "notifications_from_events",
     "parse_bytes",
     "parse_print_result",
+    "project_request_body",
     "query_session",
     "register_mcp_tool",
     "render_compact_lines",
@@ -2606,3 +2607,6 @@ def unregister_mcp_tool(tool: builtins.str) -> builtins.bool:
 class SnapshotOperationError(RuntimeError):
     @property
     def __weakref__(self) -> object: ...
+
+
+def project_request_body(path: builtins.str) -> tuple[builtins.bool, builtins.str | None] | None: ...
