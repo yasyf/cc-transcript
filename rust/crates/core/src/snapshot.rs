@@ -9097,11 +9097,10 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
-                    self.extend_load_reservation(
-                        slot,
-                        context,
-                        vec_growth(&load.source_chunks, 1),
-                    )?;
+                    let source_growth = vec_growth(&load.source_chunks, 1);
+                    if source_growth > 0 {
+                        self.extend_load_reservation(slot, context, source_growth)?;
+                    }
                     load.source_chunks.push(SourceChunkSpan {
                         start: load.pending_start,
                         end: load.pending_start + consumed as u64,
@@ -9166,11 +9165,10 @@ impl NativeStore {
                             .iter()
                             .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()));
                     }
-                    self.extend_load_reservation(
-                        slot,
-                        context,
-                        vec_growth(&load.source_chunks, 1),
-                    )?;
+                    let source_growth = vec_growth(&load.source_chunks, 1);
+                    if source_growth > 0 {
+                        self.extend_load_reservation(slot, context, source_growth)?;
+                    }
                     load.source_chunks.push(SourceChunkSpan {
                         start: load.pending_start,
                         end: slot.stamp.size,

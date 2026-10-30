@@ -1785,11 +1785,15 @@ impl NativeStore {
         #[cfg(test)]
         self.warm_records.fetch_add(1, Ordering::Relaxed);
         let since = active_since_ns(request)?;
-        let (located, _catalog_reservation) = match self.catalog_access(
-            CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
-        )? {
-            CatalogResolution::Ready { paths, reservation } => (paths, reservation),
-            CatalogResolution::Indexed | CatalogResolution::Pending(_) => unreachable!("synchronous catalog lookup"),
+        let (located, _catalog_reservation) = if ids.is_empty() {
+            (HashMap::new(), None)
+        } else {
+            match self.catalog_access(
+                CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
+            )? {
+                CatalogResolution::Ready { paths, reservation } => (paths, Some(reservation)),
+                CatalogResolution::Indexed | CatalogResolution::Pending(_) => unreachable!("synchronous catalog lookup"),
+            }
         };
         let mut members = Vec::new();
         let mut seen = HashSet::new();
