@@ -1,1 +1,1 @@
-{"v":1,"lamport":9,"ops":[{"kind":"set_criterion_status","id":"e69b5294231affddfd44079217c254f3","status":"met","note":"Corrected cfe2878 baselineCI40985116319 swiftjob123834224931 actual8393532 expected70460; only byte-cost assertion failed,979passed2ignored; sdk17-window-baseline-corrected-red.log"}]}
+{"v":1,"lamport":10,"ops":[{"kind":"set_criterion_status","id":"8dd0fff8e7a7f37593c4bce015437d67","status":"met","note":"Exact4f68f665/treefbca9d16 fullCI40985130915SUCCESS; Python Swift snapshot-wheel allgreen; core980passed0failed2ignored"}]}
