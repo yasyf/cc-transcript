@@ -1135,6 +1135,7 @@ impl SourceCatalog {
         deadline: u64, bound: Option<&Vec<usize>>, query: &mut CatalogLocateQuery,
         budget: &mut CatalogBudget<'_, '_>) -> Result<bool,SnapshotError> {
         budget.scratch(LOCATE_USER_PATH_SLOTS)?;
+        self.public_authority_view(query,bound,cancel,deadline,budget)?;
         loop {
             cancel.check(deadline)?;
             let lower = query.validated_after.as_ref().map_or(std::ops::Bound::Unbounded,std::ops::Bound::Excluded);

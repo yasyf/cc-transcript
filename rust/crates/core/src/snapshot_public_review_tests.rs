@@ -461,3 +461,31 @@ fn public_catalog_review_unrelated_root_mutation_keeps_a_consumed_prefix() {
     }
     panic!("closed allowed prefix did not settle");
 }
+
+#[test]
+fn public_catalog_review_a_closed_positive_does_not_materialize_a_later_authority_view() {
+    let consumed = LedgerSource::new("");
+    let wanted = LedgerSource::new("");
+    let later = LedgerSource::new("");
+    std::fs::remove_file(&consumed.path).unwrap();
+    consumed.file("consumed.txt", "");
+    for index in 0..256 { later.file(&format!("later-{index:03}.txt"), ""); }
+    let store = public_review_store(1);
+    let owner = context_for("public-review-lazy-authority-view", false);
+    let mut request = public_review_request(&consumed, &["s"]);
+    request.insert("roots", json!([later.directory, wanted.path, consumed.directory]));
+    let first = store.request(&request, &owner, &Cancellation::default());
+    assert_eq!(first["usage"]["discovery_entries_examined"].as_u64(), Some(1));
+    let cursor = first["cursor"].as_str().expect("consumed root cursor").to_owned();
+    let mut missing = request.clone();
+    missing.insert("session_ids", json!(["missing"]));
+    public_review_finish(&store, &missing, &owner);
+    let mut narrowed = owner.clone();
+    narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[wanted.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let response = store.request(&json!({"schema":SCHEMA,"id":"lazy-authority-positive-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
+    assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
+    assert_eq!(response["data"]["sessions"][0]["status"].as_str(), Some("ok"));
+    assert_eq!(Path::new(response["data"]["sessions"][0]["path"].as_str().unwrap()), wanted.path);
+    assert_eq!(response["usage"]["discovery_entries_examined"].as_u64(), Some(0));
+    store.assert_conserved();
+}

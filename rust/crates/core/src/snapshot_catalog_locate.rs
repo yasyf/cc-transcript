@@ -22,6 +22,8 @@ struct CatalogLocateQuery {
     authority_checks: BTreeMap<Vec<usize>, PathBuf>,
     authority_check_bytes: usize,
     authority_view: Option<(u64, u64)>,
+    authority_through: Option<Vec<usize>>,
+    authority_complete: bool,
     capabilities: BTreeMap<Vec<usize>,CatalogCapability>,
     capability_bytes: usize,
     generation_seen: Option<u64>,
@@ -73,6 +75,7 @@ impl CatalogLocateQuery {
             + self.floor.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
             + self.validated_after.as_ref().map_or(0,|order| order.capacity() * size_of::<usize>())
             + self.capability_bytes + self.authority_check_bytes
+            + self.authority_through.as_ref().map_or(0, |order| order.capacity() * size_of::<usize>())
     }
 
     fn push_choice(&mut self, choice: CatalogChoice, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
@@ -159,6 +162,7 @@ impl CatalogLocateQuery {
             Some(order.clone())
         } else { None };
         self.rewind_generation();
+        self.authority_view = None;
         if let Some(previous) = previous { self.position(&previous,None,budget)?; }
         Ok(())
     }
@@ -311,22 +315,49 @@ impl SourceCatalog {
         }
     }
 
-    fn public_authority_view(&self, query: &mut CatalogLocateQuery, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
-        if query.authority_epoch == 0 || query.authority_view == Some((query.authority_epoch, self.candidate_version)) {
-            return Ok(());
+    fn public_authority_view(&self, query: &mut CatalogLocateQuery, bound: Option<&Vec<usize>>,
+        cancel: &Cancellation, deadline: u64, budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
+        if query.authority_epoch == 0 { return Ok(()); }
+        let version = (query.authority_epoch, self.candidate_version);
+        if query.authority_view != Some(version) {
+            query.authority_checks.clear();
+            query.authority_check_bytes = 0;
+            query.authority_through = None;
+            query.authority_complete = false;
+            query.authority_view = Some(version);
         }
-        query.authority_checks.clear();
-        query.authority_check_bytes = 0;
-        for (identity, route) in self.route_index.iter() {
-            let node = self.directories.get(identity).expect("catalog authority directory");
-            for (index, edge) in node.edges.iter().enumerate() {
+        if query.authority_complete || bound.is_some_and(|bound|
+            query.authority_through.as_ref().is_some_and(|through| through >= bound)) { return Ok(()); }
+        let upper = bound.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Included);
+        for (order, check) in self.checks.range::<Vec<usize>,_>((std::ops::Bound::Unbounded,upper)) {
+            cancel.check(deadline)?;
+            let identity = match check.kind {
+                CatalogCheckKind::Root(index) if self.roots[index].binding.directory =>
+                    self.roots[index].binding.stamp.expect("catalog authority root stamp").identity,
+                CatalogCheckKind::Directory(identity) => identity,
+                _ => continue,
+            };
+            let route = self.route_index.get(&identity).expect("catalog authority route");
+            if route.order != *order { continue; }
+            let node = self.directories.get(&identity).expect("catalog authority directory");
+            let mut start = 0;
+            for after in query.floor.as_ref().into_iter().chain(query.authority_through.as_ref()) {
+                if after.starts_with(&route.order) {
+                    if let Some(index) = after.get(route.order.len()) { start = start.max(index + 1); }
+                } else if *after > route.order { start = node.edges.len(); }
+            }
+            let end = bound.filter(|bound| bound.starts_with(&route.order))
+                .map_or(node.edges.len(), |bound| bound.get(route.order.len()).map_or(0, |index| index + 1))
+                .min(node.edges.len());
+            for (index, edge) in node.edges.iter().enumerate().take(end).skip(start) {
+                cancel.check(deadline)?;
                 if edge.binding.directory || node.symlinks.binary_search(&index).is_ok() || edge.binding.issue.is_some() {
                     continue;
                 }
                 let order = Self::query_order(route, index, budget)?;
-                if query.floor.as_ref().is_some_and(|floor| order <= *floor) {
-                    continue;
-                }
+                if bound.is_some_and(|bound| order > *bound) { break; }
+                if query.floor.as_ref().is_some_and(|floor| order <= *floor)
+                    || query.authority_through.as_ref().is_some_and(|through| order <= *through) { continue; }
                 let path_bytes = route.path.as_os_str().len() + 1 + edge.name.len();
                 budget.reserve(size_of::<(Vec<usize>, PathBuf)>() + path_bytes)?;
                 let path = catalog_child_path(&route.path, &edge.name);
@@ -335,7 +366,12 @@ impl SourceCatalog {
                 query.authority_checks.insert(order, path);
             }
         }
-        query.authority_view = Some((query.authority_epoch, self.candidate_version));
+        if let Some(bound) = bound {
+            let old = query.authority_through.as_ref().map_or(0, Vec::capacity);
+            budget.reserve(bound.len().saturating_sub(old) * size_of::<usize>())?;
+            let through = query.authority_through.get_or_insert_with(Vec::new);
+            through.clear(); through.reserve_exact(bound.len()); through.extend_from_slice(bound);
+        } else { query.authority_complete = true; }
         Ok(())
     }
 
@@ -366,7 +402,6 @@ impl SourceCatalog {
                 continue;
             }
             self.sync_routes(budget)?;
-            self.public_authority_view(query, budget)?;
             if !query.choices_ready || query.choice_version != self.candidate_version {
                 let choices = self.choices(&query.wanted,cancel,remaining.deadline_unix_ms,budget)?;
                 query.choices.clear(); query.choice_bytes = 0;
