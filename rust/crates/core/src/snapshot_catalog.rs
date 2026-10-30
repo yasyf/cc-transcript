@@ -551,6 +551,12 @@ impl SourceCatalog {
     fn advance(&mut self, store: &NativeStore, cancel: &Cancellation, deadline: u64,
         max_entries: usize, usage: &mut [u64; 20], budget: &mut CatalogBudget<'_, '_>) -> Result<(), SnapshotError> {
         budget.reserve(LOCATE_USER_PATH_SLOTS)?;
+        let retries = self.retry_issues.iter().filter(|identity| {
+            self.directories.get(*identity).is_some_and(|node|
+                matches!(node.scan, CatalogScan::Issue { attempt, .. } if attempt != budget.attempt))
+        }).count();
+        budget.reserve(vec_growth(&self.pending, retries))?;
+        self.pending.reserve(retries);
         let mut position = 0;
         let mut requeued = false;
         while position < self.retry_issues.len() {
@@ -560,7 +566,6 @@ impl SourceCatalog {
             });
             if issue.is_none() { self.retry_issues.swap_remove(position); continue; }
             if issue == Some(budget.attempt) { position += 1; continue; }
-            budget.reserve(vec_growth(&self.pending, 1))?;
             self.retry_issues.swap_remove(position);
             self.remove_directory_index(identity);
             let node = self.directories.get_mut(&identity).expect("catalog directory");

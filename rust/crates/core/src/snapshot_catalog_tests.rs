@@ -420,3 +420,77 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
     drop(reservation);
     store.assert_conserved();
 }
+
+#[test]
+fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
+    let source = Source::new("");
+    for index in 0..5 {
+        let directory = source.directory.join(format!("retry-{index}"));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("wanted.jsonl"), "").unwrap();
+    }
+    for background in [false, true] {
+        let store = store();
+        let mut owner = context("catalog-retry-admission");
+        if background { owner.insert("work_class", json!("background")); }
+        let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
+        let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 1 };
+        let roots = [json!(source.directory)];
+        let mut catalog = SourceCatalog::new(&store, &roots, &owner, &mut budget).unwrap();
+        let root_identity = SourceStamp::of(&std::fs::metadata(&source.directory).unwrap()).identity;
+        let mut usage = [0;20];
+        catalog.advance(&store, &Cancellation::default(), now_ms() + 750, usize::MAX, &mut usage, &mut budget).unwrap();
+        catalog.sync_routes(&mut budget).unwrap();
+        let identities: Vec<_> = catalog.directories.keys().filter(|identity| **identity != root_identity).copied().collect();
+        let earliest = identities.iter().min_by(|left, right|
+            catalog.route_index.get(*left).unwrap().order.cmp(&catalog.route_index.get(*right).unwrap().order)).unwrap();
+        let expected = catalog.route_index.get(earliest).unwrap().path.join("wanted.jsonl");
+        assert_eq!(identities.len(), 5);
+        assert!(catalog.pending.capacity() < identities.len());
+        for identity in &identities {
+            budget.reserve("transient retry".len() + vec_growth(&catalog.retry_issues, 1)).unwrap();
+            catalog.remove_directory_index(*identity);
+            let node = catalog.directories.get_mut(identity).unwrap();
+            let before = node.owned_bytes();
+            node.edges.clear(); node.directories.clear(); node.symlinks.clear(); node.issues.clear();
+            node.payload_bytes = 0;
+            node.scan = CatalogScan::Issue { status: Status::Changed, reason: "transient retry".to_owned(), position: 0, attempt: 1 };
+            catalog.directory_bytes = catalog.directory_bytes - before + node.owned_bytes();
+            catalog.retry_issues.push(*identity);
+            catalog.record_issue(*identity, 0);
+        }
+        catalog.complete = false;
+        budget.attempt = 2;
+        let pending = catalog.pending.clone();
+        let retries = catalog.retry_issues.clone();
+        let issue_bound = catalog.issue_bound;
+        let charge = catalog.charge();
+        assert_eq!(charge, catalog.audit_charge());
+        let growth = vec_growth(&catalog.pending, retries.len());
+        assert!(growth > 0);
+        let headroom = LOCATE_USER_PATH_SLOTS + growth - 1;
+        let cap = store.config.retained - if background { store.config.hook_bytes } else { 0 };
+        let used = store.retained_accounted_bytes();
+        let filler = store.reserve_projection(&owner, cap - used - headroom).unwrap();
+        let error = catalog.advance(&store, &Cancellation::default(), now_ms() + 750, 1, &mut usage, &mut budget).unwrap_err();
+        assert_eq!(error.status, Status::RetainedLimit);
+        assert_eq!(catalog.pending, pending);
+        assert_eq!(catalog.retry_issues, retries);
+        assert_eq!(catalog.issue_bound, issue_bound);
+        assert!(identities.iter().all(|identity|
+            matches!(catalog.directories.get(identity).unwrap().scan, CatalogScan::Issue { attempt: 1, .. })));
+        assert_eq!(catalog.charge(), charge);
+        assert_eq!(catalog.charge(), catalog.audit_charge());
+        drop(filler);
+        let deadline = now_ms() + 750;
+        catalog.advance(&store, &Cancellation::default(), deadline, 1, &mut usage, &mut budget).unwrap();
+        let plan = catalog.read_plan(&Cancellation::default(), deadline, &mut budget).unwrap();
+        let paths = catalog.try_locate(&store, &[json!("wanted")], &owner, &Cancellation::default(), deadline, &plan, &mut budget).unwrap().expect("earliest retry prefix");
+        assert_eq!(paths.get("wanted"), Some(&expected));
+        assert_eq!(catalog.charge(), catalog.audit_charge());
+        drop(catalog);
+        drop(budget);
+        drop(reservation);
+        store.assert_conserved();
+    }
+}
