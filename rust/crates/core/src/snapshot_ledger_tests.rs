@@ -5087,32 +5087,45 @@ fn failed_prepared_source_pin_releases_its_internal_lease() {
 }
 
 #[test]
-fn cancelled_registered_warming_releases_its_location_cursor() {
+fn cancelled_registered_warming_releases_its_location_work() {
     let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
     let store = cursor_store();
     let owner = context_for("warming", true);
     let cancel = Cancellation::default();
     let armed = cancel.clone();
-    *store.locate_hook.lock().unwrap() = Some(Arc::new(move || armed.cancel()));
+    let observed = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::clone(&observed);
+    *store.location_metadata_hook.lock().unwrap() = Some((
+        "entry",
+        Arc::new(move || {
+            entered.fetch_add(1, Ordering::Relaxed);
+            armed.cancel();
+        }),
+    ));
     let response = store.request(&warm_request(&scenario), &owner, &cancel);
+    *store.location_metadata_hook.lock().unwrap() = None;
     assert_eq!(
         response["status"].as_str(),
         Some("cancelled"),
         "{response:?}"
     );
-    assert!(
-        store.locate_hook.lock().unwrap().is_none(),
-        "the location page never parked"
-    );
+    assert_eq!(observed.load(Ordering::Relaxed), 1);
     assert_eq!(
         response["usage"]["discovery_entries_examined"].as_u64(),
-        Some(2),
+        Some(1),
         "{response:?}"
     );
-    assert!(
-        store.lock_state().locates.is_empty(),
-        "the cancelled warm left its location cursor behind"
-    );
+    {
+        let state = store.lock_state();
+        assert!(state.locates.is_empty());
+        assert!(state.registered_builds.is_empty());
+        assert_eq!(state.transient_bytes, 0);
+        assert_eq!(state.catalogs.len(), 1);
+        for slot in state.catalogs.values() {
+            assert_eq!(Arc::strong_count(slot), 1);
+            assert!(matches!(*slot.cell.lock().unwrap(), CatalogCell::Idle(_)));
+        }
+    }
     store.assert_conserved();
 }
 
