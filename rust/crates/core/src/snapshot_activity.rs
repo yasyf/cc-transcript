@@ -21,6 +21,16 @@ use crate::toolcall::{
 };
 use crate::types::{ContentBlock, Entry};
 
+#[cfg(test)]
+std::thread_local! {
+    static CALL_LOOKUP_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_call_lookup_steps() -> usize {
+    CALL_LOOKUP_STEPS.with(|steps| steps.replace(0))
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActivityWork {
     pub indexed_entries: usize,
@@ -338,7 +348,11 @@ impl ActivityIndex {
             .get(self.turn_of_event(event)?)?
             .calls
             .iter()
-            .find(|call| call.event == event && call.ordinal == block_ordinal)
+            .find(|call| {
+                #[cfg(test)]
+                CALL_LOOKUP_STEPS.with(|steps| steps.set(steps.get() + 1));
+                call.event == event && call.ordinal == block_ordinal
+            })
             .map(|call| &call.call)
     }
 

@@ -1,0 +1,14 @@
+name: Signal Call Lookup Baseline
+on:
+  push:
+    branches: [diag/signal-call-lookup-baseline]
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p cc-transcript-core --no-default-features --lib -- signal_projection_call_lookup_work_is_logarithmic --nocapture
