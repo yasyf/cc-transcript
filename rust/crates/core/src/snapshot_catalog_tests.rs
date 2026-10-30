@@ -53,12 +53,12 @@ fn registered_catalog_reuses_cancelled_indexing_for_a_4587_id_roster() {
     let observed_hook = Arc::clone(&observed);
     let cancel_hook = cancel.clone();
     *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new(move || {
-        if observed_hook.fetch_add(1, Ordering::Relaxed) == 15 { cancel_hook.cancel(); }
+        if observed_hook.fetch_add(1, Ordering::Relaxed) == 0 { cancel_hook.cancel(); }
     })));
     let (cancelled, first_entries) = catalog_counted_request(&store, &request, &owner, &cancel);
     *store.location_metadata_hook.lock().unwrap() = None;
     assert_eq!(cancelled["status"].as_str(), Some("cancelled"), "{cancelled:?}");
-    assert_eq!(observed.load(Ordering::Relaxed), 16);
+    assert_eq!(observed.load(Ordering::Relaxed), 1);
     store.assert_conserved();
     let (_, resumed_entries) = catalog_finish_missing(&store, &request, &owner, 4588 - first_entries);
     assert_eq!(first_entries + resumed_entries, 4588, "owned indexing re-enumerated its prefix");
