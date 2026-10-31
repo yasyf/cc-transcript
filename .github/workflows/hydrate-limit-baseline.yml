@@ -15,9 +15,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust -> target
       - name: Record exact baseline and compiler
         run: git rev-parse HEAD && rustc -Vv && uname -m
       - name: Grade real hydrate reasons and consumed work on unchanged production
-        run: cargo test --manifest-path rust/Cargo.toml -p cc-transcript-core --no-default-features --lib snapshot::tests::hydrate_ -- --nocapture --test-threads=1
+        run: cargo test -p cc-transcript-core --no-default-features --lib snapshot::tests::hydrate_ -- --nocapture --test-threads=1
