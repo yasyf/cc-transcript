@@ -1,0 +1,11 @@
+name: Interaction Formatting Contract
+on:
+  push:
+    branches: [perf/interaction-format]
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo fmt --all -- --check
