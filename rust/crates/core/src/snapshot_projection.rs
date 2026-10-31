@@ -2519,6 +2519,57 @@ mod tests {
     }
 
     #[test]
+    fn signal_projection_call_lookup_work_is_logarithmic() {
+        let mut bounded = true;
+        for count in [32usize, 4096] {
+            let mut events = vec![user("u", "start")];
+            events.extend((0..count).map(|i| {
+                tool(
+                    &format!("event-{i}"),
+                    &format!("call-{i}"),
+                    "TaskCreate",
+                    json!({"subject":format!("subject-{i}"),"description":"detail"}),
+                )
+            }));
+            let snap = snapshot(&events);
+            let cap = WorkLimits {
+                max_events: count + 16,
+                max_read_bytes: 64 * 1024 * 1024,
+                max_items: count + 16,
+                ..limits()
+            };
+            crate::snapshot_activity::take_call_lookup_steps();
+            let actual = project(
+                &snap,
+                &request(json!({"kind":"signal_texts","origin":"assistant","thinking":false,"window":"current_turn"}), json!([])),
+                &cap, &Cancellation::default(), 0,
+            ).unwrap();
+            let steps = crate::snapshot_activity::take_call_lookup_steps();
+            let maximum = count * (count.next_power_of_two().ilog2() as usize + 2);
+            assert_eq!(
+                actual.reason.as_deref(),
+                if count > 256 {
+                    Some("item_limit")
+                } else {
+                    None
+                }
+            );
+            assert_eq!(
+                actual.data["values"],
+                json!((0..count.min(256))
+                    .map(|i| format!("subject-{i} detail"))
+                    .collect::<Vec<_>>())
+            );
+            eprintln!("signal_call_lookup calls={count} comparisons={steps} maximum={maximum} output_strings={}", count.min(256));
+            bounded &= steps <= maximum;
+        }
+        assert!(
+            bounded,
+            "call lookup work must scale logarithmically per requested call"
+        );
+    }
+
+    #[test]
     fn hook_budget_inspected_overage_still_hits_read_limit() {
         let snap = snapshot(&[
             user("u", "grep then answer"),
