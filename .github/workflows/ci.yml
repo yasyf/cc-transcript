@@ -86,6 +86,11 @@ jobs:
           cargo test -p cc-transcript-core --no-default-features --lib -- named_projection_does_not_clone_unrelated_call_payloads --nocapture
           cargo test -p cc-transcript-core --no-default-features --lib -- selective_call_projection_allocates_only_selected_call_slots --nocapture
 
+      - name: Test signal call lookup work on Linux
+        run: |
+          cargo test -p cc-transcript-core --no-default-features --lib -- signal_projection_call_lookup_work_is_logarithmic --nocapture
+          cargo test -p cc-transcript-core --no-default-features --lib -- call_lookup_matches_linear_oracle_across_append_boundaries --nocapture
+
       - name: Test scalar admission work on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- admission_report_ --nocapture
 

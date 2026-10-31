@@ -22,6 +22,16 @@ use crate::toolcall::{
 use crate::types::{ContentBlock, Entry};
 
 #[cfg(test)]
+std::thread_local! {
+    static CALL_LOOKUP_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_call_lookup_steps() -> usize {
+    CALL_LOOKUP_STEPS.with(|steps| steps.replace(0))
+}
+
+#[cfg(test)]
 thread_local! {
     static INSTRUCTION_CALL_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
@@ -445,12 +455,15 @@ impl ActivityIndex {
     }
 
     pub fn call_at(&self, event: usize, block_ordinal: usize) -> Option<&ToolCall> {
-        self.turns
-            .get(self.turn_of_event(event)?)?
-            .calls
-            .iter()
-            .find(|call| call.event == event && call.ordinal == block_ordinal)
-            .map(|call| &call.call)
+        let calls = &self.turns.get(self.turn_of_event(event)?)?.calls;
+        let index = calls
+            .binary_search_by(|call| {
+                #[cfg(test)]
+                CALL_LOOKUP_STEPS.with(|steps| steps.set(steps.get() + 1));
+                (call.event, call.ordinal).cmp(&(event, block_ordinal))
+            })
+            .ok()?;
+        Some(&calls[index].call)
     }
 
     pub(crate) fn call_name_at(&self, event: usize, ordinal: usize) -> Option<&str> {
@@ -1585,6 +1598,35 @@ mod tests {
         let unique: usize = allocations.values().sum();
         assert!(unique < prior.accounted_bytes() + next.accounted_bytes());
         assert!(next.accounted_bytes() > prior.accounted_bytes());
+    }
+
+    #[test]
+    fn call_lookup_matches_linear_oracle_across_append_boundaries() {
+        let owned = [user("u", "first"), tools(), user("v", "second"), tools()];
+        let entries = owned.iter().collect::<Vec<_>>();
+        for split in 0..=entries.len() {
+            let before = ActivityIndex::new(&entries[..split], None);
+            let index = before.append(&entries, split, None);
+            for event in 0..=entries.len() {
+                for ordinal in 0..=3 {
+                    let expected = index
+                        .turn_of_event(event)
+                        .and_then(|turn| index.turns.get(turn))
+                        .and_then(|turn| {
+                            turn.calls
+                                .iter()
+                                .find(|call| call.event == event && call.ordinal == ordinal)
+                        })
+                        .map(|call| format!("{:?}", call.call));
+                    assert_eq!(
+                        index
+                            .call_at(event, ordinal)
+                            .map(|call| format!("{call:?}")),
+                        expected
+                    );
+                }
+            }
+        }
     }
 
     #[test]
