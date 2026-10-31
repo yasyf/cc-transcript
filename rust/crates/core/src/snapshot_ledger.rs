@@ -359,6 +359,11 @@ impl<K: Eq + Hash, V> Table<K, V> {
         self.reserved * size_of::<(K, V)>()
     }
 
+    #[cfg(test)]
+    pub(crate) fn admission_diagnostic(&self) -> (usize, usize, usize) {
+        (self.map.len(), self.map.capacity(), self.reserved)
+    }
+
     fn tier_after(&self, additional: usize) -> usize {
         if additional <= self.map.capacity() - self.map.len() {
             return self.reserved;
@@ -587,6 +592,11 @@ pub(crate) struct SharedAllocations {
 }
 
 impl SharedAllocations {
+    #[cfg(test)]
+    pub(crate) fn admission_diagnostic(&self) -> (usize, usize, usize) {
+        self.owners.admission_diagnostic()
+    }
+
     fn new(work: Work) -> Self {
         Self {
             owners: Table::new(work.clone()),
@@ -1054,6 +1064,11 @@ impl<V> Drop for ChargedMut<'_, V> {
 }
 
 impl<K: Eq + Hash, V: Charge<K>> Ledgered<K, V> {
+    #[cfg(test)]
+    pub(crate) fn admission_diagnostic(&self) -> (usize, usize, usize) {
+        self.map.admission_diagnostic()
+    }
+
     pub(crate) fn new(work: Work) -> Self {
         Self {
             map: Table::new(work.clone()),

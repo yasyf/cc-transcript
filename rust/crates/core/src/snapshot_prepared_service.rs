@@ -1578,6 +1578,18 @@ impl NativeStore {
         let fresh = record - covered
             + state.ledger.shared.growth(graph.anchors())
             + state.prepared_graphs.growth_for(&graph_id);
+        #[cfg(test)]
+        eprintln!(
+            "ADMISSION_GRAPH record={} reservation={} covered={} fresh={} shared_growth={} graph_growth={} shared={:?} graphs={:?}",
+            record,
+            reservation.bytes,
+            covered,
+            fresh,
+            state.ledger.shared.growth(graph.anchors()),
+            state.prepared_graphs.growth_for(&graph_id),
+            state.ledger.shared.admission_diagnostic(),
+            state.prepared_graphs.admission_diagnostic(),
+        );
         self.admit_memory(&mut state, context, fresh)?;
         state.transient_bytes -= covered;
         reservation.bytes -= covered;

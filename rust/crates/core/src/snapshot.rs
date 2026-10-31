@@ -6351,6 +6351,7 @@ impl NativeStore {
         })
     }
 
+    #[cfg_attr(test, track_caller)]
     fn admit_memory(
         &self,
         state: &mut StoreState,
@@ -6370,6 +6371,16 @@ impl NativeStore {
             state.evict_cache_owner(owner);
         }
         if Self::retained_total(state).saturating_add(additional) > cap {
+            #[cfg(test)]
+            eprintln!(
+                "ADMISSION_REJECT caller={} retained={} additional={} cap={} shared={:?} graphs={:?}",
+                std::panic::Location::caller(),
+                Self::retained_total(state),
+                additional,
+                cap,
+                state.ledger.shared.admission_diagnostic(),
+                state.prepared_graphs.admission_diagnostic(),
+            );
             debug_assert!(
                 bookkeeping.is_some_and(|before| Self::bookkeeping_bytes(state) <= before),
                 "a refused admission grew retained bookkeeping"
@@ -21819,6 +21830,7 @@ mod tests {
     #[test]
     fn prepared_graph_publication_is_admitted_before_it_lands() {
         for background in [false, true] {
+            eprintln!("ADMISSION_PHASE background={background} phase=start");
             let source = Source::new(&format!("{}\n", user("root")));
             let store = store();
             let (owner, cap) = admission_owner(background);
@@ -21851,12 +21863,16 @@ mod tests {
             release_graph(&store, &measured, &owner);
             assert_eq!(store.retained_accounted_bytes(), idle);
             let room = cap - idle - build_bytes - REPLY_RESERVATION;
+            eprintln!(
+                "ADMISSION_PHASE background={background} phase=crowded idle={idle} graph={graph_bytes} build={build_bytes} reply={REPLY_RESERVATION} room={room} cap={cap}",
+            );
             let crowded = store.reserve_projection(&owner, room + 1).unwrap();
             let refused = store.request(&prepare, &owner, &Cancellation::default());
             assert_refused(&store, &refused);
             assert_eq!(store.retained_accounted_bytes(), idle + room + 1);
             assert!(store.lock_state().prepared_graphs.is_empty());
             drop(crowded);
+            eprintln!("ADMISSION_PHASE background={background} phase=fitted");
             let fitted = store.reserve_projection(&owner, room).unwrap();
             let exact = finish(
                 &store,
