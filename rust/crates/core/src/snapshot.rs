@@ -12082,6 +12082,7 @@ mod tests {
     include!("snapshot_raw_scope_tests.rs");
     include!("snapshot_raw_projection_tests.rs");
     include!("snapshot_raw_tail_tests.rs");
+    include!("snapshot_direct_tail_baseline_tests.rs");
     include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");

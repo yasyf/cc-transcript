@@ -1,0 +1,26 @@
+name: Direct tail unchanged old negative
+on:
+  push:
+    branches: [test/direct-tail-unchanged-old-negative]
+permissions:
+  contents: read
+jobs:
+  old-source-negative:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Prove unchanged source rereads the warm tail
+        run: |
+          set +e
+          cargo test --locked -p cc-transcript-core --no-default-features --lib tail_cache_exact_generation_reuses_selection_and_reclips_output_without_a_lease -- --nocapture --test-threads=1 > "$RUNNER_TEMP/tail-old-negative.log" 2>&1
+          actual_status=$?
+          set -e
+          cat "$RUNNER_TEMP/tail-old-negative.log"
+          test "$actual_status" -eq 101
+          grep -E 'tail_cache_exact cold_bytes=[1-9][0-9]* warm_bytes=[1-9][0-9]*' "$RUNNER_TEMP/tail-old-negative.log"
+          grep -F 'tail_cache_exact_generation_reuses_selection_and_reclips_output_without_a_lease' "$RUNNER_TEMP/tail-old-negative.log"
+          grep -F 'test result: FAILED. 0 passed; 1 failed;' "$RUNNER_TEMP/tail-old-negative.log"
