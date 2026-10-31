@@ -767,10 +767,14 @@ impl SourceCatalog {
             CatalogScan::Open(reader) => &reader.entries,
             _ => {
                 if proof_reader.as_ref().is_none_or(|(current,_)| *current != identity) {
-                    match catalog_open_proof_directory(&request,&node.canonical,expected_parent,budget)? {
-                        CatalogProofDirectory::Opened(reader) => *proof_reader = Some((identity,reader)),
-                        CatalogProofDirectory::CurrentRefusal(error) => return Ok(CatalogNameObservation::DirectoryIssue(error)),
-                        CatalogProofDirectory::Unproven(_) => return Ok(CatalogNameObservation::Unproven),
+                    match catalog_open_proof_directory(&request,&node.canonical,expected_parent,budget) {
+                        Ok(CatalogProofDirectory::Opened(reader)) => *proof_reader = Some((identity,reader)),
+                        Ok(CatalogProofDirectory::CurrentRefusal(error)) => return Ok(CatalogNameObservation::DirectoryIssue(error)),
+                        Ok(CatalogProofDirectory::Unproven(_)) => return Ok(CatalogNameObservation::Unproven),
+                        Err(error) if matches!(error.status,Status::Missing|Status::Changed|Status::PermissionDenied) => {
+                            return Ok(CatalogNameObservation::DirectoryIssue(error));
+                        }
+                        Err(error) => return Err(error),
                     }
                 }
                 &proof_reader.as_ref().expect("current proof directory").1.entries

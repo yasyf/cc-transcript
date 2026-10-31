@@ -82,6 +82,8 @@ impl CatalogProofRequest<'_> {
 fn catalog_open_proof_directory(request: &CatalogProofRequest<'_>, physical_parent: &Path,
     expected_parent: SourceStamp, budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogProofDirectory,SnapshotError> {
     request.check()?;
+    #[cfg(test)]
+    request.store.after_location_metadata("catalog_directory_proof");
     if let Err(error) = request.store.authority(request.context,Some(physical_parent)) {
         return Ok(CatalogProofDirectory::CurrentRefusal(error));
     }
