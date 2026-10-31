@@ -21987,6 +21987,16 @@ mod tests {
                 &owner,
             );
             assert_eq!(slices(&prepared), 0);
+            let slice_anchor = {
+                let state = store.lock_state();
+                let graph = state.prepared_graphs
+                    [measured["data"]["handle"]["graph_id"].as_str().unwrap()]
+                .lock()
+                .unwrap();
+                facts_anchor(graph.root_slices.values().next().unwrap())
+            };
+            release_graph(&store, &measured, &owner);
+            let table_growth = store.lock_state().ledger.shared.growth([slice_anchor]);
             let idle = store.retained_accounted_bytes();
             let capacities = idle - settled_bytes(&store);
             let root = Arc::clone(
@@ -22006,15 +22016,15 @@ mod tests {
                 + query["handle"]["graph_id"].as_str().unwrap().len()
                 + NativeStore::audit_value_bytes(&query["query"]);
             let need = bound.max(slice_bytes + record);
-            let room = cap - idle - need - REPLY_RESERVATION;
+            let room = cap - idle - need - table_growth - REPLY_RESERVATION;
             let crowded = store
-                .reserve_projection(&owner, room + need - bound + 1)
+                .reserve_projection(&owner, room + table_growth + need - bound + 1)
                 .unwrap();
             let refused = store.request(&query, &owner, &Cancellation::default());
             assert_refused(&store, &refused);
             assert_eq!(
                 store.retained_accounted_bytes(),
-                idle + room + need - bound + 1
+                idle + room + table_growth + need - bound + 1
             );
             assert_eq!(slices(&prepared), 0);
             drop(crowded);
@@ -22034,7 +22044,7 @@ mod tests {
             assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
             assert_eq!(
                 settled_bytes(&store),
-                cap - REPLY_RESERVATION - capacities - (need - slice_bytes)
+                cap - REPLY_RESERVATION - capacities - (need - slice_bytes) - table_growth
             );
             assert_eq!(slices(&prepared), 1);
             store.assert_conserved();
