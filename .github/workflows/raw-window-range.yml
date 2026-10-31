@@ -1,7 +1,7 @@
-name: Raw Source Capability Contract
+name: Raw Sparse Interaction Contract
 on:
   push:
-    branches: [perf/generation-owned-interactions]
+    branches: [perf/interaction-wire]
 jobs:
   baseline:
     runs-on: ubuntu-latest
@@ -11,4 +11,5 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p cc-transcript-core --no-default-features --lib -- raw_source_capability --nocapture
+      - run: cargo test -p cc-transcript-core --no-default-features --lib -- raw_ --nocapture
+      - run: cargo test -p cc-transcript-core --no-default-features --lib -- native_interaction_ --nocapture

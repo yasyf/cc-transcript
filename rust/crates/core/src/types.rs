@@ -529,7 +529,14 @@ fn text_blocks(blocks: &[ContentBlock]) -> impl Iterator<Item = &str> + Clone {
 /// The space-joined text of the ``Text`` blocks — the ``text`` field of the
 /// Python ``AssistantEvent``/``PrintMessage``.
 pub fn joined_text(blocks: &[ContentBlock]) -> String {
-    text_blocks(blocks).collect::<Vec<_>>().join(TEXT_SEPARATOR)
+    let mut output = String::with_capacity(joined_text_len(blocks));
+    for (index, text) in text_blocks(blocks).enumerate() {
+        if index > 0 {
+            output.push_str(TEXT_SEPARATOR);
+        }
+        output.push_str(text);
+    }
+    output
 }
 
 pub(crate) fn joined_text_len(blocks: &[ContentBlock]) -> usize {

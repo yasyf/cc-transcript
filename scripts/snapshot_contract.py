@@ -226,6 +226,21 @@ class ToolCalls(WireModel):
     name: Token | None = None
 
 
+class MetaMessages(WireModel):
+    kind: Literal["meta_messages"]
+    contains: Text | None = None
+
+
+class InteractionKeys(WireModel):
+    kind: Literal["interaction_keys"]
+    name: Token
+
+
+class InteractionSelection(WireModel):
+    kind: Literal["interaction_winners", "interaction_records"]
+    keys: Annotated[list[Text], Field(max_length=256)]
+
+
 class DirectSidechains(WireModel):
     kind: Literal["direct_sidechains"]
     order: Literal["forward"]
@@ -275,6 +290,9 @@ Query = Annotated[
     | Scalar
     | Page
     | ToolCalls
+    | MetaMessages
+    | InteractionKeys
+    | InteractionSelection
     | DirectSidechains
     | Prompts
     | AssistantText
@@ -299,6 +317,25 @@ class Acquire(WorkRequest):
     path: PathText
     classifier: Classifier
     tail_bytes: Positive | None = None
+
+
+class ExcerptSelection(WireModel):
+    forms: Annotated[list[Text], Field(max_length=256)]
+    around: Count
+    count: Annotated[int, Field(gt=0, le=256)]
+
+
+class AcquireViews(WorkRequest):
+    operation: Literal["acquire_views"]
+    handle: Handle
+    excerpt: ExcerptSelection | None = None
+    tail_events: Annotated[int, Field(gt=0, le=256)] | None = None
+
+
+class ClassifyView(WorkRequest):
+    operation: Literal["classify_view"]
+    view: View
+    classifier: Classifier
 
 
 class Resolve(WorkRequest):
@@ -506,6 +543,8 @@ class Tail(WorkRequest):
 Request = Annotated[
     Tail
     | Acquire
+    | AcquireViews
+    | ClassifyView
     | Resolve
     | Locate
     | Discover
@@ -593,6 +632,16 @@ class WarmedRootResult(WireModel):
 class Acquired(WireModel):
     kind: Literal["acquired"]
     description: Description
+
+
+class AcquiredView(WireModel):
+    label: Literal["excerpt", "tail"]
+    description: Description
+
+
+class AcquiredViews(WireModel):
+    kind: Literal["acquired_views"]
+    views: Annotated[list[AcquiredView], Field(min_length=1, max_length=2)]
 
 
 class Loading(WireModel):
@@ -689,6 +738,9 @@ class RecordsResult(WireModel):
         "cc-transcript.predicate-inputs/1",
         "cc-transcript.sidechain/1",
         "cc-transcript.mining-signal/1",
+        "cc-transcript.meta-message/1",
+        "cc-transcript.interaction-key/1",
+        "cc-transcript.interaction-winner/1",
     ]
     records_json: Annotated[list[Text], Field(max_length=256)]
 
@@ -716,6 +768,7 @@ class StatsResult(WireModel):
 
 Result = Annotated[
     Acquired
+    | AcquiredViews
     | PreparedGraphResult
     | WarmedRegistryResult
     | WarmedRootResult

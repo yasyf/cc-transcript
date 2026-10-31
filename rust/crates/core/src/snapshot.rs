@@ -1710,6 +1710,7 @@ struct GenerationRecord {
     raw_window: Option<Arc<crate::snapshot_raw_window::RawWindow>>,
     raw_parent: Option<Arc<TranscriptSnapshot>>,
     raw_cache: Option<Box<RawCapabilityCache>>,
+    interactions: Option<Arc<InteractionIndex>>,
 }
 
 impl GenerationRecord {
@@ -1724,6 +1725,7 @@ impl GenerationRecord {
             raw_window: None,
             raw_parent: None,
             raw_cache: None,
+            interactions: None,
         }
     }
 
@@ -1747,6 +1749,7 @@ impl Charge<usize> for GenerationRecord {
             + self.entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + self.indexes.capacity() * size_of::<(usize, usize)>()
             + self.raw_cache.as_ref().map_or(0, |cache| cache.metadata_bytes())
+            + self.interactions.as_ref().map_or(0, |index| index.accounted_bytes)
     }
 }
 
@@ -2327,6 +2330,7 @@ impl StoreState {
             }
             record.raw_parent = previous.raw_parent.take();
             record.raw_cache = previous.raw_cache.take();
+            record.interactions = previous.interactions.take();
         }
         self.generations.reserve_for(&key);
         self.ledger.shared.reserve(record.anchors());
@@ -5841,6 +5845,7 @@ impl NativeStore {
             raw_window: _,
             raw_parent: _,
             raw_cache,
+            interactions,
         } = record;
         source_chunks.as_ref().map_or(0, |chunks| {
             arc_mirror::<Vec<SourceChunkSpan>>() + chunks.capacity() * size_of::<SourceChunkSpan>()
@@ -5855,7 +5860,7 @@ impl NativeStore {
                 size_of::<RawCapabilityCache>()
                     + excerpt.as_ref().map_or(0, |scope| scope.key.capacity())
                     + tail.as_ref().map_or(0, |scope| scope.key.capacity())
-            })
+            }) + interactions.as_ref().map_or(0, |index| index.audited_bytes())
     }
 
     #[cfg(test)]
@@ -6859,6 +6864,13 @@ impl NativeStore {
         }
         match data.get("kind").and_then(Value::as_str) {
             Some("acquired") => add(&data["description"]),
+            Some("acquired_views") => {
+                if let Some(views) = data["views"].as_array() {
+                    for view in views.iter() {
+                        add(&view["description"]);
+                    }
+                }
+            }
             Some("resolved") => {
                 if let Some(sessions) = data["sessions"].as_array() {
                     for session in sessions.iter() {
@@ -7236,6 +7248,7 @@ impl NativeStore {
         }
         match operation {
             "acquire" => self.acquire(request, context, cancel, usage),
+            "acquire_views" => self.acquire_views(request, context, cancel, usage),
             "resume" => {
                 let cursor = str_field(request, "cursor")?;
                 let registry = str_field(context, "registry_generation")?;
@@ -7779,7 +7792,7 @@ impl NativeStore {
             "query" if Self::is_graph_request(request) => {
                 self.graph(request, context, cancel, usage)
             }
-            "query" | "capture" | "activity_probe" | "hydrate" | "mine" => {
+            "query" | "capture" | "activity_probe" | "hydrate" | "mine" | "classify_view" => {
                 let bound = limits(request)?;
                 let mut reservation = ProjectionReservation {
                     store: self,
@@ -10395,7 +10408,13 @@ impl NativeStore {
         let mut page = bound;
         page.max_output_bytes = page.max_output_bytes.min(MAX_DATA_BYTES);
         page.max_items = page.max_items.min(self.config.page_items);
-        let projection = if str_field(&request, "operation")? == "mine" {
+        let projection = if str_field(&request, "operation")? == "classify_view" {
+            self.classify_view_projection(snapshot, &request, context, cancel, page, next)?
+        } else if str_field(&request, "operation")? == "query" && request["query"]["kind"].as_str() == Some("meta_messages") {
+            self.meta_message_projection(snapshot, &request, context, cancel, page, next, reservation)?
+        } else if str_field(&request, "operation")? == "query" && matches!(request["query"]["kind"].as_str(), Some("interaction_keys" | "interaction_winners" | "interaction_records")) {
+            self.interaction_projection(snapshot, &request, context, cancel, page, next, reservation)?
+        } else if str_field(&request, "operation")? == "mine" {
             let policy = request
                 .get("policy")
                 .ok_or_else(|| invalid("missing policy"))?;
@@ -11972,6 +11991,10 @@ include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
 include!("snapshot_spine.rs");
 include!("snapshot_raw_scope.rs");
+include!("snapshot_raw_materialization.rs");
+include!("snapshot_raw_projection.rs");
+include!("snapshot_interactions.rs");
+include!("snapshot_interaction_api.rs");
 
 #[cfg(test)]
 #[path = "snapshot_regressions.rs"]
@@ -12032,6 +12055,10 @@ mod tests {
     }
 
     include!("snapshot_raw_scope_tests.rs");
+    include!("snapshot_raw_projection_tests.rs");
+    include!("snapshot_raw_tail_tests.rs");
+    include!("snapshot_interactions_tests.rs");
+    include!("snapshot_interaction_api_tests.rs");
     include!("snapshot_catalog_tests.rs");
     include!("snapshot_common_borrowed_parent_tests.rs");
 

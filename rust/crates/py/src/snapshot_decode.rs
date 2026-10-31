@@ -224,6 +224,45 @@ fn decode_projection_inner<'py>(
 ) -> PyResult<Bound<'py, PyList>> {
     match record_schema {
         "cc-transcript.event/1" => decode_snapshot_events(py, records, max_bytes),
+        "cc-transcript.meta-message/1" => {
+            let records = py.detach(|| snapshot_codec::decode_meta_messages(&records, max_bytes)).map_err(error)?;
+            let payloads = records.into_iter().map(|record| {
+                let payload = PyDict::new(py);
+                payload.set_item("kind", match record.kind {
+                    snapshot_codec::MetaMessageKind::User => "user",
+                    snapshot_codec::MetaMessageKind::Queued => "queued",
+                })?;
+                payload.set_item("text", record.text)?;
+                payload.set_item("ts", record.ts)?;
+                payload.set_item("is_meta", record.is_meta)?;
+                payload.set_item("source_tool_use_id", record.source_tool_use_id)?;
+                payload.set_item("source_tool_assistant_uuid", record.source_tool_assistant_uuid)?;
+                payload.set_item("origin", record.origin)?;
+                Ok(payload)
+            }).collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, payloads)
+        }
+        "cc-transcript.interaction-key/1" => {
+            let records = py.detach(|| snapshot_codec::decode_interaction_keys(&records, max_bytes)).map_err(error)?;
+            let payloads = records.into_iter().map(|record| {
+                let payload = PyDict::new(py);
+                payload.set_item("key", record.key)?;
+                Ok(payload)
+            }).collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, payloads)
+        }
+        "cc-transcript.interaction-winner/1" => {
+            let records = py.detach(|| snapshot_codec::decode_interaction_winners(&records, max_bytes)).map_err(error)?;
+            let payloads = records.into_iter().map(|record| {
+                let payload = PyDict::new(py);
+                payload.set_item("key", record.key)?;
+                payload.set_item("present", record.present)?;
+                payload.set_item("first", record.first)?;
+                payload.set_item("name", record.name)?;
+                Ok(payload)
+            }).collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, payloads)
+        }
         "cc-transcript.tool-use/1" => {
             let records = py
                 .detach(|| snapshot_codec::decode_tool_uses(&records, max_bytes))

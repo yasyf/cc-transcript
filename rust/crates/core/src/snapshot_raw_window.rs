@@ -117,6 +117,10 @@ impl RawWindow {
         ranges
     }
 
+    pub(crate) fn lines_rev(&self) -> impl Iterator<Item = &[u8]> {
+        self.bytes.split_inclusive(|byte| *byte == b'\n').rev().filter(|line| !line.is_empty())
+    }
+
     pub(crate) fn selected_bytes(&self, range: Range<usize>) -> &[u8] {
         &self.bytes[range]
     }

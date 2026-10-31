@@ -1,5 +1,5 @@
 struct CachedRawScope {
-    key: String,
+    key: Vec<u8>,
     snapshot: Arc<TranscriptSnapshot>,
 }
 
@@ -29,8 +29,9 @@ fn raw_window_anchors(window: &Arc<crate::snapshot_raw_window::RawWindow>) -> im
 }
 
 struct RawSourceScope {
-    snapshot: Arc<TranscriptSnapshot>,
     window: Arc<crate::snapshot_raw_window::RawWindow>,
+    snapshot: Arc<TranscriptSnapshot>,
+    source: Arc<TranscriptSnapshot>,
 }
 
 impl NativeStore {
@@ -80,7 +81,7 @@ impl NativeStore {
             let window = Arc::clone(self.lock_state().generations
                 .get(&snapshot_key(&snapshot)).expect("live raw generation")
                 .raw_window.as_ref().expect("raw generation payload"));
-            return Ok(RawSourceScope { snapshot, window });
+            return Ok(RawSourceScope { source, snapshot, window });
         }
         let start = stamp.size.saturating_sub(tail_bytes);
         let read_start = start.saturating_sub(u64::from(start > 0));
@@ -160,7 +161,7 @@ impl NativeStore {
         reservation.bytes = 0;
         state.register_generation(&snapshot, generation);
         state.generations.get_mut(&key).expect("leased source generation").raw_cache = Some(cache);
-        Ok(RawSourceScope { snapshot, window })
+        Ok(RawSourceScope { source, snapshot, window })
     }
 
     fn validate_raw_source(

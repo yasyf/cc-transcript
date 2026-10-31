@@ -57,6 +57,37 @@ pub struct RefRecord {
     pub tool_use_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetaMessageKind { User, Queued }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetaMessageRecord {
+    pub kind: MetaMessageKind,
+    pub text: String,
+    pub ts: DateTime<FixedOffset>,
+    pub is_meta: bool,
+    pub source_tool_use_id: Option<String>,
+    pub source_tool_assistant_uuid: Option<String>,
+    pub origin: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractionKeyRecord {
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractionWinnerRecord {
+    pub key: String,
+    pub present: bool,
+    pub first: Option<usize>,
+    pub name: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct ToolUseWire<'a> {
     pub codec: &'static str,
@@ -549,6 +580,30 @@ pub fn decode_events(
     let records: Vec<EventRecord> = decode(records, max_bytes)?;
     for record in &records {
         version(&record.codec, EVENT_CODEC)?;
+    }
+    Ok(records)
+}
+
+pub fn decode_meta_messages(
+    records: &[String], max_bytes: usize,
+) -> Result<Vec<MetaMessageRecord>, SnapshotError> {
+    decode(records, max_bytes)
+}
+
+pub fn decode_interaction_keys(
+    records: &[String], max_bytes: usize,
+) -> Result<Vec<InteractionKeyRecord>, SnapshotError> {
+    decode(records, max_bytes)
+}
+
+pub fn decode_interaction_winners(
+    records: &[String], max_bytes: usize,
+) -> Result<Vec<InteractionWinnerRecord>, SnapshotError> {
+    let records: Vec<InteractionWinnerRecord> = decode(records, max_bytes)?;
+    for record in &records {
+        if record.present != record.first.is_some() || record.present != record.name.is_some() {
+            return Err(SnapshotError::new(Status::InvalidRequest, "interaction winner metadata is inconsistent"));
+        }
     }
     Ok(records)
 }
