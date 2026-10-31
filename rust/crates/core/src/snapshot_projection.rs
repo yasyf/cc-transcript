@@ -1036,13 +1036,13 @@ fn suffix_parts(parts: &mut Vec<&str>, count: usize) {
 #[derive(Debug, PartialEq)]
 pub(crate) struct InstructionTurn<'a> {
     pub(crate) prompt: &'a str,
-    pub(crate) started_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub(crate) queued: Vec<(&'a str, chrono::DateTime<chrono::Utc>)>,
-    pub(crate) rejections: Vec<(&'a str, &'a str, chrono::DateTime<chrono::Utc>)>,
+    pub(crate) started_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+    pub(crate) queued: Vec<(&'a str, chrono::DateTime<chrono::FixedOffset>)>,
+    pub(crate) rejections: Vec<(&'a str, &'a str, chrono::DateTime<chrono::FixedOffset>)>,
     pub(crate) assistant_tail: Vec<&'a str>,
 }
 
-fn queued_instruction(event: &Entry) -> Option<(&str, chrono::DateTime<chrono::Utc>)> {
+fn queued_instruction(event: &Entry) -> Option<(&str, chrono::DateTime<chrono::FixedOffset>)> {
     let Entry::Attachment(attachment) = event else {
         return None;
     };
@@ -1057,7 +1057,7 @@ fn rejected_instruction<'a>(
     name: &'a str,
     position: Option<(usize, usize)>,
     entry: &impl Fn(usize) -> &'a Entry,
-) -> Option<(&'a str, &'a str, chrono::DateTime<chrono::Utc>)> {
+) -> Option<(&'a str, &'a str, chrono::DateTime<chrono::FixedOffset>)> {
     let (event, ordinal) = position?;
     let Entry::User(user) = entry(event) else {
         unreachable!()
@@ -1110,8 +1110,8 @@ pub(crate) fn instruction_turn_heap_bound<'a>(
 ) -> Option<usize> {
     let (_, queued, rejections, parts) = instruction_shape(activity, index, range, &entry)?;
     Some(
-        queued * std::mem::size_of::<(&str, chrono::DateTime<chrono::Utc>)>()
-            + rejections * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::Utc>)>()
+        queued * std::mem::size_of::<(&str, chrono::DateTime<chrono::FixedOffset>)>()
+            + rejections * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::FixedOffset>)>()
             + pushed_capacity(parts) * std::mem::size_of::<&str>(),
     )
 }
@@ -2586,8 +2586,8 @@ mod tests {
                     let bound = instruction_turn_heap_bound(&snapshot.activity, index, &range, |position| snapshot.entry(position));
                     assert_eq!(bound.is_some(), actual.is_some());
                     if let Some(actual) = actual {
-                        let capacity = actual.queued.capacity() * std::mem::size_of::<(&str, chrono::DateTime<chrono::Utc>)>()
-                            + actual.rejections.capacity() * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::Utc>)>()
+                        let capacity = actual.queued.capacity() * std::mem::size_of::<(&str, chrono::DateTime<chrono::FixedOffset>)>()
+                            + actual.rejections.capacity() * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::FixedOffset>)>()
                             + actual.assistant_tail.capacity() * std::mem::size_of::<&str>();
                         assert!(capacity <= bound.unwrap(), "{capacity} exceeds {bound:?}");
                     }
