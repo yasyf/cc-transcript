@@ -9087,8 +9087,11 @@ impl NativeStore {
                 .read_exact(&mut load.origin_fence[start..])
                 .map_err(io_error)?;
             usage[1] += count as u64;
-                #[cfg(test)]
-                self.observe_hydration(HydrationObservation::Read { stamp: slot.stamp, bytes: count as u64 });
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Read {
+                stamp: slot.stamp,
+                bytes: count as u64,
+            });
             if load.origin_fence.len() == fence_size {
                 load.origin_complete = true;
                 load.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
@@ -9119,7 +9122,10 @@ impl NativeStore {
                     .map_err(io_error)?;
                 usage[1] += count as u64;
                 #[cfg(test)]
-                self.observe_hydration(HydrationObservation::Read { stamp: slot.stamp, bytes: count as u64 });
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 if load.prefix_fence.len() < prior_fence.len() {
                     return Ok(());
                 }
@@ -9230,7 +9236,10 @@ impl NativeStore {
                 load.file.read_exact(&mut block).map_err(io_error)?;
                 usage[1] += count;
                 #[cfg(test)]
-                self.observe_hydration(HydrationObservation::Read { stamp: slot.stamp, bytes: count as u64 });
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 load.window_scanned += count;
                 memchr::memrchr(b'\n', &block).map(|newline| unscanned - count + newline as u64 + 1)
             };
@@ -9299,7 +9308,10 @@ impl NativeStore {
                 load.offset += count as u64;
                 usage[1] += count as u64;
                 #[cfg(test)]
-                self.observe_hydration(HydrationObservation::Read { stamp: slot.stamp, bytes: count as u64 });
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 if !Self::matches_prefix(
                     SourceStamp::of(&load.file.metadata().map_err(io_error)?),
                     slot.stamp,
@@ -9537,8 +9549,11 @@ impl NativeStore {
                 .read_exact(&mut load.seal_fence[start..])
                 .map_err(io_error)?;
             usage[1] += count as u64;
-                #[cfg(test)]
-                self.observe_hydration(HydrationObservation::Read { stamp: slot.stamp, bytes: count as u64 });
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Read {
+                stamp: slot.stamp,
+                bytes: count as u64,
+            });
             if load.seal_fence.len() < fence_size {
                 return Ok(());
             }
