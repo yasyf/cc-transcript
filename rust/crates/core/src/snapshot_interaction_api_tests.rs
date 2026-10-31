@@ -1,11 +1,24 @@
-use sonic_rs::JsonValueMutTrait;
+fn interaction_api_limits() -> Value {
+    json!({"max_read_bytes":64*1024*1024,"max_source_read_bytes":32*1024*1024,"max_events":100_000,
+        "max_items":65_536,"max_output_bytes":16*1024*1024,"max_discovery_entries":1000,"max_sources":1})
+}
 
-fn interaction_api_request(acquired: &Value, query: Value) -> Value {
+fn interaction_api_request(handle: &Value, query: Value) -> Value {
     json!({"schema":SCHEMA,"id":"interaction-query","operation":"query",
-        "view":{"handle":handle(acquired),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},
-        "query":query,"deadline_unix_ms":now_ms()+30_000,
-        "limits":{"max_read_bytes":64*1024*1024,"max_source_read_bytes":32*1024*1024,"max_events":100_000,
-            "max_items":65_536,"max_output_bytes":16*1024*1024,"max_discovery_entries":1000,"max_sources":1}})
+        "view":{"handle":handle,"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},
+        "query":query,"deadline_unix_ms":now_ms()+30_000,"limits":interaction_api_limits()})
+}
+
+fn interaction_views_request(handle: &Value) -> Value {
+    json!({"schema":SCHEMA,"id":"interaction-query","operation":"acquire_views","handle":handle,
+        "excerpt":{"forms":["first"],"around":2,"count":20},"tail_events":2,
+        "deadline_unix_ms":now_ms()+30_000,"limits":interaction_api_limits()})
+}
+
+fn interaction_classify_request(handle: &Value, classifier: Value) -> Value {
+    json!({"schema":SCHEMA,"id":"interaction-query","operation":"classify_view",
+        "view":{"handle":handle,"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},
+        "classifier":classifier,"deadline_unix_ms":now_ms()+30_000,"limits":interaction_api_limits()})
 }
 
 #[test]
@@ -25,22 +38,22 @@ fn native_interaction_api_avoids_unrelated_bodies_and_preserves_meta_provenance(
     request["limits"]["max_source_read_bytes"] = json!(8*1024*1024);
     let acquired = finish(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
     let before = store.lock_state().counters[1];
-    let keys = store.request(&interaction_api_request(&acquired, json!({"kind":"interaction_keys","name":"AskUserQuestion"})), &owner, &Cancellation::default());
+    let keys = store.request(&interaction_api_request(handle(&acquired), json!({"kind":"interaction_keys","name":"AskUserQuestion"})), &owner, &Cancellation::default());
     assert_eq!(keys["status"].as_str(), Some("ok"), "{keys:?}");
     assert_eq!(crate::snapshot_codec::decode_interaction_keys(&[keys["data"]["records_json"][0].as_str().unwrap().to_owned()], 1024).unwrap()[0].key, "q");
-    let winners = store.request(&interaction_api_request(&acquired, json!({"kind":"interaction_winners","keys":["q","absent"]})), &owner, &Cancellation::default());
+    let winners = store.request(&interaction_api_request(handle(&acquired), json!({"kind":"interaction_winners","keys":["q","absent"]})), &owner, &Cancellation::default());
     assert_eq!(winners["status"].as_str(), Some("ok"), "{winners:?}");
     let records = winners["data"]["records_json"].as_array().unwrap().iter().map(|value| value.as_str().unwrap().to_owned()).collect::<Vec<_>>();
     let winners = crate::snapshot_codec::decode_interaction_winners(&records, 4096).unwrap();
     assert_eq!(winners[0].name.as_deref(), Some("AskUserQuestion"));
     assert_eq!(winners[0].first, Some(1));
     assert!(!winners[1].present);
-    let selected = store.request(&interaction_api_request(&acquired, json!({"kind":"interaction_records","keys":["q"]})), &owner, &Cancellation::default());
+    let selected = store.request(&interaction_api_request(handle(&acquired), json!({"kind":"interaction_records","keys":["q"]})), &owner, &Cancellation::default());
     assert_eq!(selected["status"].as_str(), Some("ok"), "{selected:?}");
     let record = selected["data"]["records_json"][0].as_str().unwrap().to_owned();
     assert!(record.len() < 1024);
     assert_eq!(crate::snapshot_codec::decode_tool_uses(&[record], 4096).unwrap()[0].r#ref.tool_use_id, "q");
-    let messages = store.request(&interaction_api_request(&acquired, json!({"kind":"meta_messages","contains":"slack.action"})), &owner, &Cancellation::default());
+    let messages = store.request(&interaction_api_request(handle(&acquired), json!({"kind":"meta_messages","contains":"slack.action"})), &owner, &Cancellation::default());
     assert_eq!(messages["status"].as_str(), Some("ok"), "{messages:?}");
     let record = messages["data"]["records_json"][0].as_str().unwrap().to_owned();
     let messages = crate::snapshot_codec::decode_meta_messages(&[record], 4096).unwrap();
@@ -59,17 +72,6 @@ fn native_interaction_meta_codec_preserves_empty_source_identifiers() {
     assert_eq!(decoded[0].source_tool_assistant_uuid.as_deref(), Some(""));
 }
 
-fn interaction_views_request(acquired: &Value) -> Value {
-    let mut request = interaction_api_request(acquired, Value::new());
-    request.insert("operation", json!("acquire_views"));
-    request.insert("handle", handle(acquired).clone());
-    request.insert("excerpt", json!({"forms":["first"],"around":2,"count":20}));
-    request.insert("tail_events", json!(2));
-    request.as_object_mut().unwrap().remove(&"view");
-    request.as_object_mut().unwrap().remove(&"query");
-    request
-}
-
 #[test]
 fn native_interaction_views_share_one_raw_read_and_release_independently() {
     let body = format!("{}\n{}\n{}\n", user("first"), user("second"), user("No"));
@@ -78,7 +80,7 @@ fn native_interaction_views_share_one_raw_read_and_release_independently() {
     let owner = context("interaction-bundle");
     let acquired = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
     let before = store.lock_state().counters[1];
-    let request = interaction_views_request(&acquired);
+    let request = interaction_views_request(handle(&acquired));
     let result = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(result["status"].as_str(), Some("ok"), "{result:?}");
     let cold = store.lock_state().counters[1] - before;
@@ -86,11 +88,11 @@ fn native_interaction_views_share_one_raw_read_and_release_independently() {
     assert_eq!(result["data"]["views"].as_array().unwrap().len(), 2);
     assert_eq!(result["data"]["views"][0]["label"].as_str(), Some("excerpt"));
     assert_eq!(result["data"]["views"][1]["label"].as_str(), Some("tail"));
-    let excerpt = json!({"data":{"description":result["data"]["views"][0]["description"]}});
-    let tail = json!({"data":{"description":result["data"]["views"][1]["description"]}});
-    assert_ne!(handle(&excerpt)["lease_id"], handle(&tail)["lease_id"]);
-    release_lease(&store, handle(&excerpt), &owner);
-    assert!(store.pin(handle(&tail), &owner).is_ok());
+    let excerpt = &result["data"]["views"][0]["description"];
+    let tail = &result["data"]["views"][1]["description"];
+    assert_ne!(&excerpt["handle"]["lease_id"], &tail["handle"]["lease_id"]);
+    release_lease(&store, &excerpt["handle"], &owner);
+    assert!(store.pin(&tail["handle"], &owner).is_ok());
     let warmed = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(warmed["status"].as_str(), Some("ok"), "{warmed:?}");
     assert_eq!(store.lock_state().counters[1] - before, cold);
@@ -98,7 +100,7 @@ fn native_interaction_views_share_one_raw_read_and_release_independently() {
     let changed = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(changed["status"].as_str(), Some("ok"), "{changed:?}");
     assert_ne!(changed["data"]["views"][1]["description"]["handle"]["generation"], result["data"]["views"][1]["description"]["handle"]["generation"]);
-    assert_eq!(store.pin(handle(&tail), &owner).unwrap().event_count, 2);
+    assert_eq!(store.pin(&tail["handle"], &owner).unwrap().event_count, 2);
     store.assert_conserved();
     eprintln!("interaction_views cold_source_bytes={cold} warm_source_bytes=0 views=2");
 }
@@ -110,7 +112,7 @@ fn native_interaction_views_rollback_only_new_leases_on_capacity_failure() {
     let owner = context("interaction-rollback");
     let acquired = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
     assert_eq!(store.lock_state().leases.len(), 1);
-    let result = store.request(&interaction_views_request(&acquired), &owner, &Cancellation::default());
+    let result = store.request(&interaction_views_request(handle(&acquired)), &owner, &Cancellation::default());
     assert_eq!(result["status"].as_str(), Some("lease_limit"), "{result:?}");
     assert_eq!(store.lock_state().leases.len(), 1);
     assert!(store.pin(handle(&acquired), &owner).is_ok());
@@ -140,21 +142,18 @@ fn native_interaction_view_classification_keeps_the_acquired_generation_after_ap
     store.register_classifier("selected-view", "1", Arc::new(|_, range| Ok(vec![true; range.len()]))).unwrap();
     let owner = context("interaction-classifier");
     let acquired = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
-    let selected = store.request(&interaction_views_request(&acquired), &owner, &Cancellation::default());
+    let selected = store.request(&interaction_views_request(handle(&acquired)), &owner, &Cancellation::default());
     assert_eq!(selected["status"].as_str(), Some("ok"), "{selected:?}");
-    let tail = json!({"data":{"description":selected["data"]["views"][1]["description"]}});
+    let tail = &selected["data"]["views"][1]["description"];
     source.append(&format!("{}\n", user("later")));
     let before = store.lock_state().counters[1];
-    let mut request = interaction_api_request(&tail, Value::new());
-    request.insert("operation", json!("classify_view"));
-    request.insert("classifier", json!({"id":"selected-view","version":"1"}));
-    request.as_object_mut().unwrap().remove(&"query");
+    let request = interaction_classify_request(&tail["handle"], json!({"id":"selected-view","version":"1"}));
     let classified = finish(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
     assert_eq!(classified["status"].as_str(), Some("ok"), "{classified:?}");
     assert_eq!(classified["data"]["description"]["classifier"]["id"].as_str(), Some("selected-view"));
     assert_eq!(store.pin(handle(&classified), &owner).unwrap().event_count, 2);
     assert_eq!(store.lock_state().counters[1], before);
-    assert!(store.pin(handle(&tail), &owner).is_ok());
+    assert!(store.pin(&tail["handle"], &owner).is_ok());
     store.assert_conserved();
 }
 
@@ -165,7 +164,7 @@ fn native_interaction_projection_rejects_unsupported_selectors_without_source_re
     let owner = context("interaction-selector");
     let acquired = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
     let before = store.lock_state().counters[1];
-    let mut request = interaction_api_request(&acquired, json!({"kind":"interaction_keys","name":"AskUserQuestion"}));
+    let mut request = interaction_api_request(handle(&acquired), json!({"kind":"interaction_keys","name":"AskUserQuestion"}));
     request["view"].insert("selectors", json!([{"kind":"current_turn"}]));
     let response = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(response["status"].as_str(), Some("invalid_request"), "{response:?}");
@@ -192,7 +191,7 @@ fn native_interaction_index_rechecks_the_current_canonical_authority() {
     std::fs::rename(&nested, &escaped).unwrap();
     std::os::unix::fs::symlink(&escaped, &nested).unwrap();
     assert_eq!(SourceStamp::of(&std::fs::metadata(&source.path).unwrap()), initial);
-    let request = interaction_api_request(&acquired, json!({"kind":"interaction_keys","name":"AskUserQuestion"}));
+    let request = interaction_api_request(handle(&acquired), json!({"kind":"interaction_keys","name":"AskUserQuestion"}));
     let denied = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(denied["status"].as_str(), Some("permission_denied"), "{denied:?}");
     assert_eq!(store.lock_state().counters[1], before);
@@ -206,7 +205,7 @@ fn native_interaction_bundle_delivery_tracks_discard_and_output_refusal() {
     let store = NativeStore::new(&json!({"max_retained_bytes":64*1024*1024})).unwrap();
     let owner = context("interaction-delivery");
     let acquired = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
-    let request = interaction_views_request(&acquired);
+    let request = interaction_views_request(handle(&acquired));
     let response = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
     assert_eq!(NativeStore::response_handles(&response).unwrap().len(), 2);
@@ -232,7 +231,7 @@ fn native_interaction_bundle_rejects_public_tail_bounds_before_reading() {
     let acquired = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
     let before = store.lock_state().counters[1];
     for count in [0, 257] {
-        let mut request = interaction_views_request(&acquired);
+        let mut request = interaction_views_request(handle(&acquired));
         request.insert("tail_events", json!(count));
         let refused = store.request(&request, &owner, &Cancellation::default());
         assert_eq!(refused["status"].as_str(), Some("invalid_request"), "{refused:?}");
@@ -253,16 +252,13 @@ fn native_interaction_bundle_labels_raw_boundaries_native_before_explicit_classi
     request.insert("classifier", json!({"id":"exclude-user","version":"1"}));
     let acquired = finish(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
     assert_eq!(acquired["data"]["description"]["classifier"]["id"].as_str(), Some("exclude-user"));
-    let bundle = store.request(&interaction_views_request(&acquired), &owner, &Cancellation::default());
+    let bundle = store.request(&interaction_views_request(handle(&acquired)), &owner, &Cancellation::default());
     assert_eq!(bundle["status"].as_str(), Some("ok"), "{bundle:?}");
     for view in bundle["data"]["views"].as_array().unwrap().iter() {
         assert_eq!(view["description"]["classifier"], json!({"id":"native","version":"1"}));
     }
-    let tail = json!({"data":{"description":bundle["data"]["views"][1]["description"]}});
-    let mut classify = interaction_api_request(&tail, Value::new());
-    classify.insert("operation", json!("classify_view"));
-    classify.insert("classifier", json!({"id":"exclude-user","version":"1"}));
-    classify.as_object_mut().unwrap().remove(&"query");
+    let tail = &bundle["data"]["views"][1]["description"];
+    let classify = interaction_classify_request(&tail["handle"], json!({"id":"exclude-user","version":"1"}));
     let result = finish(&store, store.request(&classify, &owner, &Cancellation::default()), &owner);
     assert_eq!(result["status"].as_str(), Some("ok"), "{result:?}");
     assert_eq!(result["data"]["description"]["classifier"]["id"].as_str(), Some("exclude-user"));
@@ -285,10 +281,7 @@ fn native_interaction_classification_rolls_back_late_cancellation() {
         callback_cancel.cancel();
         Ok(vec![true; range.len()])
     })).unwrap();
-    let mut request = interaction_api_request(&acquired, Value::new());
-    request.insert("operation", json!("classify_view"));
-    request.insert("classifier", json!({"id":"cancel-view","version":"1"}));
-    request.as_object_mut().unwrap().remove(&"query");
+    let request = interaction_classify_request(handle(&acquired), json!({"id":"cancel-view","version":"1"}));
     let result = store.request(&request, &owner, &cancel);
     assert_eq!(result["status"].as_str(), Some("cancelled"), "{result:?}");
     assert!(calls.load(Ordering::Relaxed) > 0);
@@ -330,10 +323,7 @@ fn native_interaction_classification_checks_current_route_before_and_after_callb
             std::os::unix::fs::symlink(&escaped, &nested).unwrap();
         }
         let before = store.lock_state().counters[1];
-        let mut request = interaction_api_request(&acquired, Value::new());
-        request.insert("operation", json!("classify_view"));
-        request.insert("classifier", json!({"id":"route-view","version":"1"}));
-        request.as_object_mut().unwrap().remove(&"query");
+        let request = interaction_classify_request(handle(&acquired), json!({"id":"route-view","version":"1"}));
         let result = store.request(&request, &owner, &Cancellation::default());
         assert_eq!(result["status"].as_str(), Some("permission_denied"), "{result:?}");
         assert_eq!(calls.load(Ordering::Relaxed), usize::from(during));

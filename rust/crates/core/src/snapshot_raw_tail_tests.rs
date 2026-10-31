@@ -35,7 +35,14 @@ fn raw_tail_projection_matches_full_parse_and_shares_one_raw_owner() {
         assert!(!tail.chunks[0].entries.arenas().is_empty());
         let interactions = store.indexed_interactions(Arc::clone(&tail), &owner, &Cancellation::default(), raw_scope_bounds()).unwrap();
         let winner = interactions.winner("same").unwrap();
-        assert_eq!(winner.first, tail.event_count - 2);
+        let first_call_rank = expected.iter().filter_map(|entry| match entry {
+            Entry::Assistant(assistant) => Some(assistant.blocks.as_slice()),
+            _ => None,
+        }).flatten().filter_map(|block| match block {
+            crate::types::ContentBlock::ToolUse(tool) => Some(tool.id.as_str()),
+            _ => None,
+        }).position(|id| id == "same").unwrap();
+        assert_eq!(winner.first, first_call_rank);
         assert_eq!(winner.event, tail.event_count - 1);
         let mut reservation = store.reserve_projection(&owner, 0).unwrap();
         assert_eq!(interactions.call(winner, &mut reservation, &owner).unwrap().name, "Bash");
