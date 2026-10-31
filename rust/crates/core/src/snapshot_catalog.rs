@@ -1576,7 +1576,8 @@ impl SourceCatalog {
                     Err(error) => return Err(error),
                 }
             }
-            if !dirty && !unavailable && reachable && !node.symlinks.is_empty() {
+            if !dirty && !unavailable && reachable && (!node.symlinks.is_empty()
+                || node.issues.iter().any(|index| matches!(node.edges[*index].binding,CatalogNameBinding::Unobserved))) {
                 let mut temporary = None;
                 let mut retained = 0;
                 let reader = if let CatalogScan::Open(reader) = &node.scan { Some(reader) }
@@ -1597,7 +1598,10 @@ impl SourceCatalog {
                     }
                 };
                 if let Some(reader) = reader {
-                    for index in &node.symlinks {
+                    let retry_names = node.symlinks.iter().chain(node.issues.iter().filter(|index|
+                        matches!(node.edges[**index].binding,CatalogNameBinding::Unobserved)
+                            && node.symlinks.binary_search(index).is_err()));
+                    for index in retry_names {
                         let route = self.route_index.get(identity).expect("conditional registered route");
                         let order = Self::query_order(route,*index,budget)?;
                         let edge = &node.edges[*index];

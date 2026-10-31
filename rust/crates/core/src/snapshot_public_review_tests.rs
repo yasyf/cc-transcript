@@ -521,3 +521,59 @@ fn public_catalog_review_narrowed_resume_checks_unconsumed_children_of_a_symlink
     assert!(response["cursor"].is_null());
     store.assert_conserved();
 }
+
+#[test]
+fn public_catalog_review_current_ordinary_errors_are_reobserved_per_caller_and_recover() {
+    let source = LedgerSource::new(&line("ordinary-recovery-root"));
+    for index in 0..4 { source.file(&format!("ordinary-{index}.txt"), ""); }
+    let store = public_review_store(256);
+    let mut owner = context_for("public-review-ordinary-owner", false);
+    owner.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let (root, _pin) = acquired(&store, &source.path, &owner);
+    let mut seed = public_review_request(&source, &["missing"]);
+    seed["limits"].insert("max_discovery_entries", json!(1));
+    let seeded = store.request(&seed, &owner, &Cancellation::default());
+    assert_eq!(seeded["usage"]["discovery_entries_examined"].as_u64(), Some(1));
+    let neutral = {
+        let state = store.lock_state();
+        let slot = state.catalogs.values().next().unwrap();
+        let cell = slot.cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("seed catalog is not idle"); };
+        catalog.directories.values().next().unwrap().edges[0].name.clone()
+    };
+    let target = std::fs::read_dir(&source.directory).unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .find(|name| name != &neutral && Path::new(name).extension().is_some_and(|extension| extension == "txt"))
+        .expect("unobserved ordinary name");
+    let phase = Arc::new(AtomicUsize::new(0));
+    let observed_phase = Arc::clone(&phase);
+    *store.canonical_error_hook.lock().unwrap() = Some(Arc::new(move |path| {
+        path.file_name().is_some_and(|name| name == target).then(||
+            std::io::Error::other(format!("current caller failure {}", observed_phase.load(Ordering::Relaxed))))
+    }));
+    let request = prepare_request(&root, &["missing".to_owned()], &[source.directory.to_string_lossy().into_owned()], &[]);
+    let first = store.request(&request, &owner, &Cancellation::default());
+    assert_eq!(first["status"].as_str(), Some("changed"), "{first:?}");
+    assert!(first["reason"].as_str().unwrap().contains("current caller failure 0"));
+    {
+        let state = store.lock_state();
+        assert_eq!(state.catalogs.len(), 1);
+        let cell = state.catalogs.values().next().unwrap().cell.lock().unwrap();
+        let CatalogCell::Idle(catalog) = &*cell else { panic!("failed catalog is not idle"); };
+        assert!(catalog.complete);
+        assert!(catalog.directories.values().all(|node| node.symlinks.is_empty()));
+    }
+    phase.store(1, Ordering::Relaxed);
+    let mut foreign = context_for("public-review-ordinary-foreign", false);
+    foreign.insert("authority", owner["authority"].clone());
+    let (foreign_root, _foreign_pin) = acquired(&store, &source.path, &foreign);
+    let foreign_request = prepare_request(&foreign_root, &["missing".to_owned()], &[source.directory.to_string_lossy().into_owned()], &[]);
+    let second = store.request(&foreign_request, &foreign, &Cancellation::default());
+    assert_eq!(second["status"].as_str(), Some("changed"), "{second:?}");
+    assert!(second["reason"].as_str().unwrap().contains("current caller failure 1"));
+    *store.canonical_error_hook.lock().unwrap() = None;
+    let recovered = store.request(&foreign_request, &foreign, &Cancellation::default());
+    assert!(matches!(recovered["status"].as_str(), Some("ok" | "incomplete")), "{recovered:?}");
+    assert!(!recovered["reason"].as_str().is_some_and(|reason| reason.contains("current caller failure")));
+    store.assert_conserved();
+}
