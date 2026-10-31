@@ -64,7 +64,7 @@ fn assert_hydrate_limit_propagation(reason: &str, prior_output: bool) {
     assert_eq!(
         partial.events,
         if reason == "read_limit" {
-            second_full.events - 1
+            second_full.events
         } else {
             first_full.events
         }
