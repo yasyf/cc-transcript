@@ -373,3 +373,54 @@ def test_tail_returns_the_newest_events_without_a_lease(tmp_path: Path) -> None:
     assert [record.meta.uuid for record in decode_projection("cc-transcript.event/1", bounded["data"]["records_json"])] == [
         "u39"
     ]
+
+
+def test_instruction_projection_decodes_owned_compact_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(
+        event(0, "please continue")
+        + orjson.dumps(
+            {
+                "type": "assistant",
+                "uuid": "answer",
+                "sessionId": "s",
+                "timestamp": "2026-01-02T03:04:06+05:30",
+                "message": {"model": "test", "content": [{"type": "text", "text": "  offer 🦀  "}]},
+            }
+        )
+        + b"\n"
+    )
+    store = TranscriptStore({})
+    description = acquire(store, path)
+    handle = description["handle"]
+    reply = store.request(
+        request(
+            "query",
+            view={"handle": handle, "classifier": CLASSIFIER, "selectors": [], "attachments": []},
+            query={"kind": "instruction_turns", "order": "forward"},
+            limits=LIMITS,
+            deadline_unix_ms=deadline(),
+        ),
+        cancellation=CancellationToken(),
+        context=context(),
+    )
+    assert reply["complete"], reply
+    assert reply["data"]["record_schema"] == "cc-transcript.instruction-turn/1"
+    records = decode_projection(reply["data"]["record_schema"], reply["data"]["records_json"])
+    released = store.request(
+        request("release", owner_epoch=handle["owner_epoch"], kind="lease", token=handle["lease_id"]),
+        cancellation=CancellationToken(),
+        context=context(),
+    )
+    assert released["complete"], released
+    assert len(records) == 1
+    assert records[0]["prompt"] == "please continue"
+    assert records[0]["assistant_tail"] == "offer 🦀"
+    assert records[0]["started_at"].isoformat() == "2026-01-02T03:04:05+00:00"
+    assert records[0]["queued"] == []
+    assert records[0]["rejections"] == []
+    with pytest.raises(SnapshotIncomplete):
+        decode_projection(
+            "cc-transcript.instruction-turn/1",
+            ['{"index":0,"prompt":"","started_at":null,"queued":[],"rejections":[],"assistant_tail":"' + "x" * 401 + '"}'],
+        )

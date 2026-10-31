@@ -1214,6 +1214,7 @@
         "kind": {
           "enum": [
             "turns",
+            "instruction_turns",
             "events",
             "files_touched",
             "edited_files",
@@ -1881,6 +1882,7 @@
               "has_skill": "#/$defs/ListPredicate",
               "has_skill_suffix": "#/$defs/ListPredicate",
               "has_tool": "#/$defs/ToolPredicate",
+              "instruction_turns": "#/$defs/Page",
               "interaction_keys": "#/$defs/InteractionKeys",
               "interaction_records": "#/$defs/InteractionSelection",
               "interaction_winners": "#/$defs/InteractionSelection",

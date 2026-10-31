@@ -1075,6 +1075,7 @@
         "record_schema": {
           "enum": [
             "cc-transcript.turn/1",
+            "cc-transcript.instruction-turn/1",
             "cc-transcript.event/1",
             "cc-transcript.tool-use/1",
             "cc-transcript.file-ref/1",

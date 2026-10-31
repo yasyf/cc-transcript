@@ -210,6 +210,7 @@ class Scalar(WireModel):
 class Page(WireModel):
     kind: Literal[
         "turns",
+        "instruction_turns",
         "events",
         "files_touched",
         "edited_files",
@@ -732,6 +733,7 @@ class RecordsResult(WireModel):
     kind: Literal["records"]
     record_schema: Literal[
         "cc-transcript.turn/1",
+        "cc-transcript.instruction-turn/1",
         "cc-transcript.event/1",
         "cc-transcript.tool-use/1",
         "cc-transcript.file-ref/1",
