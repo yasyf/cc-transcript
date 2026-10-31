@@ -1047,7 +1047,11 @@ fn noise_spec_json() -> &'static str {
 
 #[pyo3_stub_gen::derive::gen_stub_pyfunction]
 #[pyfunction(signature = (path, *, transport="identity"))]
-fn project_request_body(py: Python<'_>, path: String, transport: &str) -> PyResult<Option<(bool, Option<String>)>> {
+fn project_request_body(
+    py: Python<'_>,
+    path: String,
+    transport: &str,
+) -> PyResult<Option<(bool, Option<String>)>> {
     use cc_transcript_core::request_body::RequestBodyTransport;
 
     let transport = match transport {
@@ -1056,10 +1060,11 @@ fn project_request_body(py: Python<'_>, path: String, transport: &str) -> PyResu
         _ => return Err(PyValueError::new_err("unknown request body transport")),
     };
     py.detach(|| {
-        Ok(
-            cc_transcript_core::request_body::read_request_body(std::path::Path::new(&path), transport)?
-                .map(|body| (body.bypass_rules, body.sha)),
-        )
+        Ok(cc_transcript_core::request_body::read_request_body(
+            std::path::Path::new(&path),
+            transport,
+        )?
+        .map(|body| (body.bypass_rules, body.sha)))
     })
 }
 

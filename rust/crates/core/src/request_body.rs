@@ -314,7 +314,10 @@ pub fn project_request_body(source: impl Read) -> Result<Option<RequestBody>, se
     Ok(reader.projection.object.then_some(reader.projection.body))
 }
 
-pub fn read_request_body(path: &Path, transport: RequestBodyTransport) -> io::Result<Option<RequestBody>> {
+pub fn read_request_body(
+    path: &Path,
+    transport: RequestBodyTransport,
+) -> io::Result<Option<RequestBody>> {
     #[cfg(not(unix))]
     if !path.metadata()?.is_file() {
         return Ok(None);
@@ -330,7 +333,9 @@ pub fn read_request_body(path: &Path, transport: RequestBodyTransport) -> io::Re
     if !source.metadata()?.is_file() {
         return Ok(None);
     }
-    Ok(project_request_body(TransportRead { source, transport }).ok().flatten())
+    Ok(project_request_body(TransportRead { source, transport })
+        .ok()
+        .flatten())
 }
 
 #[cfg(test)]
@@ -355,19 +360,38 @@ mod tests {
     #[test]
     fn request_projection_curl_data_matches_filtered_bytes_across_chunk_boundaries() {
         let input = b"\r\n\0{\"by\r\n\0pass_rules\":tr\r\n\0ue,\"sha\":\"aaaaaaaaaaaaaaaaaaaa\0aaaaaaaaaaaaaaaaaaaa\",\"ignored\":\"\xc3\0\xa9\xf0\r\n\x9f\x99\x82\"}\r\n\0";
-        let expected: Vec<_> = input.iter().copied().filter(|byte| !matches!(*byte, b'\r' | b'\n' | 0)).collect();
+        let expected: Vec<_> = input
+            .iter()
+            .copied()
+            .filter(|byte| !matches!(*byte, b'\r' | b'\n' | 0))
+            .collect();
         let expected = project_request_body(expected.as_slice()).unwrap();
         assert!(expected.as_ref().unwrap().bypass_rules);
         for width in 1..=17 {
             let source = ShortReads { input, width };
-            let actual = project_request_body(TransportRead { source, transport: RequestBodyTransport::CurlData }).unwrap();
+            let actual = project_request_body(TransportRead {
+                source,
+                transport: RequestBodyTransport::CurlData,
+            })
+            .unwrap();
             assert_eq!(actual, expected);
             let source = ShortReads { input, width };
-            assert!(project_request_body(TransportRead { source, transport: RequestBodyTransport::Identity }).is_err());
+            assert!(project_request_body(TransportRead {
+                source,
+                transport: RequestBodyTransport::Identity
+            })
+            .is_err());
         }
         for width in 1..=17 {
-            let source = ShortReads { input: b"\r\n\0\r\n\0", width };
-            assert!(project_request_body(TransportRead { source, transport: RequestBodyTransport::CurlData }).is_err());
+            let source = ShortReads {
+                input: b"\r\n\0\r\n\0",
+                width,
+            };
+            assert!(project_request_body(TransportRead {
+                source,
+                transport: RequestBodyTransport::CurlData
+            })
+            .is_err());
         }
     }
 
