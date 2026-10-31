@@ -276,6 +276,11 @@ impl NativeStore {
             (Some(previous), Some(parsed)) => previous.fallback_reason(parsed),
             _ => Some("cold"),
         };
+        #[cfg(test)]
+        self.observe_hydration(HydrationObservation::Codex {
+            stamp: slot.stamp, previous: load.previous.is_some(), raw: load.codex_raw.is_some(),
+            index: load.codex_append.is_some(), append, fallback, suffix_bytes: suffix.len(),
+        });
         let (entries, arenas, index) = if fallback.is_some() {
             let mut start = 0;
             for end in memchr::memchr_iter(b'\n', &raw) {
