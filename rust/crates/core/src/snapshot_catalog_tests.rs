@@ -238,6 +238,19 @@ fn registered_catalog_remembers_an_earlier_chunk_before_a_later_error() {
     {
         let state = store.lock_state();
         assert_eq!(state.locations.get("wanted").map(|location| &location.path), Some(&wanted));
+        let mut unresolved = false;
+        for slot in state.catalogs.values() {
+            let cell = slot.cell.lock().unwrap();
+            let CatalogCell::Idle(catalog) = &*cell else { panic!("settled catalog"); };
+            for node in catalog.directories.values() {
+                assert!(node.observed.issue.as_ref().is_none_or(|(status, _)| *status != Status::PermissionDenied));
+                for edge in &node.edges {
+                    unresolved |= edge.binding.is_none();
+                    assert!(edge.binding.as_ref().and_then(|binding| binding.issue.as_ref()).is_none_or(|(status, _)| *status != Status::PermissionDenied));
+                }
+            }
+        }
+        assert!(unresolved, "scope refusal must retain only a NAME barrier");
     }
     store.assert_conserved();
 }
@@ -255,7 +268,7 @@ fn registered_catalog_key_admits_escaped_capacity_before_encoding() {
         let control = store();
         let (key, reservation) = control.catalog_key(request["roots"].as_array().unwrap(), &owner).unwrap();
         let bound = reservation.bytes;
-        let binding = json!({"effective_uid":unsafe { libc::geteuid() },"roots":request["roots"]});
+        let binding = json!({"authority":owner["authority"],"roots":request["roots"]});
         let expected = crate::ids::canonical_json(&binding).unwrap();
         let old_bound = LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&owner["authority"])
             + 2 * value_bytes(&request["roots"]) + 1024;
@@ -402,11 +415,16 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
     let store = store();
     let owner = context("catalog-retry-order");
     let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
-    let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 2, scratch_bytes:0, observed_issue:false };
+    let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 2, scratch_bytes: 0 };
     let roots = [json!(late),json!(early)];
-    let deadline = now_ms() + 750;
-    let mut catalog = SourceCatalog::new(&store, &roots, &owner, &mut budget).unwrap();
-    catalog.check_roots(&store,&Cancellation::default(),deadline,&mut budget).unwrap();
+    let mut catalog = SourceCatalog::new(&store, {
+            let (key, reservation) = store.catalog_key(&roots, &owner).unwrap();
+            let scope = key.as_bytes().try_into().unwrap();
+            drop(key);
+            drop(reservation);
+            scope
+        }, &roots, &mut budget).unwrap();
+    catalog.check_roots(&store,&Cancellation::default(),now_ms()+750,&mut budget).unwrap();
     catalog.sync_routes(&mut budget).unwrap();
     catalog.pending.clear();
     for directory in [&early, &late] {
@@ -420,8 +438,9 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
         catalog.record_issue(identity, 0);
     }
     let mut usage = [0;20];
+    let deadline = now_ms() + 750;
     catalog.advance(&store, &Cancellation::default(), deadline, 1, &mut usage, &mut budget).unwrap();
-    let plan = catalog.read_plan(&store,&owner,&Cancellation::default(),deadline,&mut budget).unwrap();
+    let plan = catalog.read_plan(&Cancellation::default(), deadline, None, &mut budget).unwrap();
     let paths = catalog.try_locate(&store, &[json!("wanted")], &owner, &Cancellation::default(), deadline, &plan, &mut budget).unwrap().expect("earliest closed prefix");
     assert_eq!(paths.get("wanted"), Some(&early.join("wanted.jsonl")));
     assert_eq!(catalog.charge(), catalog.audit_charge());
@@ -444,9 +463,17 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
         let mut owner = context("catalog-retry-admission");
         if background { owner.insert("work_class", json!("background")); }
         let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
-        let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 1, scratch_bytes:0, observed_issue:false };
+        let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 1, scratch_bytes: 0 };
         let roots = [json!(source.directory)];
-        let mut catalog = SourceCatalog::new(&store, &roots, &owner, &mut budget).unwrap();
+        let mut catalog = SourceCatalog::new(&store, {
+            let (key, reservation) = store.catalog_key(&roots, &owner).unwrap();
+            let scope = key.as_bytes().try_into().unwrap();
+            drop(key);
+            drop(reservation);
+            scope
+        }, &roots, &mut budget).unwrap();
+    catalog.check_roots(&store,&Cancellation::default(),now_ms()+750,&mut budget).unwrap();
+    catalog.sync_routes(&mut budget).unwrap();
         let root_identity = SourceStamp::of(&std::fs::metadata(&source.directory).unwrap()).identity;
         let mut usage = [0;20];
         catalog.advance(&store, &Cancellation::default(), now_ms() + 750, usize::MAX, &mut usage, &mut budget).unwrap();
@@ -478,7 +505,9 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
         assert_eq!(charge, catalog.audit_charge());
         let growth = vec_growth(&catalog.pending, retries.len());
         assert!(growth > 0);
-        let headroom = growth - 1;
+        let scratch_growth = LOCATE_USER_PATH_SLOTS.saturating_sub(budget.scratch_bytes);
+        let headroom = scratch_growth + growth - 1;
+        eprintln!("registered_retry_admission background={background} scratch_admitted={} scratch_growth={scratch_growth} retry_growth={growth} headroom={headroom}", budget.scratch_bytes);
         let cap = store.config.retained - if background { store.config.hook_bytes } else { 0 };
         let used = store.retained_accounted_bytes();
         let filler = store.reserve_projection(&owner, cap - used - headroom).unwrap();
@@ -494,7 +523,7 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
         drop(filler);
         let deadline = now_ms() + 750;
         catalog.advance(&store, &Cancellation::default(), deadline, 1, &mut usage, &mut budget).unwrap();
-        let plan = catalog.read_plan(&store,&owner,&Cancellation::default(), deadline, &mut budget).unwrap();
+        let plan = catalog.read_plan(&Cancellation::default(), deadline, None, &mut budget).unwrap();
         let paths = catalog.try_locate(&store, &[json!("wanted")], &owner, &Cancellation::default(), deadline, &plan, &mut budget).unwrap().expect("earliest retry prefix");
         assert_eq!(paths.get("wanted"), Some(&expected));
         assert_eq!(catalog.charge(), catalog.audit_charge());
@@ -829,52 +858,221 @@ fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_
     store.assert_conserved();
 }
 
-#[test]
-fn registered_catalog_certificate_rejects_a_regular_root_retarget_after_public_lookup() {
+fn catalog_ancestor_aba_preserves_fresh_membership(stream: bool) {
     let source = Source::new(&format!("{}\n", user("root")));
-    let original = Source::new(&format!("{}\n", user("original-member")));
-    let replacement = Source::new(&format!("{}\n", user("replacement-member")));
-    let alias = source.directory.join("wanted.jsonl");
-    std::os::unix::fs::symlink(&original.path, &alias).unwrap();
-    let store = store();
-    let owner = context("catalog-public-certificate");
-    let mut locate = public_catalog_request(&source, &["missing"]);
-    locate.insert("roots", json!([alias]));
-    let (negative, entries) = public_catalog_finish(&store, &locate, &owner);
-    assert_eq!(negative[0]["status"].as_str(), Some("missing"));
-    assert_eq!(entries, 0);
+    let parent = source.directory.join("parent");
+    let saved = source.directory.join("saved-parent");
+    let replacement = source.directory.join("replacement-parent");
+    let forest = parent.join("forest");
+    std::fs::create_dir_all(&forest).unwrap();
+    std::fs::create_dir_all(replacement.join("forest")).unwrap();
+    let (ids, expected) = if stream {
+        std::fs::create_dir(forest.join("child")).unwrap();
+        std::fs::create_dir(replacement.join("forest/child")).unwrap();
+        let wanted = forest.join("child/wanted.jsonl");
+        std::fs::write(&wanted, format!("{}\n", user("wanted"))).unwrap();
+        std::fs::write(replacement.join("forest/child/other.jsonl"), format!("{}\n", user("other"))).unwrap();
+        (vec!["wanted".to_owned()], vec![wanted])
+    } else {
+        let mut expected = Vec::new();
+        for id in ["first", "second"] {
+            let path = forest.join(format!("{id}.jsonl"));
+            std::fs::write(&path, format!("{}\n", user(id))).unwrap();
+            expected.push(path);
+        }
+        (vec!["first".to_owned(), "second".to_owned()], expected)
+    };
+    let before = SourceStamp::of(&std::fs::metadata(&forest).unwrap());
+    let child_before = stream.then(|| SourceStamp::of(&std::fs::metadata(forest.join("child")).unwrap()));
+    let store = Arc::new(NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_events_per_step":16,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap());
+    let owner = context(if stream { "catalog-opened-stream-aba" } else { "catalog-child-fact-aba" });
     let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
-    let mut request = registered_prepare(&source, &root, &["wanted"]);
-    request.insert("roots", json!([alias]));
-    let first = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
-    assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
-    let initial = store.lock_state().warm_memberships.get(&key).cloned().expect("initial registered membership");
-    let certificate = initial.catalog.expect("initial catalog certificate");
-    assert_eq!(initial.members.len(), 1);
-    assert_eq!(initial.members[0].path, std::fs::canonicalize(&original.path).unwrap());
-    release_graph(&store, &first, &owner);
-    std::fs::remove_file(&alias).unwrap();
-    std::os::unix::fs::symlink(&replacement.path, &alias).unwrap();
-    assert_eq!(SourceStamp::of(&std::fs::metadata(&original.path).unwrap()), initial.members[0].stamp);
-    locate.insert("session_ids", json!(["unhinted-missing"]));
-    let (negative, entries) = public_catalog_finish(&store, &locate, &owner);
-    assert_eq!(negative[0]["status"].as_str(), Some("missing"));
-    assert_eq!(entries, 0);
-    {
-        let state = store.lock_state();
-        let slot = state.catalogs.get(certificate.key()).expect("shared public catalog");
-        let cell = slot.cell.lock().unwrap();
-        let CatalogCell::Idle(catalog) = &*cell else { panic!("settled public catalog"); };
-        assert!(!certificate.matches(catalog), "public root hold did not invalidate the registered certificate");
+    let mut request = catalog_missing_request(&source, &root, &ids);
+    request.insert("roots", json!([forest]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let swapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let restored = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new({
+        let store = Arc::downgrade(&store);
+        let (parent, saved, replacement, swapped, restored) = (parent.clone(), saved.clone(), replacement.clone(), Arc::clone(&swapped), Arc::clone(&restored));
+        move || {
+            std::fs::rename(&parent, &saved).unwrap();
+            std::fs::rename(&replacement, &parent).unwrap();
+            swapped.store(true, Ordering::Relaxed);
+            *store.upgrade().unwrap().location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new({
+                let (parent, saved, replacement, restored) = (parent.clone(), saved.clone(), replacement.clone(), Arc::clone(&restored));
+                move || {
+                    std::fs::rename(&parent, &replacement).unwrap();
+                    std::fs::rename(&saved, &parent).unwrap();
+                    restored.store(true, Ordering::Relaxed);
+                }
+            })));
+        }
+    })));
+    let (first, first_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+    *store.location_metadata_hook.lock().unwrap() = None;
+    assert!(swapped.load(Ordering::Relaxed));
+    if !restored.load(Ordering::Relaxed) {
+        std::fs::rename(&parent, &replacement).unwrap();
+        std::fs::rename(&saved, &parent).unwrap();
     }
-    let second = finish_prepared(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
-    assert_eq!(second["status"].as_str(), Some("ok"), "{second:?}");
-    let fresh = store.lock_state().warm_memberships.get(&key).cloned().expect("updated registered membership");
-    assert_eq!(fresh.members.len(), 1);
-    assert_eq!(fresh.members[0].path, std::fs::canonicalize(&replacement.path).unwrap());
-    assert_ne!(fresh.catalog, Some(certificate));
-    assert_eq!(SourceStamp::of(&std::fs::metadata(&original.path).unwrap()), initial.members[0].stamp);
-    release_graph(&store, &second, &owner);
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&forest).unwrap()), before);
+    if let Some(before) = child_before {
+        assert_eq!(SourceStamp::of(&std::fs::metadata(forest.join("child")).unwrap()), before);
+    }
+    assert!(expected.iter().all(|path| path.is_file()));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let (fresh, fresh_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+    eprintln!("registered_ancestor_aba stream={stream} first={:?} first_entries={first_entries} fresh={:?} fresh_entries={fresh_entries}", first["status"].as_str(), fresh["status"].as_str());
+    store.assert_conserved();
+    assert_eq!(fresh["status"].as_str(), Some("ok"), "{fresh:?}");
+    let graph_id = fresh["data"]["handle"]["graph_id"].as_str().unwrap().to_owned();
+    let state = store.lock_state();
+    let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+    for path in expected {
+        let canonical = std::fs::canonicalize(path).unwrap();
+        assert!(graph.sources.iter().any(|source| source.path == canonical));
+    }
+}
+
+#[test]
+fn registered_catalog_ancestor_aba_does_not_share_another_directorys_stream() {
+    catalog_ancestor_aba_preserves_fresh_membership(true);
+}
+
+#[test]
+fn registered_catalog_ancestor_aba_does_not_cache_another_directorys_child_issue() {
+    catalog_ancestor_aba_preserves_fresh_membership(false);
+}
+
+#[test]
+fn registered_catalog_healthy_restricted_symlink_and_root_alias_are_reusable() {
+    for (root_alias, unknown) in [(false, false), (true, false), (false, true), (true, true)] {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let forest = source.directory.join("forest");
+        let targets = source.directory.join("targets");
+        let alias = source.directory.join("forest-alias");
+        std::fs::create_dir(&forest).unwrap();
+        std::fs::create_dir(&targets).unwrap();
+        let target = targets.join("actual.jsonl");
+        std::fs::write(&target, format!("{}\n", user("wanted"))).unwrap();
+        std::os::unix::fs::symlink(&target, forest.join("wanted.jsonl")).unwrap();
+        std::os::unix::fs::symlink(&forest, &alias).unwrap();
+        let store = store();
+        store.directory_force_unknown.store(unknown, Ordering::Relaxed);
+        let mut owner = context("catalog-healthy-restricted-symlink");
+        owner.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+        request.insert("roots", json!([if root_alias { alias } else { forest }]));
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let (cold, cold_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+        assert_eq!(cold["status"].as_str(), Some("ok"), "{cold:?}");
+        assert_eq!(cold_entries, 1);
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let (warm, warm_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+        eprintln!("registered_healthy_symlink root_alias={root_alias} unknown={unknown} cold_entries={cold_entries} warm_entries={warm_entries}");
+        assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
+        assert_eq!(warm_entries, 0);
+        let graph_id = warm["data"]["handle"]["graph_id"].as_str().unwrap().to_owned();
+        {
+            let state = store.lock_state();
+            let graph = state.prepared_graphs[&graph_id].lock().unwrap();
+            assert!(graph.sources.iter().any(|source| source.path == std::fs::canonicalize(&target).unwrap()));
+        }
+        request.insert("thread_ids", json!(["missing"]));
+        for _ in 0..2 {
+            request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+            let (missing, entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+            assert_eq!(missing["status"].as_str(), Some("incomplete"), "{missing:?}");
+            assert_eq!(missing["reason"].as_str(), Some("registered membership is incomplete"), "{missing:?}");
+            assert_eq!(entries, 0);
+        }
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn registered_catalog_cancelled_name_proof_retains_the_consumed_entry_without_reenumeration() {
+    for unknown in [false, true] {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let forest = source.directory.join("forest");
+        std::fs::create_dir(&forest).unwrap();
+        for id in ["first", "second"] {
+            std::fs::write(forest.join(format!("{id}.jsonl")), format!("{}\n", user(id))).unwrap();
+        }
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_events_per_step":1,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        store.directory_force_unknown.store(unknown, Ordering::Relaxed);
+        let owner = context("catalog-cancelled-name-proof");
+        let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+        let mut request = catalog_missing_request(&source, &root, &["first".to_owned(), "second".to_owned()]);
+        request.insert("roots", json!([forest]));
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let cancel = Cancellation::default();
+        let cancel_name = cancel.clone();
+        *store.location_metadata_hook.lock().unwrap() = Some(("catalog_name", Arc::new(move || cancel_name.cancel())));
+        let (cancelled, first_entries) = catalog_counted_request(&store, &request, &owner, &cancel);
+        *store.location_metadata_hook.lock().unwrap() = None;
+        assert_eq!(cancelled["status"].as_str(), Some("cancelled"), "{cancelled:?}");
+        assert_eq!(first_entries, 1);
+        {
+            let state = store.lock_state();
+            let slot = state.catalogs.values().next().expect("native catalog owner");
+            let cell = slot.cell.lock().unwrap();
+            let CatalogCell::Idle(catalog) = &*cell else { panic!("cancelled catalog is settled"); };
+            let pending = catalog.directories.values().find_map(|node| node.pending_name.as_ref());
+            assert!(pending.is_some(), "a consumed NAME must survive private cancellation");
+            if unknown { assert!(pending.unwrap().1.kind.is_none()); }
+            assert_eq!(catalog.charge(), catalog.audit_charge());
+        }
+        store.assert_conserved();
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let (fresh, remaining_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+        eprintln!("registered_cancelled_name unknown={unknown} first_entries={first_entries} remaining_entries={remaining_entries}");
+        assert_eq!(fresh["status"].as_str(), Some("ok"), "{fresh:?}");
+        assert_eq!(first_entries + remaining_entries, 2);
+        store.assert_conserved();
+    }
+}
+
+#[test]
+fn registered_catalog_ancestor_aba_rejects_an_empty_foreign_stream() {
+    let source = Source::new(&format!("{}\n", user("root")));
+    let parent = source.directory.join("parent");
+    let saved = source.directory.join("saved-parent");
+    let replacement = source.directory.join("replacement-parent");
+    let forest = parent.join("forest");
+    std::fs::create_dir_all(forest.join("child")).unwrap();
+    std::fs::create_dir_all(replacement.join("forest/child")).unwrap();
+    let wanted = forest.join("child/wanted.jsonl");
+    std::fs::write(&wanted, format!("{}\n", user("wanted"))).unwrap();
+    let before = SourceStamp::of(&std::fs::metadata(&forest).unwrap());
+    let store = Arc::new(NativeStore::new(&json!({"max_read_bytes_per_step":8192,"max_events_per_step":16,"max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap());
+    let owner = context("catalog-empty-foreign-stream");
+    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
+    let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
+    request.insert("roots", json!([forest]));
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let swapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new({
+        let (parent, saved, replacement, swapped) = (parent.clone(), saved.clone(), replacement.clone(), Arc::clone(&swapped));
+        move || {
+            std::fs::rename(&parent, &saved).unwrap();
+            std::fs::rename(&replacement, &parent).unwrap();
+            swapped.store(true, Ordering::Relaxed);
+        }
+    })));
+    let (first, first_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+    *store.location_metadata_hook.lock().unwrap() = None;
+    assert!(swapped.load(Ordering::Relaxed), "first NAME observation was not reached: {first:?}");
+    std::fs::rename(&parent, &replacement).unwrap();
+    std::fs::rename(&saved, &parent).unwrap();
+    assert_eq!(SourceStamp::of(&std::fs::metadata(&forest).unwrap()), before);
+    assert_eq!(first["status"].as_str(), Some("changed"), "{first:?}");
+    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+    let (fresh, fresh_entries) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+    eprintln!("registered_empty_foreign_stream first_entries={first_entries} fresh_entries={fresh_entries}");
+    assert_eq!(fresh["status"].as_str(), Some("ok"), "{fresh:?}");
+    assert_eq!(first_entries + fresh_entries, 2);
     store.assert_conserved();
 }

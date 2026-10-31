@@ -20,7 +20,7 @@ fn registered_catalog_borrowed_parent_proof_rejects_stable_namespace_replacement
         let cancel = Cancellation::default();
         let request = CatalogProofRequest { store:&store,context:&owner,cancel:&cancel,deadline_unix_ms:now_ms()+60_000 };
         let mut reservation = store.reserve_projection(&owner,4096).unwrap();
-        let mut budget = CatalogBudget { store:&store,context:&owner,reservation:&mut reservation,attempt:1,scratch_bytes:0,observed_issue:false };
+        let mut budget = CatalogBudget { store:&store,context:&owner,reservation:&mut reservation,attempt:1,scratch_bytes:0 };
         let input = CatalogNameProofInput { reader:&reader.entries,name:OsStr::new("link"),physical_parent:&parent,
             expected_parent:expected,logical_target_hint:None };
         if observe_edge {

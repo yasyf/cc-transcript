@@ -157,7 +157,6 @@ fn catalog_observe_symlink_edge(request: &CatalogProofRequest<'_>, input: Catalo
     request.check()?;
     budget.scratch(7 * FILESYSTEM_PATH_BYTES)?;
     let raw = catalog_child_path(route.raw_parent,input.name);
-    // Guard an already resolvable target before descriptor work, including denied-target controls.
     if let Ok(canonical) = CatalogBinding::canonical_path(request.store,&raw) {
         if let Err(error) = request.store.authority(request.context,Some(&canonical)) {
             return Ok(CatalogSymlinkEdgeProof::CurrentRefusal { stage:CatalogProofStage::LogicalTarget,error });

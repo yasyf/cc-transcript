@@ -12041,12 +12041,11 @@ fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
     );
     assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
     let mut pins = vec![root_snapshot];
-    pins.extend(
-        scenario
-            .sidechains
-            .iter()
-            .map(|path| acquired(&store, path, &owner).1),
-    );
+    pins.extend(scenario.sidechains.iter().map(|path| {
+        let (handle, snapshot) = acquired(&store, path, &owner);
+        release_lease(&store, &handle, &owner);
+        snapshot
+    }));
     Fixture {
         store,
         owner,
@@ -12057,7 +12056,7 @@ fn shared_root_fixture(scenario: &Scenario, background: bool) -> Fixture {
 
 #[test]
 fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocation() {
-    let scenario = Scenario::new(3, |index| line(&format!("thread-{index:04}")));
+    let scenario = Scenario::new(128, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
         let build = || shared_root_fixture(&scenario, background);
         let control = build();
@@ -12096,7 +12095,18 @@ fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocatio
         };
         let site = reached(
             |store| store.registered_sources.load(Ordering::Relaxed),
-            |fixture| settled_or_refused(&submit(fixture)),
+            |fixture| {
+                let catalog_pins: Vec<_> = fixture
+                    .store
+                    .lock_state()
+                    .catalogs
+                    .values()
+                    .map(Arc::clone)
+                    .collect();
+                assert_eq!(catalog_pins.len(), 1);
+                settled_or_refused(&submit(fixture));
+                drop(catalog_pins);
+            },
         );
         let exact = exact_headroom(&build, &site);
         assert_eq!(

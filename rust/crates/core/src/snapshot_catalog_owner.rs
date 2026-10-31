@@ -1,6 +1,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CatalogCertificate {
     scope: [u8; 64],
+    authority: [u8; 32],
     incarnation: u64,
     revision: u64,
 }
@@ -164,6 +165,20 @@ impl NativeStore {
         Ok(())
     }
 
+    fn catalog_authority(&self, context: &Value) -> Result<[u8; 32], SnapshotError> {
+        struct DigestWriter(Sha256);
+        impl std::fmt::Write for DigestWriter {
+            fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                self.0.update(value.as_bytes());
+                Ok(())
+            }
+        }
+        let _reservation = self.reserve_projection(context, catalog_canonical_scratch(&context["authority"]))?;
+        let mut writer = DigestWriter(Sha256::new());
+        crate::ids::write_canonical(&context["authority"], &mut writer).map_err(invalid)?;
+        Ok(writer.0.finalize().into())
+    }
+
     fn catalog_key<'a>(
         &'a self,
         roots: &[Value],
@@ -265,9 +280,9 @@ impl NativeStore {
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
         let outcome = (|| {
-            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0, observed_issue:false };
+            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0 };
             if catalog.is_none() {
-                catalog = Some(SourceCatalog::new(self, roots, context, &mut budget)?);
+                catalog = Some(SourceCatalog::new(self, key.as_bytes().try_into().expect("catalog scope digest size"), roots, &mut budget)?);
             }
             let catalog = catalog.as_mut().expect("source catalog");
             match &mut mode {
@@ -275,12 +290,9 @@ impl NativeStore {
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     let before = usage[17];
-                    let advanced = catalog.advance(self,cancel,remaining.deadline_unix_ms,
-                        self.config.event_step.min(remaining.max_discovery_entries),usage,&mut budget);
-                    remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
-                    if let Err(error) = advanced {
-                        return if budget.observed_issue || error.status == Status::PermissionDenied { Ok(CatalogWorkResult::Indexed) } else { Err(error) };
-                    }
+                    catalog.advance(self,cancel,remaining.deadline_unix_ms,
+                        self.config.event_step.min(remaining.max_discovery_entries),usage,&mut budget)?;
+                    remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17]-before) as usize);
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }
@@ -288,9 +300,11 @@ impl NativeStore {
                 }
                 CatalogMode::Public(query) => return catalog.locate_page(self,ids,context,cancel,remaining,usage,query,&mut budget).map(CatalogWorkResult::Public),
                 CatalogMode::Check(expected) => {
-                    catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-                    let plan = catalog.read_plan(self,context,cancel,remaining.deadline_unix_ms,&mut budget)?;
-                    return Ok(CatalogWorkResult::Checked(plan.issue.is_none() && expected.key() == key && expected.matches(catalog)));
+                    if expected.authority != self.catalog_authority(context)? {
+                        return Ok(CatalogWorkResult::Checked(false));
+                    }
+                    let issue = catalog.refresh(self,cancel,remaining.deadline_unix_ms,&mut budget)?;
+                    return Ok(CatalogWorkResult::Checked(issue.is_none() && expected.key() == key && expected.matches(catalog)));
                 }
                 CatalogMode::Locate => {}
             }
@@ -307,10 +321,11 @@ impl NativeStore {
                     if plan_epoch != catalog.epoch { plan = None; }
                     if catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) {
                         if plan.is_none() {
-                            catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-                            if !catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) { continue; }
+                            let before_epoch = catalog.epoch;
+                            let issue = catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                            if catalog.epoch != before_epoch || !catalog.geometry_ready(self, chunk, chunk.len(), &mut probe) { continue; }
                             catalog.sync_routes(&mut budget)?;
-                            plan = Some(catalog.read_plan(self, context, cancel, remaining.deadline_unix_ms, &mut budget)?);
+                            plan = Some(catalog.read_plan(cancel, remaining.deadline_unix_ms, issue, &mut budget)?);
                             plan_epoch = catalog.epoch;
                         }
                         if let Some(located) = catalog.try_locate(self, chunk, context, cancel,
@@ -345,6 +360,7 @@ impl NativeStore {
             cancel.check(remaining.deadline_unix_ms)?;
             Ok(CatalogWorkResult::Paths(paths, CatalogCertificate {
                 scope: key.as_bytes().try_into().expect("catalog scope digest size"),
+                authority: self.catalog_authority(context)?,
                 incarnation: catalog.incarnation,
                 revision: catalog.decision_revision,
             }))
