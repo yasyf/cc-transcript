@@ -1099,14 +1099,13 @@ fn registered_catalog_pending_name_survives_earlier_frontier_reordering() {
             let mut catalog = SourceCatalog::new(&store, scope, &roots, &owner, &mut budget).unwrap();
             let early_id = SourceStamp::of(&std::fs::metadata(&early).unwrap()).identity;
             let late_id = SourceStamp::of(&std::fs::metadata(&late).unwrap()).identity;
+            let mut usage = [0;20];
+            catalog.advance(&store, &Cancellation::default(), now_ms() + 30_000, 1, &mut usage, &mut budget).unwrap();
+            assert_eq!(usage[17], 1);
+            assert_eq!(catalog.pending.last(), Some(&early_id));
             let cancel = Cancellation::default();
             let cancel_name = cancel.clone();
-            let names = Arc::new(AtomicUsize::new(0));
-            let observed = Arc::clone(&names);
-            *store.location_metadata_hook.lock().unwrap() = Some(("catalog_name", Arc::new(move || {
-                if observed.fetch_add(1, Ordering::Relaxed) == 1 { cancel_name.cancel(); }
-            })));
-            let mut usage = [0;20];
+            *store.location_metadata_hook.lock().unwrap() = Some(("catalog_name", Arc::new(move || cancel_name.cancel())));
             let error = catalog.advance(&store, &cancel, now_ms() + 30_000, usize::MAX, &mut usage, &mut budget).unwrap_err();
             *store.location_metadata_hook.lock().unwrap() = None;
             assert_eq!(error.status, Status::Cancelled);
