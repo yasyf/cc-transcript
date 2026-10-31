@@ -3057,12 +3057,17 @@ impl StoreState {
         let (mut start, end) = PreparedDiskKey::identity_range(identity);
         let mut retired = 0;
         loop {
-            let next = self.prepared_fact_sources.range((start, end)).next().copied();
+            let next = self
+                .prepared_fact_sources
+                .range((start, end))
+                .next()
+                .copied();
             let Some(key) = next else { break };
             start = std::ops::Bound::Excluded(key);
             self.ledger.shared.work().tick(1);
             if !keep(&self.prepared_facts[&key]) {
-                self.remove_prepared_facts(&key).expect("indexed prepared facts");
+                self.remove_prepared_facts(&key)
+                    .expect("indexed prepared facts");
                 retired += 1;
             }
         }
@@ -6420,7 +6425,10 @@ impl NativeStore {
             state.prepared_facts.len(),
             "prepared facts lru index diverges from the cache"
         );
-        assert_eq!(state.prepared_fact_sources.len(), state.prepared_facts.len());
+        assert_eq!(
+            state.prepared_fact_sources.len(),
+            state.prepared_facts.len()
+        );
         for (key, cached) in state.prepared_facts.iter() {
             assert!(state.prepared_fact_sources.contains(key));
             assert!(
