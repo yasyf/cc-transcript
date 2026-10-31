@@ -19896,7 +19896,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_warmer_pages_cached_members_256_at_a_time() {
+    fn registered_catalog_warmer_pages_cached_members_256_at_a_time() {
         let (_source, store, owner, request) = registered_warming(600);
         let cold = registered_pages(&store, &owner, &request);
         assert_eq!(
@@ -19909,6 +19909,8 @@ mod tests {
         let resolutions = store.source_resolutions.load(Ordering::Relaxed);
         let dir_checks = store.prepared_disk.dir_checks.load(Ordering::Relaxed);
         let metadata_checks = store.membership_metadata_checks.load(Ordering::Relaxed);
+        let sidechain_probes = store.sidechain_path_probes.load(Ordering::Relaxed);
+        let batch_name_checks = store.sidechain_batch_name_checks.load(Ordering::Relaxed);
         let writes = store.prepared_disk.stats().writes;
         let cached = registered_pages(&store, &owner, &request);
         assert_eq!(
@@ -19932,7 +19934,15 @@ mod tests {
         );
         assert_eq!(
             store.membership_metadata_checks.load(Ordering::Relaxed) - metadata_checks,
-            4 * 600
+            3 * 600
+        );
+        assert_eq!(
+            store.sidechain_path_probes.load(Ordering::Relaxed) - sidechain_probes,
+            600
+        );
+        assert_eq!(
+            store.sidechain_batch_name_checks.load(Ordering::Relaxed) - batch_name_checks,
+            600 + 1
         );
         assert_eq!(store.prepared_disk.stats().writes, writes);
     }
