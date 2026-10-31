@@ -345,11 +345,13 @@ impl ActivityIndex {
 
     pub fn call_at(&self, event: usize, block_ordinal: usize) -> Option<&ToolCall> {
         let calls = &self.turns.get(self.turn_of_event(event)?)?.calls;
-        let index = calls.binary_search_by(|call| {
-            #[cfg(test)]
-            CALL_LOOKUP_STEPS.with(|steps| steps.set(steps.get() + 1));
-            (call.event, call.ordinal).cmp(&(event, block_ordinal))
-        }).ok()?;
+        let index = calls
+            .binary_search_by(|call| {
+                #[cfg(test)]
+                CALL_LOOKUP_STEPS.with(|steps| steps.set(steps.get() + 1));
+                (call.event, call.ordinal).cmp(&(event, block_ordinal))
+            })
+            .ok()?;
         Some(&calls[index].call)
     }
 
@@ -1332,11 +1334,21 @@ mod tests {
             let index = before.append(&entries, split, None);
             for event in 0..=entries.len() {
                 for ordinal in 0..=3 {
-                    let expected = index.turn_of_event(event)
+                    let expected = index
+                        .turn_of_event(event)
                         .and_then(|turn| index.turns.get(turn))
-                        .and_then(|turn| turn.calls.iter().find(|call| call.event == event && call.ordinal == ordinal))
+                        .and_then(|turn| {
+                            turn.calls
+                                .iter()
+                                .find(|call| call.event == event && call.ordinal == ordinal)
+                        })
                         .map(|call| format!("{:?}", call.call));
-                    assert_eq!(index.call_at(event, ordinal).map(|call| format!("{call:?}")), expected);
+                    assert_eq!(
+                        index
+                            .call_at(event, ordinal)
+                            .map(|call| format!("{call:?}")),
+                        expected
+                    );
                 }
             }
         }
