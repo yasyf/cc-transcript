@@ -186,6 +186,10 @@ fn public_catalog_observation_old_alias_names_use_current_logical_child_metadata
     let foreign = context("public-observation-alias-b");
     let mut request = public_catalog_request(&source, &["wanted", "foreign-only"]);
     request.insert("roots", json!([alias]));
+    *store.canonical_error_hook.lock().unwrap() = Some(std::sync::Arc::new(|path| {
+        eprintln!("public112-alias-canonical {}", path.display());
+        None
+    }));
     let first = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(first["usage"]["discovery_entries_examined"].as_u64(), Some(1));
     assert!(first["data"]["sessions"].as_array().unwrap().is_empty());

@@ -334,6 +334,7 @@ fn public_review_ordinary_error_batch(headroom: Option<usize>) -> bool {
     let sealed_hook = Arc::clone(&sealed);
     let weak = Arc::downgrade(&store);
     *store.canonical_error_hook.lock().unwrap() = Some(Arc::new(move |path| {
+        eprintln!("public112-ordinary-canonical {}", path.display());
         let store = weak.upgrade().expect("live ordinary-error fixture");
         if path.file_name().is_some_and(|name| targets.contains(name)) {
             assert_eq!(std::fs::canonicalize(path.parent().unwrap()).unwrap(),canonical_inputs);
@@ -486,6 +487,10 @@ fn public_catalog_review_a_closed_positive_does_not_materialize_a_later_authorit
     let mut narrowed = owner.clone();
     narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[wanted.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
     let materialized = store.authority_paths_materialized.load(Ordering::Relaxed);
+    *store.canonical_error_hook.lock().unwrap() = Some(Arc::new(|path| {
+        eprintln!("public112-narrowed-positive-canonical {}", path.display());
+        None
+    }));
     let response = store.request(&json!({"schema":SCHEMA,"id":"lazy-authority-positive-resume","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
     assert_eq!(response["status"].as_str(), Some("ok"), "{response:?}");
     assert_eq!(response["data"]["sessions"][0]["status"].as_str(), Some("ok"));
