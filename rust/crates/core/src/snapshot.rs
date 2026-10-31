@@ -7878,17 +7878,29 @@ impl NativeStore {
         let mut reservation = self.reserve_projection(context, 0)?;
         let source = self.direct_tail_source(stamp, context);
         let cached = source.as_ref().and_then(|source| {
-            self.lock_state().generations.get(&snapshot_key(source))
+            self.lock_state()
+                .generations
+                .get(&snapshot_key(source))
                 .and_then(|record| record.direct_tail.as_ref())
                 .filter(|tail| tail.stamp == stamp && tail.count == count && tail.budget == budget)
                 .cloned()
         });
-        let output_limit = limits.max_output_bytes.min(self.config.output).min(MAX_DATA_BYTES);
+        let output_limit = limits
+            .max_output_bytes
+            .min(self.config.output)
+            .min(MAX_DATA_BYTES);
         if let Some(tail) = cached {
-            self.extend_projection_reservation(&mut reservation, context, tail.read.saturating_mul(6))?;
+            self.extend_projection_reservation(
+                &mut reservation,
+                context,
+                tail.read.saturating_mul(6),
+            )?;
             cancel.check(limits.deadline_unix_ms)?;
             if !Self::matches_prefix(SourceStamp::of(&file.metadata().map_err(io_error)?), stamp) {
-                return Err(SnapshotError::new(Status::Changed, "source changed while reading"));
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "source changed while reading",
+                ));
             }
             usage[7] += 1;
             return Self::tail_data(&tail.lines, stamp, count, output_limit, tail.exhausted);
@@ -7953,7 +7965,19 @@ impl NativeStore {
         let response = Self::tail_data(&lines, stamp, count, output_limit, exhausted)?;
         drop(pending);
         if let Some(source) = source {
-            self.retain_direct_tail(source, stamp, count, budget, read, exhausted, lines, context, cancel, limits.deadline_unix_ms, &mut reservation);
+            self.retain_direct_tail(
+                source,
+                stamp,
+                count,
+                budget,
+                read,
+                exhausted,
+                lines,
+                context,
+                cancel,
+                limits.deadline_unix_ms,
+                &mut reservation,
+            );
         }
         Ok(response)
     }
