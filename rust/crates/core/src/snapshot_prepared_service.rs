@@ -467,7 +467,11 @@ impl NativeStore {
 
     fn canonical_path(&self, path: &Path) -> std::io::Result<PathBuf> {
         #[cfg(test)]
-        self.source_resolutions.fetch_add(1, Ordering::Relaxed);
+        {
+            self.source_resolutions.fetch_add(1,Ordering::Relaxed);
+            let hook = self.canonical_error_hook.lock().expect("canonical error hook").clone();
+            if let Some(error) = hook.and_then(|hook| hook(path)) { return Err(error); }
+        }
         std::fs::canonicalize(path)
     }
 
@@ -1822,7 +1826,7 @@ impl NativeStore {
                 CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
             )? {
                 CatalogResolution::Ready { paths, reservation, certificate } => (paths, Some(reservation), certificate),
-                CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Checked(_) => unreachable!("synchronous catalog lookup"),
+                CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Checked(_) | CatalogResolution::Public { .. } => unreachable!("synchronous catalog lookup"),
             }
         };
         let mut members = Vec::new();
@@ -1979,6 +1983,11 @@ impl NativeStore {
         context: &Value,
         reservation: Option<&mut ProjectionReservation<'_>>,
     ) -> Result<(), SnapshotError> {
+        if let Some(certificate) = membership.catalog {
+            if certificate.authority != self.catalog_authority(context)? {
+                return Err(SnapshotError::new(Status::Changed, "registered catalog authority changed before publication"));
+            }
+        }
         let mut state = self.lock_state();
         Self::prune(&mut state);
         let _catalog_pin = membership.catalog.map(|certificate| {

@@ -1,9 +1,3 @@
-fn unknown_dtype_restricted(label: &str, root: &Path) -> Value {
-    let mut owner = context(label);
-    owner.insert("authority", json!({"kind":"restricted_roots","roots":[root],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
-    owner
-}
-
 #[test]
 fn registered_catalog_borrowed_parent_proof_rejects_stable_namespace_replacement_before_old_fd_metadata() {
     for observe_edge in [false,true] {

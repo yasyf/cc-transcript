@@ -245,8 +245,8 @@ fn registered_catalog_remembers_an_earlier_chunk_before_a_later_error() {
             for node in catalog.directories.values() {
                 assert!(node.observed.issue.as_ref().is_none_or(|(status, _)| *status != Status::PermissionDenied));
                 for edge in &node.edges {
-                    unresolved |= edge.binding.is_none();
-                    assert!(edge.binding.as_ref().and_then(|binding| binding.issue.as_ref()).is_none_or(|(status, _)| *status != Status::PermissionDenied));
+                    unresolved |= matches!(edge.binding, CatalogNameBinding::Unobserved);
+                    assert!(edge.binding.issue.as_ref().is_none_or(|(status, _)| *status != Status::PermissionDenied));
                 }
             }
         }
@@ -423,7 +423,9 @@ fn registered_catalog_retries_transient_directory_issues_in_dfs_order() {
             drop(key);
             drop(reservation);
             scope
-        }, &roots, &owner, &mut budget).unwrap();
+        }, &roots, &mut budget).unwrap();
+    catalog.check_roots(&store,&Cancellation::default(),now_ms()+750,&mut budget).unwrap();
+    catalog.sync_routes(&mut budget).unwrap();
     catalog.pending.clear();
     for directory in [&early, &late] {
         let identity = SourceStamp::of(&std::fs::metadata(directory).unwrap()).identity;
@@ -469,7 +471,9 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
             drop(key);
             drop(reservation);
             scope
-        }, &roots, &owner, &mut budget).unwrap();
+        }, &roots, &mut budget).unwrap();
+    catalog.check_roots(&store,&Cancellation::default(),now_ms()+750,&mut budget).unwrap();
+    catalog.sync_routes(&mut budget).unwrap();
         let root_identity = SourceStamp::of(&std::fs::metadata(&source.directory).unwrap()).identity;
         let mut usage = [0;20];
         catalog.advance(&store, &Cancellation::default(), now_ms() + 750, usize::MAX, &mut usage, &mut budget).unwrap();
@@ -485,7 +489,7 @@ fn registered_catalog_retry_admission_preserves_the_unpublished_frontier() {
             catalog.remove_directory_index(*identity);
             let node = catalog.directories.get_mut(identity).unwrap();
             let before = node.owned_bytes();
-            node.edges.clear(); node.directories.clear(); node.conditional.clear(); node.issues.clear();
+            node.edges.clear(); node.directories.clear(); node.symlinks.clear(); node.issues.clear();
             node.payload_bytes = 0;
             node.scan = CatalogScan::Issue { status: Status::Changed, reason: "transient retry".to_owned(), position: 0, attempt: 1 };
             catalog.directory_bytes = catalog.directory_bytes - before + node.owned_bytes();
@@ -1016,8 +1020,9 @@ fn registered_catalog_cancelled_name_proof_retains_the_consumed_entry_without_re
             let slot = state.catalogs.values().next().expect("native catalog owner");
             let cell = slot.cell.lock().unwrap();
             let CatalogCell::Idle(catalog) = &*cell else { panic!("cancelled catalog is settled"); };
-            assert!(catalog.pending_name.is_some(), "a consumed NAME must survive private cancellation");
-            if unknown { assert_eq!(catalog.pending_name.as_ref().unwrap().entry.kind, libc::DT_UNKNOWN); }
+            let pending = catalog.directories.values().find_map(|node| node.pending_name.as_ref());
+            assert!(pending.is_some(), "a consumed NAME must survive private cancellation");
+            if unknown { assert!(pending.unwrap().1.kind.is_none()); }
             assert_eq!(catalog.charge(), catalog.audit_charge());
         }
         store.assert_conserved();

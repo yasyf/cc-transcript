@@ -1,6 +1,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CatalogCertificate {
     scope: [u8; 64],
+    authority: [u8; 32],
     incarnation: u64,
     revision: u64,
 }
@@ -78,9 +79,9 @@ struct CatalogInput<'a> {
     roots: &'a [Value],
 }
 
-enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Check(CatalogCertificate) }
+enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Check(CatalogCertificate), Public(&'a mut CatalogLocateQuery) }
 
-enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>, CatalogCertificate), Checked(bool), Pending }
+enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>, CatalogCertificate), Checked(bool), Pending, Public(CatalogLocatePage) }
 
 enum CatalogResolution<'a> {
     Indexed,
@@ -91,6 +92,7 @@ enum CatalogResolution<'a> {
         certificate: Option<CatalogCertificate>,
     },
     Pending(Arc<CatalogSlot>),
+    Public { page:CatalogLocatePage, slot:Arc<CatalogSlot>, reservation:ProjectionReservation<'a> },
 }
 
 struct RegisteredBuild {
@@ -163,19 +165,35 @@ impl NativeStore {
         Ok(())
     }
 
+    fn catalog_authority(&self, context: &Value) -> Result<[u8; 32], SnapshotError> {
+        struct DigestWriter(Sha256);
+        impl std::fmt::Write for DigestWriter {
+            fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                self.0.update(value.as_bytes());
+                Ok(())
+            }
+        }
+        let _reservation = self.reserve_projection(context, catalog_canonical_scratch(&context["authority"]))?;
+        let mut writer = DigestWriter(Sha256::new());
+        crate::ids::write_canonical(&context["authority"], &mut writer).map_err(invalid)?;
+        Ok(writer.0.finalize().into())
+    }
+
     fn catalog_key<'a>(
         &'a self,
         roots: &[Value],
         context: &Value,
     ) -> Result<(String, ProjectionReservation<'a>), SnapshotError> {
+        self.authority(context,None)?;
+        let uid = json!(unsafe { libc::geteuid() });
         let wrapper_scratch = map_growth(&HashMap::<&str, &Value>::new(), 2)
             + 2 * size_of::<(&str, &Value)>();
-        let scratch = wrapper_scratch + catalog_canonical_scratch(&context["authority"])
+        let scratch = wrapper_scratch + catalog_canonical_scratch(&uid)
             .max(roots.iter().map(catalog_canonical_scratch).max().unwrap_or(0));
         let mut reservation = self.reserve_projection(context,
-            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&context["authority"])
+            LOCATE_USER_PATH_SLOTS + 2 * value_bytes(&uid)
                 + 2 * (roots.len() * size_of::<Value>() + roots.iter().map(value_bytes).sum::<usize>()) + 1024 + scratch)?;
-        let binding = json!({"authority":context["authority"],"roots":roots});
+        let binding = json!({"effective_uid":uid,"roots":roots});
         let bytes = crate::ids::canonical_json_size(&binding).map_err(invalid)?;
         self.extend_projection_reservation(&mut reservation, context, bytes)?;
         self.before_decode("catalog_key");
@@ -230,6 +248,14 @@ impl NativeStore {
                 slot
             }
         };
+        if let CatalogMode::Public(query) = &mut mode {
+            let owner = Arc::as_ptr(&slot) as usize;
+            if query.catalog_owner.is_some_and(|prior| prior != owner) {
+                return Err(SnapshotError::new(Status::StaleCursor,"location catalog owner changed"));
+            }
+            query.catalog_owner = Some(owner);
+            query.retirement_hook.arm(&self.lock_state().ledger.queue,LedgerEvent::Catalog(owner));
+        }
         let mut catalog = {
             let mut state = self.lock_state();
             loop {
@@ -254,9 +280,9 @@ impl NativeStore {
         };
         let old_bytes = slot.accounted.load(Ordering::Acquire);
         let outcome = (|| {
-            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes: 0 };
+            let mut budget = CatalogBudget { store: self, context, reservation: &mut reservation, attempt: self.sequence.fetch_add(1, Ordering::Relaxed) as u64, scratch_bytes:0 };
             if catalog.is_none() {
-                catalog = Some(SourceCatalog::new(self, key.as_bytes().try_into().expect("catalog scope digest size"), roots, context, &mut budget)?);
+                catalog = Some(SourceCatalog::new(self, key.as_bytes().try_into().expect("catalog scope digest size"), roots, &mut budget)?);
             }
             let catalog = catalog.as_mut().expect("source catalog");
             match &mut mode {
@@ -264,16 +290,20 @@ impl NativeStore {
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     let before = usage[17];
-                    catalog.advance(self, cancel, remaining.deadline_unix_ms,
-                        self.config.event_step.min(remaining.max_discovery_entries), usage, &mut budget)?;
-                    remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17] - before) as usize);
+                    catalog.advance(self,cancel,remaining.deadline_unix_ms,
+                        self.config.event_step.min(remaining.max_discovery_entries),usage,&mut budget)?;
+                    remaining.max_discovery_entries = remaining.max_discovery_entries.saturating_sub((usage[17]-before) as usize);
                     catalog.check_frontier(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
                     if catalog.geometry_ready(self, ids, chunk_size, probe) { return Ok(CatalogWorkResult::Indexed); }
                     if remaining.max_discovery_entries == 0 { return Err(SnapshotError::new(Status::Incomplete, "registered location incomplete")); }
                     return Ok(CatalogWorkResult::Pending);
                 }
+                CatalogMode::Public(query) => return catalog.locate_page(self,ids,context,cancel,remaining,usage,query,&mut budget).map(CatalogWorkResult::Public),
                 CatalogMode::Check(expected) => {
-                    let issue = catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    if expected.authority != self.catalog_authority(context)? {
+                        return Ok(CatalogWorkResult::Checked(false));
+                    }
+                    let issue = catalog.refresh(self,cancel,remaining.deadline_unix_ms,&mut budget)?;
                     return Ok(CatalogWorkResult::Checked(issue.is_none() && expected.key() == key && expected.matches(catalog)));
                 }
                 CatalogMode::Locate => {}
@@ -330,12 +360,14 @@ impl NativeStore {
             cancel.check(remaining.deadline_unix_ms)?;
             Ok(CatalogWorkResult::Paths(paths, CatalogCertificate {
                 scope: key.as_bytes().try_into().expect("catalog scope digest size"),
+                authority: self.catalog_authority(context)?,
                 incarnation: catalog.incarnation,
                 revision: catalog.decision_revision,
             }))
         })();
         {
             let mut state = self.lock_state();
+            if let Some(catalog) = catalog.as_mut() { catalog.prune_retired(); }
             let new_bytes = catalog.as_ref().map_or(0, |catalog| catalog.charge() - size_of::<SourceCatalog>());
             let added = new_bytes.saturating_sub(old_bytes);
             assert!(added <= reservation.bytes, "source catalog outgrew its admitted allocation");
@@ -355,6 +387,7 @@ impl NativeStore {
             CatalogWorkResult::Checked(valid) => Ok(CatalogResolution::Checked(valid)),
             CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
             CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
+            CatalogWorkResult::Public(page) => Ok(CatalogResolution::Public { page,slot,reservation }),
         }
     }
 }
@@ -422,7 +455,7 @@ impl NativeStore {
                 drop(scope);
                 self.prepare_graph_ready(request, context, cancel, usage, remaining)
             }
-            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
             CatalogResolution::Pending(slot) => {
                 self.extend_projection_reservation(&mut reservation, context,
                     size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
@@ -461,7 +494,7 @@ impl NativeStore {
             CatalogResolution::Indexed => {
                 self.prepare_graph_ready(&build.request, &build.context, cancel, usage, build.remaining)
             }
-            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) | CatalogResolution::Public { .. } => unreachable!("catalog indexing does not materialize paths"),
             CatalogResolution::Pending(slot) => self.retain_registered_build(token, build, slot, reservation),
         }
     }

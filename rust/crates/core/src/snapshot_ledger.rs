@@ -178,6 +178,7 @@ pub(crate) fn arc_slice_bytes<T>(len: usize) -> usize {
 pub enum LedgerEvent {
     Generation(usize),
     Chunk(usize),
+    Catalog(usize),
 }
 
 #[derive(Default)]
