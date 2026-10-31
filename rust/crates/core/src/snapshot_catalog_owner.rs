@@ -1,7 +1,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CatalogCertificate {
     scope: [u8; 64],
-    authority: [u8; 32],
     incarnation: u64,
     revision: u64,
 }
@@ -165,20 +164,6 @@ impl NativeStore {
         Ok(())
     }
 
-    fn catalog_authority(&self, context: &Value) -> Result<[u8; 32], SnapshotError> {
-        struct DigestWriter(Sha256);
-        impl std::fmt::Write for DigestWriter {
-            fn write_str(&mut self, value: &str) -> std::fmt::Result {
-                self.0.update(value.as_bytes());
-                Ok(())
-            }
-        }
-        let _reservation = self.reserve_projection(context, catalog_canonical_scratch(&context["authority"]))?;
-        let mut writer = DigestWriter(Sha256::new());
-        crate::ids::write_canonical(&context["authority"], &mut writer).map_err(invalid)?;
-        Ok(writer.0.finalize().into())
-    }
-
     fn catalog_key<'a>(
         &'a self,
         roots: &[Value],
@@ -300,9 +285,6 @@ impl NativeStore {
                 }
                 CatalogMode::Public(query) => return catalog.locate_page(self,ids,context,cancel,remaining,usage,query,&mut budget).map(CatalogWorkResult::Public),
                 CatalogMode::Check(expected) => {
-                    if expected.authority != self.catalog_authority(context)? {
-                        return Ok(CatalogWorkResult::Checked(false));
-                    }
                     let issue = catalog.refresh(self,cancel,remaining.deadline_unix_ms,&mut budget)?;
                     return Ok(CatalogWorkResult::Checked(issue.is_none() && expected.key() == key && expected.matches(catalog)));
                 }
@@ -360,7 +342,6 @@ impl NativeStore {
             cancel.check(remaining.deadline_unix_ms)?;
             Ok(CatalogWorkResult::Paths(paths, CatalogCertificate {
                 scope: key.as_bytes().try_into().expect("catalog scope digest size"),
-                authority: self.catalog_authority(context)?,
                 incarnation: catalog.incarnation,
                 revision: catalog.decision_revision,
             }))

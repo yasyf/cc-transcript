@@ -1983,11 +1983,6 @@ impl NativeStore {
         context: &Value,
         reservation: Option<&mut ProjectionReservation<'_>>,
     ) -> Result<(), SnapshotError> {
-        if let Some(certificate) = membership.catalog {
-            if certificate.authority != self.catalog_authority(context)? {
-                return Err(SnapshotError::new(Status::Changed, "registered catalog authority changed before publication"));
-            }
-        }
         let mut state = self.lock_state();
         Self::prune(&mut state);
         let _catalog_pin = membership.catalog.map(|certificate| {
