@@ -245,7 +245,7 @@ fn registered_catalog_remembers_an_earlier_chunk_before_a_later_error() {
             for node in catalog.directories.values() {
                 assert!(node.observed.issue.as_ref().is_none_or(|(status, _)| *status != Status::PermissionDenied));
                 for edge in &node.edges {
-                    unresolved |= matches!(edge.binding, CatalogNameBinding::Unobserved);
+                    unresolved |= matches!(edge.binding, CatalogNameBinding::CurrentObservationNeeded);
                     assert!(edge.binding.issue.as_ref().is_none_or(|(status, _)| *status != Status::PermissionDenied));
                 }
             }
