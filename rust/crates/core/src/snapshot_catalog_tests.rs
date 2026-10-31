@@ -1016,8 +1016,8 @@ fn registered_catalog_cancelled_name_proof_retains_the_consumed_entry_without_re
             let slot = state.catalogs.values().next().expect("native catalog owner");
             let cell = slot.cell.lock().unwrap();
             let CatalogCell::Idle(catalog) = &*cell else { panic!("cancelled catalog is settled"); };
-            assert!(catalog.pending_name.is_some(), "a consumed NAME must survive private cancellation");
-            if unknown { assert_eq!(catalog.pending_name.as_ref().unwrap().entry.kind, libc::DT_UNKNOWN); }
+            let pending = catalog.directories.values().find_map(|node| node.pending_name.as_ref()).expect("a consumed NAME must survive private cancellation");
+            if unknown { assert_eq!(pending.entry.kind, libc::DT_UNKNOWN); }
             assert_eq!(catalog.charge(), catalog.audit_charge());
         }
         store.assert_conserved();
@@ -1070,4 +1070,106 @@ fn registered_catalog_ancestor_aba_rejects_an_empty_foreign_stream() {
     assert_eq!(fresh["status"].as_str(), Some("ok"), "{fresh:?}");
     assert_eq!(first_entries + fresh_entries, 2);
     store.assert_conserved();
+}
+
+#[test]
+fn registered_catalog_pending_name_survives_earlier_frontier_reordering() {
+    for unknown in [false, true] {
+        for retry in [false, true] {
+            let source = Source::new("");
+            let early = source.directory.join("early");
+            let late = source.directory.join("late");
+            for directory in [&early, &late] {
+                std::fs::create_dir(directory).unwrap();
+                std::fs::write(directory.join("wanted.jsonl"), "").unwrap();
+            }
+            let store = store();
+            store.directory_force_unknown.store(unknown, Ordering::Relaxed);
+            let owner = context("catalog-pending-name-reorder");
+            let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
+            let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 1, scratch_bytes: 0 };
+            let roots = [json!(late), json!(early)];
+            let scope = {
+                let (key, reservation) = store.catalog_key(&roots, &owner).unwrap();
+                let scope = key.as_bytes().try_into().unwrap();
+                drop(key);
+                drop(reservation);
+                scope
+            };
+            let mut catalog = SourceCatalog::new(&store, scope, &roots, &owner, &mut budget).unwrap();
+            let early_id = SourceStamp::of(&std::fs::metadata(&early).unwrap()).identity;
+            let late_id = SourceStamp::of(&std::fs::metadata(&late).unwrap()).identity;
+            let cancel = Cancellation::default();
+            let cancel_name = cancel.clone();
+            let names = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&names);
+            *store.location_metadata_hook.lock().unwrap() = Some(("catalog_name", Arc::new(move || {
+                if observed.fetch_add(1, Ordering::Relaxed) == 1 { cancel_name.cancel(); }
+            })));
+            let mut usage = [0;20];
+            let error = catalog.advance(&store, &cancel, now_ms() + 30_000, usize::MAX, &mut usage, &mut budget).unwrap_err();
+            *store.location_metadata_hook.lock().unwrap() = None;
+            assert_eq!(error.status, Status::Cancelled);
+            assert_eq!(usage[17], 2);
+            assert_eq!(catalog.pending.last(), Some(&late_id));
+            let CatalogScan::Open(reader) = &catalog.directories.get(&late_id).unwrap().scan else { panic!("late directory stays open"); };
+            assert_eq!(Arc::strong_count(&reader.entries), 2);
+            assert_eq!(catalog.charge(), catalog.audit_charge());
+            if retry {
+                catalog.remove_directory_index(early_id);
+                budget.reserve("transient retry".len() + vec_growth(&catalog.retry_issues, 1)).unwrap();
+                let node = catalog.directories.get_mut(&early_id).unwrap();
+                let before = node.owned_bytes();
+                node.edges.clear(); node.directories.clear(); node.conditional.clear(); node.issues.clear();
+                node.payload_bytes = 0;
+                node.scan = CatalogScan::Issue { status: Status::Changed, reason: "transient retry".to_owned(), position: 0, attempt: 1 };
+                catalog.directory_bytes = catalog.directory_bytes - before + node.owned_bytes();
+                catalog.retry_issues.push(early_id);
+                catalog.record_issue(early_id, 0);
+                budget.attempt = 2;
+            } else {
+                std::fs::File::open(&early).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+                catalog.refresh(&store, &Cancellation::default(), now_ms() + 30_000, &mut budget).unwrap();
+                assert_eq!(catalog.pending.last(), Some(&early_id));
+            }
+            let cancel = Cancellation::default();
+            let cancel_name = cancel.clone();
+            *store.location_metadata_hook.lock().unwrap() = Some(("catalog_name", Arc::new(move || cancel_name.cancel())));
+            let error = catalog.advance(&store, &cancel, now_ms() + 30_000, usize::MAX, &mut usage, &mut budget).unwrap_err();
+            *store.location_metadata_hook.lock().unwrap() = None;
+            assert_eq!(error.status, Status::Cancelled);
+            assert_eq!(catalog.pending.last(), Some(&early_id));
+            assert_eq!(usage[17], 3);
+            for identity in [early_id, late_id] {
+                let CatalogScan::Open(reader) = &catalog.directories.get(&identity).unwrap().scan else { panic!("both consumed NAME readers stay open"); };
+                assert_eq!(Arc::strong_count(&reader.entries), 2);
+            }
+            assert_eq!(catalog.charge(), catalog.audit_charge());
+            let charge = catalog.charge();
+            let pending = catalog.pending.clone();
+            let used = store.retained_accounted_bytes();
+            let filler = store.reserve_projection(&owner, store.config.retained - used).unwrap();
+            let error = catalog.advance(&store, &Cancellation::default(), now_ms() + 30_000, 0, &mut usage, &mut budget).unwrap_err();
+            assert_eq!(error.status, Status::RetainedLimit);
+            assert_eq!(catalog.pending, pending);
+            assert_eq!(catalog.charge(), charge);
+            assert_eq!(catalog.charge(), catalog.audit_charge());
+            drop(filler);
+            catalog.advance(&store, &Cancellation::default(), now_ms() + 30_000, 0, &mut usage, &mut budget).unwrap();
+            let plan = catalog.read_plan(&Cancellation::default(), now_ms() + 30_000, None, &mut budget).unwrap();
+            let paths = catalog.try_locate(&store, &[json!("wanted")], &owner, &Cancellation::default(), now_ms() + 30_000, &plan, &mut budget).unwrap().expect("earlier closed prefix wins before the parked late NAME");
+            assert_eq!(paths.get("wanted"), Some(&early.join("wanted.jsonl")));
+            let CatalogScan::Open(reader) = &catalog.directories.get(&late_id).unwrap().scan else { panic!("late NAME is still parked"); };
+            assert_eq!(Arc::strong_count(&reader.entries), 2);
+            catalog.advance(&store, &Cancellation::default(), now_ms() + 30_000, usize::MAX, &mut usage, &mut budget).unwrap();
+            assert!(catalog.complete);
+            assert_eq!(usage[17], 3);
+            assert_eq!(catalog.charge(), catalog.audit_charge());
+            eprintln!("catalog_pending_name_reorder unknown={unknown} retry={retry} entries={}", usage[17]);
+            drop(catalog);
+            drop(budget);
+            drop(reservation);
+            store.assert_conserved();
+        }
+    }
 }

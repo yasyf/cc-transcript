@@ -157,6 +157,7 @@ struct CatalogDirectory {
     conditional: Vec<usize>,
     issues: Vec<usize>,
     scan: CatalogScan,
+    pending_name: Option<CatalogPendingName>,
     payload_bytes: usize,
 }
 
@@ -166,6 +167,7 @@ impl CatalogDirectory {
             + self.edges.capacity() * size_of::<CatalogEdge>()
             + (self.directories.capacity() + self.conditional.capacity() + self.issues.capacity()) * size_of::<usize>()
             + self.scan.owned_bytes()
+            + self.pending_name.as_ref().map_or(0, CatalogPendingName::owned_bytes)
     }
 }
 
@@ -233,7 +235,6 @@ struct SourceCatalog {
     issues_dirty: bool,
     pending: Vec<SourceIdentity>,
     pending_edge: Option<CatalogPendingEdge>,
-    pending_name: Option<CatalogPendingName>,
     pending_issue: Option<CatalogPendingIssue>,
     context_bytes: usize,
     roots_bytes: usize,
@@ -281,7 +282,6 @@ impl SourceCatalog {
             + self.retry_issues.capacity() * size_of::<SourceIdentity>()
             + self.pending.capacity() * size_of::<SourceIdentity>()
             + self.pending_edge.as_ref().map_or(0, CatalogPendingEdge::owned_bytes)
-            + self.pending_name.as_ref().map_or(0, CatalogPendingName::owned_bytes)
             + self.pending_issue.as_ref().map_or(0, |issue| issue.reason.capacity())
     }
 
@@ -291,12 +291,23 @@ impl SourceCatalog {
             + self.roots.capacity() * size_of::<CatalogRoot>()
             + self.roots.iter().map(|root| root.path.capacity() + root.binding.payload_bytes()).sum::<usize>()
             + self.directories.reserved_bytes() + self.candidates.reserved_bytes()
-            + self.directories.values().map(|node| {
+            + self.directories.iter().map(|(identity, node)| {
                 node.canonical.capacity() + node.observed.payload_bytes()
                     + node.edges.capacity() * size_of::<CatalogEdge>()
                     + node.edges.iter().map(|edge| edge.name.capacity() + edge.binding.as_ref().map_or(0, CatalogBinding::payload_bytes)).sum::<usize>()
                     + (node.directories.capacity() + node.conditional.capacity() + node.issues.capacity()) * size_of::<usize>()
                     + node.scan.owned_bytes()
+                    + node.pending_name.as_ref().map_or(0, |pending| {
+                        let CatalogPendingName { directory, entry } = pending;
+                        assert_eq!(directory, identity);
+                        assert!(self.pending.contains(identity));
+                        let OpenDirectoryEntry { directory: opened, name, kind: _, inode: _ } = entry;
+                        let CatalogScan::Open(reader) = &node.scan else {
+                            panic!("pending NAME retains its open directory");
+                        };
+                        assert!(Arc::ptr_eq(opened, &reader.entries));
+                        name.capacity()
+                    })
             }).sum::<usize>()
             + self.candidates.iter().map(|(key, matches)| key.capacity() + matches.capacity() * size_of::<CatalogCandidate>()).sum::<usize>()
             + self.route_index.reserved_bytes()
@@ -304,15 +315,6 @@ impl SourceCatalog {
             + self.retry_issues.capacity() * size_of::<SourceIdentity>()
             + self.pending.capacity() * size_of::<SourceIdentity>()
             + self.pending_edge.as_ref().map_or(0, CatalogPendingEdge::owned_bytes)
-            + self.pending_name.as_ref().map_or(0, |pending| {
-                let CatalogPendingName { directory, entry } = pending;
-                let OpenDirectoryEntry { directory: opened, name, kind: _, inode: _ } = entry;
-                let CatalogScan::Open(reader) = &self.directories.get(directory).expect("pending NAME parent").scan else {
-                    panic!("pending NAME retains its open directory");
-                };
-                assert!(Arc::ptr_eq(opened, &reader.entries));
-                name.capacity()
-            })
             + self.pending_issue.as_ref().map_or(0, |issue| issue.reason.capacity())
     }
 
@@ -338,7 +340,7 @@ impl SourceCatalog {
             context: json!({"authority":authority}), roots,
             directories: Table::new(work.clone()), candidates: Table::new(work.clone()),
             route_index: Table::new(work), route_bytes: 0, routes_dirty: false, retry_issues: Vec::new(), edge_issues: 0, issue_bound: None, issues_dirty: false,
-            pending: Vec::new(), pending_edge: None, pending_name: None, pending_issue: None,
+            pending: Vec::new(), pending_edge: None, pending_issue: None,
             context_bytes: 0, roots_bytes: 0, directory_bytes: 0, index_bytes: 0,
             incarnation: store.sequence.fetch_add(1, Ordering::Relaxed) as u64,
             decision_revision: 0, selection_revision: 0, epoch: 0, complete: false,
@@ -415,6 +417,7 @@ impl SourceCatalog {
             let before = node.owned_bytes();
             node.edges.clear(); node.directories.clear(); node.conditional.clear(); node.issues.clear();
             node.payload_bytes = 0; node.scan = CatalogScan::Gone;
+            node.pending_name = None;
             self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
         }
         let routes = &self.route_index;
@@ -430,7 +433,6 @@ impl SourceCatalog {
         self.retry_issues.extend(routes.keys().filter(|identity|
             matches!(nodes.get(identity).expect("catalog route node").scan, CatalogScan::Issue { .. })).copied());
         if self.pending_edge.as_ref().is_some_and(|edge| !routes.contains_key(&edge.directory)) { self.pending_edge = None; }
-        if self.pending_name.as_ref().is_some_and(|name| !routes.contains_key(&name.directory)) { self.pending_name = None; }
         if self.pending_issue.as_ref().is_some_and(|issue| !routes.contains_key(&issue.directory)) { self.pending_issue = None; }
         self.edge_issues = routes.keys().map(|identity| nodes.get(identity).expect("catalog route node").issues.len()).sum();
         self.routes_dirty = false;
@@ -566,7 +568,7 @@ impl SourceCatalog {
         let observed = CatalogBinding { canonical: Some(canonical.clone()), stamp: Some(stamp), directory: true, regular: false, issue: None };
         let node = CatalogDirectory {
             canonical, observed, edges: Vec::new(), directories: Vec::new(), conditional: Vec::new(), issues: Vec::new(),
-            scan: CatalogScan::Queued, payload_bytes: 0,
+            scan: CatalogScan::Queued, pending_name: None, payload_bytes: 0,
         };
         self.directory_bytes += node.owned_bytes();
         self.directories.insert(stamp.identity, node);
@@ -732,6 +734,7 @@ impl SourceCatalog {
             let before = node.owned_bytes();
             node.edges.clear(); node.directories.clear(); node.conditional.clear(); node.issues.clear(); node.payload_bytes = 0;
             node.scan = CatalogScan::Queued;
+            node.pending_name = None;
             self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
             self.pending.push(identity);
             requeued = true;
@@ -769,7 +772,13 @@ impl SourceCatalog {
                 self.commit_edge(pending);
                 continue;
             }
-            if let Some(pending) = self.pending_name.as_ref() {
+            let Some(identity) = self.pending.last().copied() else {
+                self.decision_revision += 1;
+                self.epoch += 1;
+                self.complete = true;
+                return Ok(());
+            };
+            if let Some(pending) = self.directories.get(&identity).expect("catalog frontier directory").pending_name.as_ref() {
                 let identity = pending.directory;
                 assert_eq!(self.pending.last(), Some(&identity));
                 let position = self.directories.get(&identity).expect("pending NAME directory").edges.len();
@@ -801,7 +810,10 @@ impl SourceCatalog {
                     }
                     CatalogNameObservation::Unproven => return Err(self.reject_directory_observation(identity)),
                 };
-                let pending = self.pending_name.take().expect("proved catalog NAME");
+                let node = self.directories.get_mut(&identity).expect("proved NAME directory");
+                let before = node.owned_bytes();
+                let pending = node.pending_name.take().expect("proved catalog NAME");
+                self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
                 self.decision_revision += 1;
                 self.pending_edge = Some(CatalogPendingEdge { directory: identity,
                     edge: CatalogEdge { name: pending.entry.name, binding }, revalidate });
@@ -809,12 +821,6 @@ impl SourceCatalog {
                 store.after_location_metadata("entry");
                 continue;
             }
-            let Some(identity) = self.pending.last().copied() else {
-                self.decision_revision += 1;
-                self.epoch += 1;
-                self.complete = true;
-                return Ok(());
-            };
             if examined == max_entries { return Ok(()); }
             let node = self.directories.get(&identity).expect("catalog directory");
             if matches!(node.scan, CatalogScan::Queued) {
@@ -881,7 +887,9 @@ impl SourceCatalog {
             examined += 1;
             usage[17] += 1;
             budget.retain_scratch(entry.name.capacity());
-            self.pending_name = Some(CatalogPendingName { directory: identity, entry });
+            let before = node.owned_bytes();
+            node.pending_name = Some(CatalogPendingName { directory: identity, entry });
+            self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
         }
     }
 
@@ -949,9 +957,9 @@ impl SourceCatalog {
         node.issues.clear();
         node.payload_bytes = 0;
         node.scan = CatalogScan::Unresolved;
+        node.pending_name = None;
         self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
         self.pending.retain(|pending| *pending != identity);
-        if self.pending_name.as_ref().is_some_and(|pending| pending.directory == identity) { self.pending_name = None; }
         if self.pending_edge.as_ref().is_some_and(|pending| pending.directory == identity) { self.pending_edge = None; }
         if self.pending_issue.as_ref().is_some_and(|pending| pending.directory == identity) { self.pending_issue = None; }
         self.complete = false;
@@ -972,7 +980,7 @@ impl SourceCatalog {
         node.issues.clear();
         node.payload_bytes = 0;
         node.scan = CatalogScan::Queued;
-        self.pending_name = None;
+        node.pending_name = None;
         self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
         self.complete = false;
         self.routes_dirty = true;
@@ -994,13 +1002,11 @@ impl SourceCatalog {
         let same_directory = fresh.directory && fresh.stamp.is_some_and(|stamp| stamp.identity == identity);
         node.observed = fresh;
         node.scan = if same_directory { CatalogScan::Queued } else { CatalogScan::Gone };
+        node.pending_name = None;
         self.directory_bytes = self.directory_bytes - before + node.owned_bytes();
         self.pending.retain(|pending| *pending != identity);
         if self.pending_edge.as_ref().is_some_and(|pending| pending.directory == identity) {
             self.pending_edge = None;
-        }
-        if self.pending_name.as_ref().is_some_and(|pending| pending.directory == identity) {
-            self.pending_name = None;
         }
         if self.pending_issue.as_ref().is_some_and(|issue| issue.directory == identity) {
             self.pending_issue = None;
@@ -1169,7 +1175,7 @@ impl SourceCatalog {
         for identity in unresolved { self.mark_unresolved_directory(identity); }
         for (identity, fresh) in changed { self.invalidate_directory(identity, fresh, budget)?; }
         self.sync_routes(budget)?;
-        if self.pending.is_empty() && self.pending_edge.is_none() && self.pending_name.is_none() && self.pending_issue.is_none() {
+        if self.pending.is_empty() && self.pending_edge.is_none() && self.pending_issue.is_none() {
             let reachable = &self.route_index;
             let mut removed = Vec::new();
             for identity in self.directories.keys() {
