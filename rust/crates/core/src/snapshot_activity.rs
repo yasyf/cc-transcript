@@ -359,16 +359,24 @@ impl ActivityIndex {
     }
 
     pub fn projected_bytes(&self, index: usize) -> Option<usize> {
+        self.projected_call_bytes(index, |_| true)
+    }
+
+    pub(crate) fn projected_call_bytes(
+        &self,
+        index: usize,
+        include: impl Fn(&ToolCall) -> bool,
+    ) -> Option<usize> {
         let turn = self.turns.get(index)?;
         Some(
             size_of::<Turn<'_>>()
                 + turn.prompt.capacity()
                 + turn.bounds.len() * size_of::<&Entry>()
-                + turn.calls.len() * size_of::<ToolUse<'_>>()
                 + turn
                     .calls
                     .iter()
-                    .map(|call| call.accounted_bytes)
+                    .filter(|call| include(&call.call))
+                    .map(|call| size_of::<ToolUse<'_>>() + call.accounted_bytes)
                     .sum::<usize>(),
         )
     }
@@ -416,6 +424,15 @@ impl ActivityIndex {
         index: usize,
         entry: impl Fn(usize) -> &'a Entry,
     ) -> Option<Turn<'a>> {
+        self.project_call_turn_with(index, entry, |_| true)
+    }
+
+    pub(crate) fn project_call_turn_with<'a>(
+        &self,
+        index: usize,
+        entry: impl Fn(usize) -> &'a Entry,
+        include: impl Fn(&ToolCall) -> bool,
+    ) -> Option<Turn<'a>> {
         let turn = self.turns.get(index)?;
         Some(Turn {
             index,
@@ -423,40 +440,52 @@ impl ActivityIndex {
             started_at: turn.started.map(|i| entry(i).meta().unwrap().timestamp),
             ended_at: turn.ended.map(|i| entry(i).meta().unwrap().timestamp),
             events: turn.bounds.clone().map(&entry).collect(),
-            tool_uses: turn
-                .calls
-                .iter()
-                .map(|cached| {
-                    let Entry::Assistant(assistant) = entry(cached.event) else {
-                        unreachable!()
-                    };
-                    let ContentBlock::ToolUse(tool) = &assistant.blocks[cached.ordinal] else {
-                        unreachable!()
-                    };
-                    let result = self.results.get(&cached.id).map(|position| {
-                        let Entry::User(user) = entry(position.event) else {
-                            unreachable!()
-                        };
-                        let ContentBlock::ToolResult(result) = &user.blocks()[position.ordinal]
-                        else {
-                            unreachable!()
-                        };
-                        (result, user.meta.timestamp)
-                    });
-                    ToolUse {
-                        event_uuid: &assistant.meta.uuid,
-                        tool_use_id: &tool.id,
-                        name: &tool.name,
-                        ts: assistant.meta.timestamp,
-                        cwd: assistant.meta.cwd.as_deref(),
-                        result: result.map(|(block, _)| block),
-                        result_ts: result.map(|(_, ts)| ts),
-                        turn_index: index,
-                        call: cached.call.clone(),
-                        edits: cached.edits.clone(),
-                    }
-                })
-                .collect(),
+            tool_uses: {
+                let count = turn
+                    .calls
+                    .iter()
+                    .filter(|cached| include(&cached.call))
+                    .count();
+                let mut uses = Vec::with_capacity(count);
+                uses.extend(
+                    turn.calls
+                        .iter()
+                        .filter(|cached| include(&cached.call))
+                        .map(|cached| {
+                            let Entry::Assistant(assistant) = entry(cached.event) else {
+                                unreachable!()
+                            };
+                            let ContentBlock::ToolUse(tool) = &assistant.blocks[cached.ordinal]
+                            else {
+                                unreachable!()
+                            };
+                            let result = self.results.get(&cached.id).map(|position| {
+                                let Entry::User(user) = entry(position.event) else {
+                                    unreachable!()
+                                };
+                                let ContentBlock::ToolResult(result) =
+                                    &user.blocks()[position.ordinal]
+                                else {
+                                    unreachable!()
+                                };
+                                (result, user.meta.timestamp)
+                            });
+                            ToolUse {
+                                event_uuid: &assistant.meta.uuid,
+                                tool_use_id: &tool.id,
+                                name: &tool.name,
+                                ts: assistant.meta.timestamp,
+                                cwd: assistant.meta.cwd.as_deref(),
+                                result: result.map(|(block, _)| block),
+                                result_ts: result.map(|(_, ts)| ts),
+                                turn_index: index,
+                                call: cached.call.clone(),
+                                edits: cached.edits.clone(),
+                            }
+                        }),
+                );
+                uses
+            },
         })
     }
 
@@ -1354,6 +1383,41 @@ mod tests {
         assert_eq!(index.projected_bytes(0), Some(expected));
         assert!(index.projected_bytes(0).unwrap() > index.projected_bytes(1).unwrap());
         assert_eq!(index.projected_bytes(2), None);
+    }
+
+    #[test]
+    fn selective_call_projection_allocates_only_selected_call_slots() {
+        for count in [32, 4096] {
+            let mut owned = vec![user("u", "question")];
+            owned.extend((0..count).map(|i| entry(&format!(
+                r#"{{"type":"assistant","uuid":"a{i}","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{{"model":"test","content":[{{"type":"tool_use","id":"b{i}","name":"Bash","input":{{"command":"{}"}}}}]}}}}"#,
+                "x".repeat(512),
+            ))));
+            owned.push(tools());
+            let refs = owned.iter().collect::<Vec<_>>();
+            let index = ActivityIndex::new(&refs, None);
+            let all = index.project_turn_with(0, |i| &owned[i]).unwrap();
+            let selected = index
+                .project_call_turn_with(0, |i| &owned[i], |call| call.name() == "Read")
+                .unwrap();
+            assert_eq!(selected.tool_uses.len(), 1);
+            assert_eq!(selected.tool_uses.capacity(), 1);
+            assert_eq!(selected.events.len(), all.events.len());
+            assert_eq!(selected.prompt, all.prompt);
+            let expected = all
+                .tool_uses
+                .iter()
+                .filter(|use_| use_.call.name() == "Read")
+                .collect::<Vec<_>>();
+            assert_eq!(format!("{:?}", selected.tool_uses), format!("{expected:?}"));
+            assert!(
+                index
+                    .projected_call_bytes(0, |call| call.name() == "Read")
+                    .unwrap()
+                    < index.projected_bytes(0).unwrap()
+            );
+            eprintln!("selective_call_slots unrelated={count} full={} selective_len={} selective_capacity={}", all.tool_uses.capacity(), selected.tool_uses.len(), selected.tool_uses.capacity());
+        }
     }
 
     #[test]
