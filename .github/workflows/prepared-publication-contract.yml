@@ -1,0 +1,16 @@
+name: Prepared Publication Contract
+on:
+  push:
+    branches: [test/prepared-publication-admission]
+jobs:
+  exact-case:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - run: git rev-parse HEAD && rustc -Vv && uname -m
+      - run: cargo test -p cc-transcript-core --no-default-features --lib snapshot::tests::prepared_graph_publication_is_admitted_before_it_lands -- --exact --nocapture --test-threads=1

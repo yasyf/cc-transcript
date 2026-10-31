@@ -21569,60 +21569,6 @@ mod tests {
         store.assert_conserved();
     }
 
-    fn direct_build_peak(
-        store: &NativeStore,
-        prepared: &Value,
-        owner: &Value,
-        request: &Value,
-    ) -> usize {
-        let state = store.lock_state();
-        let graph_id = prepared["data"]["handle"]["graph_id"].as_str().unwrap();
-        let key = state
-            .prepared_graphs
-            .iter()
-            .find(|(key, _)| key.as_str() == graph_id)
-            .map(|(key, _)| key.capacity())
-            .unwrap();
-        let graph = state.prepared_graphs[graph_id].lock().unwrap();
-        assert!(state.has_prepared_facts(&graph.root.stamp.identity));
-        let mut tasks = Vec::<GraphTask>::new();
-        tasks.reserve(1);
-        let mut dirs = Vec::<(PathBuf, Option<SourceStamp>)>::new();
-        dirs.push((PathBuf::new(), None));
-        size_of::<PreparedBuild>()
-            + graph.claimant.capacity()
-            + value_bytes(&owner.clone())
-            + value_bytes(&request.clone())
-            + value_bytes(&graph.root_handle)
-            + value_bytes(&graph.classifier)
-            + HashSet::from([graph.root.stamp.identity.file()]).capacity()
-                * size_of::<SourceIdentity>()
-            + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-            + graph
-                .stamps
-                .iter()
-                .map(|(path, _)| path.capacity())
-                .sum::<usize>()
-            + tasks.capacity() * size_of::<GraphTask>()
-            + graph.root.canonical_path.capacity()
-            + FILESYSTEM_PATH_BYTES
-            + dirs.capacity() * size_of::<(PathBuf, Option<SourceStamp>)>()
-            + graph
-                .sidechain_dirs
-                .iter()
-                .map(|(path, _)| path.capacity())
-                .sum::<usize>()
-            + key
-            + arc_mirror::<Mutex<PreparedGraph>>()
-            + MUTEX_STORAGE_MIRROR
-            + graph.registry_generation.capacity()
-            + graph.admission.capacity()
-            + value_bytes(&graph.authority)
-            + graph.revision.capacity()
-            + arc_slice_mirror::<PreparedSourceRef>(graph.sources.len())
-            + arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(graph.sidechain_dirs.len())
-    }
-
     #[test]
     fn a_parked_prepared_query_is_charged_beyond_its_struct_and_query_strings() {
         let source = Source::new(&format!("{}\n", user("root")));
@@ -21819,59 +21765,90 @@ mod tests {
     #[test]
     fn prepared_graph_publication_is_admitted_before_it_lands() {
         for background in [false, true] {
-            let source = Source::new(&format!("{}\n", user("root")));
-            let store = store();
-            let (owner, cap) = admission_owner(background);
-            let root = finish(
-                &store,
-                store.request(&acquire(&source.path), &owner, &Cancellation::default()),
-                &owner,
-            );
-            let prepare = prepare_request(&root);
-            let warm = finish(
-                &store,
-                store.request(&prepare, &owner, &Cancellation::default()),
-                &owner,
-            );
-            release_graph(&store, &warm, &owner);
-            let idle = store.retained_accounted_bytes();
-            let measured = finish(
-                &store,
-                store.request(&prepare, &owner, &Cancellation::default()),
-                &owner,
-            );
-            assert_eq!(measured["status"].as_str(), Some("ok"), "{measured:?}");
-            let graph_bytes = store.retained_accounted_bytes() - idle;
-            assert!(graph_bytes > 0);
-            let build_bytes = direct_build_peak(&store, &measured, &owner, &prepare);
-            assert!(
-                build_bytes > graph_bytes,
-                "the build's buffers are not admitted beyond its graph"
-            );
-            release_graph(&store, &measured, &owner);
-            assert_eq!(store.retained_accounted_bytes(), idle);
-            let room = cap - idle - build_bytes - REPLY_RESERVATION;
-            let crowded = store.reserve_projection(&owner, room + 1).unwrap();
-            let refused = store.request(&prepare, &owner, &Cancellation::default());
-            assert_refused(&store, &refused);
-            assert_eq!(store.retained_accounted_bytes(), idle + room + 1);
-            assert!(store.lock_state().prepared_graphs.is_empty());
-            drop(crowded);
-            let fitted = store.reserve_projection(&owner, room).unwrap();
-            let exact = finish(
-                &store,
-                store.request(&prepare, &owner, &Cancellation::default()),
-                &owner,
-            );
-            assert_eq!(exact["status"].as_str(), Some("ok"), "{exact:?}");
-            assert_eq!(
-                store.retained_accounted_bytes(),
-                cap - REPLY_RESERVATION - (build_bytes - graph_bytes)
-            );
-            store.assert_conserved();
-            release_graph(&store, &exact, &owner);
-            drop(fitted);
-            assert_eq!(store.retained_accounted_bytes(), idle);
+            for partial_coverage in [false, true] {
+                for crowded in [false, true] {
+                    let source = Source::new(&format!("{}\n", user("root")));
+                    let store = store();
+                    let (owner, cap) = admission_owner(background);
+                    let root = finish(
+                        &store,
+                        store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+                        &owner,
+                    );
+                    let prepared = finish(
+                        &store,
+                        store.request(&prepare_request(&root), &owner, &Cancellation::default()),
+                        &owner,
+                    );
+                    assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
+                    let graph_id = prepared["data"]["handle"]["graph_id"].as_str().unwrap().to_owned();
+                    let graph = store.lock_state().remove_prepared_graph(&graph_id).unwrap();
+                    let Ok(graph) = Arc::try_unwrap(graph) else {
+                        panic!("prepared graph has another owner");
+                    };
+                    let Ok(graph) = graph.into_inner() else {
+                        panic!("prepared graph is poisoned");
+                    };
+                    let revision = graph.revision.clone();
+                    let (idle, record, metadata) = {
+                        let state = store.lock_state();
+                        (
+                            NativeStore::retained_total(&state),
+                            charged_bytes(&graph_id, &graph)
+                                + state.ledger.shared.unowned_bytes(graph.anchors()),
+                            state.ledger.shared.growth(graph.anchors())
+                                + state.prepared_graphs.growth_for(&graph_id),
+                        )
+                    };
+                    let coverage = if partial_coverage { record / 2 } else { 0 };
+                    let fresh = record - coverage + metadata;
+                    assert!(record > coverage);
+                    let reply = store.reserve_projection(&owner, REPLY_RESERVATION).unwrap();
+                    let mut reservation = store.reserve_projection(&owner, coverage).unwrap();
+                    let padding = cap - idle - REPLY_RESERVATION - coverage - fresh + usize::from(crowded);
+                    let fitted = store.reserve_projection(&owner, padding).unwrap();
+                    let before = store.retained_accounted_bytes();
+                    assert_eq!(before + fresh, cap + usize::from(crowded));
+                    let published = store.publish_prepared_graph(
+                        graph_id,
+                        graph,
+                        revision,
+                        &owner,
+                        &mut reservation,
+                    );
+                    let after = store.retained_accounted_bytes();
+                    store.assert_conserved();
+                    drop(reply);
+                    if crowded {
+                        let Err(error) = published else {
+                            panic!("over-cap graph was published");
+                        };
+                        assert_eq!(error.status, Status::RetainedLimit);
+                        assert_eq!(error.reason, "accounted storage admission exhausted");
+                        assert_eq!(after, before);
+                        assert_eq!(reservation.bytes, coverage);
+                        assert!(store.lock_state().prepared_graphs.is_empty());
+                    } else {
+                        let (data, _, _) = published.unwrap();
+                        assert_eq!(data["kind"].as_str(), Some("prepared_graph"));
+                        assert_eq!(after, cap);
+                        assert_eq!(reservation.bytes, 0);
+                        assert_eq!(store.lock_state().prepared_graphs.len(), 1);
+                        release_graph(&store, &json!({"data":data}), &owner);
+                        assert!(store.lock_state().prepared_graphs.is_empty());
+                    }
+                    drop(fitted);
+                    drop(reservation);
+                    assert_eq!(
+                        store.retained_accounted_bytes(),
+                        idle + if crowded { 0 } else { metadata },
+                    );
+                    store.assert_conserved();
+                    eprintln!(
+                        "prepared_publication background={background} crowded={crowded} coverage={coverage} record={record} metadata={metadata} fresh={fresh} after={after} cap={cap}",
+                    );
+                }
+            }
         }
     }
 
