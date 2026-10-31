@@ -555,14 +555,15 @@ fn public_catalog_review_current_ordinary_errors_are_reobserved_per_caller_and_r
     let first = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(first["status"].as_str(), Some("changed"), "{first:?}");
     assert!(first["reason"].as_str().unwrap().contains("current caller failure 0"));
-    {
+    let (catalog_count, complete, ordinary_only) = {
         let state = store.lock_state();
-        assert_eq!(state.catalogs.len(), 1);
         let cell = state.catalogs.values().next().unwrap().cell.lock().unwrap();
         let CatalogCell::Idle(catalog) = &*cell else { panic!("failed catalog is not idle"); };
-        assert!(catalog.complete);
-        assert!(catalog.directories.values().all(|node| node.symlinks.is_empty()));
-    }
+        (state.catalogs.len(), catalog.complete, catalog.directories.values().all(|node| node.symlinks.is_empty()))
+    };
+    assert_eq!(catalog_count, 1);
+    assert!(complete);
+    assert!(ordinary_only);
     phase.store(1, Ordering::Relaxed);
     let mut foreign = context_for("public-review-ordinary-foreign", false);
     foreign.insert("authority", owner["authority"].clone());
