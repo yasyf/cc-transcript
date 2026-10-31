@@ -281,7 +281,7 @@ fn prepared_cache_hydration_context_fences_and_cancellation_remain_authoritative
     let mut admission = owner.clone();
     admission.insert("admission", json!("review"));
     let review_cap = store.memory_cap(&admission).unwrap();
-    let retained = NativeStore::retained_total(&store.lock_state());
+    let retained = NativeStore::retained_total(&mut store.lock_state());
     assert!(retained.saturating_add(2 * MAX_REPLY_BYTES) <= review_cap);
     let mut authority = owner.clone();
     authority.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory.to_string_lossy().as_ref()],"effective_uid":unsafe {libc::geteuid()}.to_string()}));
