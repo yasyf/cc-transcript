@@ -1707,6 +1707,10 @@ struct GenerationRecord {
     entries: Vec<(usize, MemoryCharge)>,
     indexes: Vec<(usize, usize)>,
     source_chunks: Option<Arc<Vec<SourceChunkSpan>>>,
+    raw_window: Option<Arc<crate::snapshot_raw_window::RawWindow>>,
+    raw_parent: Option<Arc<TranscriptSnapshot>>,
+    raw_cache: Option<Box<RawCapabilityCache>>,
+    interactions: Option<Arc<InteractionIndex>>,
 }
 
 impl GenerationRecord {
@@ -1718,6 +1722,10 @@ impl GenerationRecord {
             entries: snapshot.accounted_allocations(),
             indexes: snapshot.activity.shared_allocations(),
             source_chunks: None,
+            raw_window: None,
+            raw_parent: None,
+            raw_cache: None,
+            interactions: None,
         }
     }
 
@@ -1726,6 +1734,7 @@ impl GenerationRecord {
             .iter()
             .map(|(id, charge)| Anchor::entries(*id, *charge))
             .chain(self.indexes.iter().copied().map(Anchor::indexes))
+            .chain(self.raw_window.iter().flat_map(raw_window_anchors))
     }
 }
 
@@ -1739,6 +1748,8 @@ impl Charge<usize> for GenerationRecord {
             })
             + self.entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + self.indexes.capacity() * size_of::<(usize, usize)>()
+            + self.raw_cache.as_ref().map_or(0, |cache| cache.metadata_bytes())
+            + self.interactions.as_ref().map_or(0, |index| index.accounted_bytes)
     }
 }
 
@@ -2310,8 +2321,16 @@ impl StoreState {
         mut record: GenerationRecord,
     ) {
         let key = snapshot_key(snapshot);
+        let mut carried_raw_window = None;
         if let Some(mut previous) = self.generations.get_mut(&key) {
             record.cached = previous.cached.take();
+            carried_raw_window = previous.raw_window.take();
+            if let Some(window) = &carried_raw_window {
+                record.raw_window = Some(Arc::clone(window));
+            }
+            record.raw_parent = previous.raw_parent.take();
+            record.raw_cache = previous.raw_cache.take();
+            record.interactions = previous.interactions.take();
         }
         self.generations.reserve_for(&key);
         self.ledger.shared.reserve(record.anchors());
@@ -2325,6 +2344,9 @@ impl StoreState {
             for anchor in displaced.anchors() {
                 self.ledger.shared.release(anchor.id);
             }
+        }
+        for anchor in carried_raw_window.iter().flat_map(raw_window_anchors) {
+            self.ledger.shared.release(anchor.id);
         }
     }
 
@@ -5297,6 +5319,16 @@ impl NativeStore {
                     indexes += bytes;
                 }
             }
+            if let Some(window) = &record.raw_window {
+                if allocations.insert(Arc::as_ptr(window) as usize) {
+                    entries += arc_mirror::<crate::snapshot_raw_window::RawWindow>();
+                }
+                if let Some((id, bytes)) = window.audited_payload_allocation() {
+                    if allocations.insert(id) {
+                        entries += bytes;
+                    }
+                }
+            }
         }
         for registry in state.registries.values() {
             for (id, bytes) in registry.snapshot.audited_allocations() {
@@ -5810,6 +5842,10 @@ impl NativeStore {
             entries,
             indexes,
             source_chunks,
+            raw_window: _,
+            raw_parent: _,
+            raw_cache,
+            interactions,
         } = record;
         source_chunks.as_ref().map_or(0, |chunks| {
             arc_mirror::<Vec<SourceChunkSpan>>() + chunks.capacity() * size_of::<SourceChunkSpan>()
@@ -5819,6 +5855,12 @@ impl NativeStore {
             })
             + entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + indexes.capacity() * size_of::<(usize, usize)>()
+            + raw_cache.as_ref().map_or(0, |cache| {
+                let RawCapabilityCache { stamp: _, tail_bytes: _, raw: _, excerpt, tail } = cache.as_ref();
+                size_of::<RawCapabilityCache>()
+                    + excerpt.as_ref().map_or(0, |scope| scope.key.capacity())
+                    + tail.as_ref().map_or(0, |scope| scope.key.capacity())
+            }) + interactions.as_ref().map_or(0, |index| index.audited_bytes())
     }
 
     #[cfg(test)]
@@ -11934,6 +11976,9 @@ include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
 include!("snapshot_spine.rs");
+include!("snapshot_raw_scope.rs");
+include!("snapshot_raw_projection.rs");
+include!("snapshot_interactions.rs");
 
 #[cfg(test)]
 #[path = "snapshot_regressions.rs"]
@@ -11993,6 +12038,9 @@ mod tests {
         )
     }
 
+    include!("snapshot_raw_scope_tests.rs");
+    include!("snapshot_raw_projection_tests.rs");
+    include!("snapshot_interactions_tests.rs");
     include!("snapshot_catalog_tests.rs");
     include!("snapshot_common_borrowed_parent_tests.rs");
 

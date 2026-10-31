@@ -333,6 +333,12 @@ impl ActivityIndex {
         self.uuids.get(uuid).copied()
     }
 
+    pub(crate) fn call_positions(&self) -> impl Iterator<Item = (usize, usize, &str, &str)> {
+        self.turns.iter().flat_map(|turn| turn.calls.iter()).map(|call| {
+            (call.event, call.ordinal, call.id.as_str(), call.call.name())
+        })
+    }
+
     pub fn call_at(&self, event: usize, block_ordinal: usize) -> Option<&ToolCall> {
         self.turns
             .get(self.turn_of_event(event)?)?
@@ -340,6 +346,38 @@ impl ActivityIndex {
             .iter()
             .find(|call| call.event == event && call.ordinal == block_ordinal)
             .map(|call| &call.call)
+    }
+
+    pub(crate) fn projected_call_at_bytes(&self, event: usize, ordinal: usize) -> Option<usize> {
+        let calls = &self.turns.get(self.turn_of_event(event)?)?.calls;
+        let index = calls.binary_search_by_key(&(event, ordinal), |call| (call.event, call.ordinal)).ok()?;
+        let call = &calls[index];
+        let result = self.results.get(&call.id).map_or(0, |result| {
+            result.charge.owned_capacity_bytes + result.charge.opaque_dom_accounted_bytes
+        });
+        Some(size_of::<ToolUse<'_>>() + call.accounted_bytes + result)
+    }
+
+    pub(crate) fn project_call_at<'a>(
+        &self, event: usize, ordinal: usize, entry: impl Fn(usize) -> &'a Entry,
+    ) -> Option<ToolUse<'a>> {
+        let turn_index = self.turn_of_event(event)?;
+        let calls = &self.turns.get(turn_index)?.calls;
+        let index = calls.binary_search_by_key(&(event, ordinal), |call| (call.event, call.ordinal)).ok()?;
+        let cached = &calls[index];
+        let Entry::Assistant(assistant) = entry(event) else { unreachable!() };
+        let ContentBlock::ToolUse(tool) = &assistant.blocks[ordinal] else { unreachable!() };
+        let result = self.results.get(&cached.id).map(|position| {
+            let Entry::User(user) = entry(position.event) else { unreachable!() };
+            let ContentBlock::ToolResult(result) = &user.blocks()[position.ordinal] else { unreachable!() };
+            (result, user.meta.timestamp)
+        });
+        Some(ToolUse {
+            event_uuid: &assistant.meta.uuid, tool_use_id: &tool.id, name: &tool.name,
+            ts: assistant.meta.timestamp, cwd: assistant.meta.cwd.as_deref(),
+            result: result.map(|(block, _)| block), result_ts: result.map(|(_, ts)| ts),
+            turn_index, call: cached.call.clone(), edits: cached.edits.clone(),
+        })
     }
 
     pub fn calls(&self) -> impl Iterator<Item = (&ToolCall, &[(String, Vec<Hunk>)])> + '_ {
