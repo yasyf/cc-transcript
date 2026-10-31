@@ -1714,6 +1714,7 @@ struct GenerationRecord {
     raw_window: Option<Arc<crate::snapshot_raw_window::RawWindow>>,
     raw_parent: Option<Arc<TranscriptSnapshot>>,
     raw_cache: Option<Box<RawCapabilityCache>>,
+    direct_tail: Option<Arc<DirectTailSelection>>,
     interactions: Option<Arc<InteractionIndex>>,
 }
 
@@ -1729,6 +1730,7 @@ impl GenerationRecord {
             raw_window: None,
             raw_parent: None,
             raw_cache: None,
+            direct_tail: None,
             interactions: None,
         }
     }
@@ -1739,6 +1741,7 @@ impl GenerationRecord {
             .map(|(id, charge)| Anchor::entries(*id, *charge))
             .chain(self.indexes.iter().copied().map(Anchor::indexes))
             .chain(self.raw_window.iter().flat_map(raw_window_anchors))
+            .chain(self.direct_tail.iter().map(direct_tail_anchor))
     }
 }
 
@@ -2340,6 +2343,7 @@ impl StoreState {
             }
             record.raw_parent = previous.raw_parent.take();
             record.raw_cache = previous.raw_cache.take();
+            record.direct_tail = previous.direct_tail.clone();
             record.interactions = previous.interactions.take();
         }
         self.generations.reserve_for(&key);
@@ -5337,6 +5341,11 @@ impl NativeStore {
                     indexes += bytes;
                 }
             }
+            if let Some(tail) = &record.direct_tail {
+                if allocations.insert(Arc::as_ptr(tail) as usize) {
+                    entries += Self::audit_direct_tail_bytes(tail);
+                }
+            }
             if let Some(window) = &record.raw_window {
                 if allocations.insert(Arc::as_ptr(window) as usize) {
                     entries += arc_mirror::<crate::snapshot_raw_window::RawWindow>();
@@ -5863,6 +5872,7 @@ impl NativeStore {
             raw_window: _,
             raw_parent: _,
             raw_cache,
+            direct_tail: _,
             interactions,
         } = record;
         source_chunks.as_ref().map_or(0, |chunks| {
@@ -7874,6 +7884,35 @@ impl NativeStore {
             .min(self.config.source)
             .min(stamp.size as usize);
         let mut reservation = self.reserve_projection(context, 0)?;
+        let source = self.direct_tail_source(stamp, context);
+        let cached = source.as_ref().and_then(|source| {
+            self.lock_state()
+                .generations
+                .get(&snapshot_key(source))
+                .and_then(|record| record.direct_tail.as_ref())
+                .filter(|tail| tail.stamp == stamp && tail.count == count && tail.budget == budget)
+                .cloned()
+        });
+        let output_limit = limits
+            .max_output_bytes
+            .min(self.config.output)
+            .min(MAX_DATA_BYTES);
+        if let Some(tail) = cached {
+            self.extend_projection_reservation(
+                &mut reservation,
+                context,
+                tail.read.saturating_mul(6),
+            )?;
+            cancel.check(limits.deadline_unix_ms)?;
+            if !Self::matches_prefix(SourceStamp::of(&file.metadata().map_err(io_error)?), stamp) {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "source changed while reading",
+                ));
+            }
+            usage[7] += 1;
+            return Self::tail_data(&tail.lines, stamp, count, output_limit, tail.exhausted);
+        }
         let mut pending: Vec<u8> = Vec::new();
         let mut pending_start = stamp.size;
         let mut cut = 0usize;
@@ -7931,10 +7970,33 @@ impl NativeStore {
                 "source changed while reading",
             ));
         }
-        let output_limit = limits
-            .max_output_bytes
-            .min(self.config.output)
-            .min(MAX_DATA_BYTES);
+        let response = Self::tail_data(&lines, stamp, count, output_limit, exhausted)?;
+        drop(pending);
+        if let Some(source) = source {
+            self.retain_direct_tail(
+                source,
+                stamp,
+                count,
+                budget,
+                read,
+                exhausted,
+                lines,
+                context,
+                cancel,
+                limits.deadline_unix_ms,
+                &mut reservation,
+            );
+        }
+        Ok(response)
+    }
+
+    fn tail_data(
+        lines: &[(u64, Vec<Entry>)],
+        stamp: SourceStamp,
+        count: usize,
+        output_limit: usize,
+        exhausted: bool,
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let envelope = encoded_size(
             &json!({"kind":"tail","record_schema":"cc-transcript.event/1","records_json":[],
                 "source_bytes":stamp.size,"window_start_byte":stamp.size}),
@@ -12025,6 +12087,7 @@ include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
 include!("snapshot_spine.rs");
 include!("snapshot_raw_scope.rs");
+include!("snapshot_direct_tail.rs");
 include!("snapshot_raw_materialization.rs");
 include!("snapshot_raw_projection.rs");
 include!("snapshot_interactions.rs");
@@ -12091,6 +12154,7 @@ mod tests {
     include!("snapshot_raw_scope_tests.rs");
     include!("snapshot_raw_projection_tests.rs");
     include!("snapshot_raw_tail_tests.rs");
+    include!("snapshot_direct_tail_tests.rs");
     include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");
