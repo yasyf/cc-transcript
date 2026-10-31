@@ -59,7 +59,10 @@ pub struct RefRecord {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MetaMessageKind { User, Queued }
+pub enum MetaMessageKind {
+    User,
+    Queued,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -585,24 +588,30 @@ pub fn decode_events(
 }
 
 pub fn decode_meta_messages(
-    records: &[String], max_bytes: usize,
+    records: &[String],
+    max_bytes: usize,
 ) -> Result<Vec<MetaMessageRecord>, SnapshotError> {
     decode(records, max_bytes)
 }
 
 pub fn decode_interaction_keys(
-    records: &[String], max_bytes: usize,
+    records: &[String],
+    max_bytes: usize,
 ) -> Result<Vec<InteractionKeyRecord>, SnapshotError> {
     decode(records, max_bytes)
 }
 
 pub fn decode_interaction_winners(
-    records: &[String], max_bytes: usize,
+    records: &[String],
+    max_bytes: usize,
 ) -> Result<Vec<InteractionWinnerRecord>, SnapshotError> {
     let records: Vec<InteractionWinnerRecord> = decode(records, max_bytes)?;
     for record in &records {
         if record.present != record.first.is_some() || record.present != record.name.is_some() {
-            return Err(SnapshotError::new(Status::InvalidRequest, "interaction winner metadata is inconsistent"));
+            return Err(SnapshotError::new(
+                Status::InvalidRequest,
+                "interaction winner metadata is inconsistent",
+            ));
         }
     }
     Ok(records)

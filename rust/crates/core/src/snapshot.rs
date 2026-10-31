@@ -1748,8 +1748,14 @@ impl Charge<usize> for GenerationRecord {
             })
             + self.entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + self.indexes.capacity() * size_of::<(usize, usize)>()
-            + self.raw_cache.as_ref().map_or(0, |cache| cache.metadata_bytes())
-            + self.interactions.as_ref().map_or(0, |index| index.accounted_bytes)
+            + self
+                .raw_cache
+                .as_ref()
+                .map_or(0, |cache| cache.metadata_bytes())
+            + self
+                .interactions
+                .as_ref()
+                .map_or(0, |index| index.accounted_bytes)
     }
 }
 
@@ -5856,11 +5862,20 @@ impl NativeStore {
             + entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + indexes.capacity() * size_of::<(usize, usize)>()
             + raw_cache.as_ref().map_or(0, |cache| {
-                let RawCapabilityCache { stamp: _, tail_bytes: _, raw: _, excerpt, tail } = cache.as_ref();
+                let RawCapabilityCache {
+                    stamp: _,
+                    tail_bytes: _,
+                    raw: _,
+                    excerpt,
+                    tail,
+                } = cache.as_ref();
                 size_of::<RawCapabilityCache>()
                     + excerpt.as_ref().map_or(0, |scope| scope.key.capacity())
                     + tail.as_ref().map_or(0, |scope| scope.key.capacity())
-            }) + interactions.as_ref().map_or(0, |index| index.audited_bytes())
+            })
+            + interactions
+                .as_ref()
+                .map_or(0, |index| index.audited_bytes())
     }
 
     #[cfg(test)]
@@ -10410,10 +10425,33 @@ impl NativeStore {
         page.max_items = page.max_items.min(self.config.page_items);
         let projection = if str_field(&request, "operation")? == "classify_view" {
             self.classify_view_projection(snapshot, &request, context, cancel, page, next)?
-        } else if str_field(&request, "operation")? == "query" && request["query"]["kind"].as_str() == Some("meta_messages") {
-            self.meta_message_projection(snapshot, &request, context, cancel, page, next, reservation)?
-        } else if str_field(&request, "operation")? == "query" && matches!(request["query"]["kind"].as_str(), Some("interaction_keys" | "interaction_winners" | "interaction_records")) {
-            self.interaction_projection(snapshot, &request, context, cancel, page, next, reservation)?
+        } else if str_field(&request, "operation")? == "query"
+            && request["query"]["kind"].as_str() == Some("meta_messages")
+        {
+            self.meta_message_projection(
+                snapshot,
+                &request,
+                context,
+                cancel,
+                page,
+                next,
+                reservation,
+            )?
+        } else if str_field(&request, "operation")? == "query"
+            && matches!(
+                request["query"]["kind"].as_str(),
+                Some("interaction_keys" | "interaction_winners" | "interaction_records")
+            )
+        {
+            self.interaction_projection(
+                snapshot,
+                &request,
+                context,
+                cancel,
+                page,
+                next,
+                reservation,
+            )?
         } else if str_field(&request, "operation")? == "mine" {
             let policy = request
                 .get("policy")

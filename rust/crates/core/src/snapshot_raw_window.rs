@@ -44,13 +44,23 @@ pub(crate) fn selected_ranges(
         });
     }
     if let Some(mut previous) = pending {
-        previous.lines.end = previous.hit.saturating_add(around).saturating_add(1).min(line_count);
+        previous.lines.end = previous
+            .hit
+            .saturating_add(around)
+            .saturating_add(1)
+            .min(line_count);
         retain(previous);
     }
     let first_end = earliest.last().map(|window| window.hit);
-    earliest.into_iter().chain(newest.into_iter().filter(|window| {
-        first_end.is_none_or(|last| window.hit > last)
-    })).map(|window| window.lines).collect()
+    earliest
+        .into_iter()
+        .chain(
+            newest
+                .into_iter()
+                .filter(|window| first_end.is_none_or(|last| window.hit > last)),
+        )
+        .map(|window| window.lines)
+        .collect()
 }
 
 pub(crate) struct RawWindow {
@@ -71,7 +81,10 @@ impl RawWindow {
 
     #[cfg(test)]
     pub(crate) fn audited_payload_allocation(&self) -> Option<(usize, usize)> {
-        let Self { bytes, line_count: _ } = self;
+        let Self {
+            bytes,
+            line_count: _,
+        } = self;
         if bytes.capacity() == 0 {
             None
         } else {
@@ -91,9 +104,15 @@ impl RawWindow {
     }
 
     pub(crate) fn select(&self, forms: &[&[u8]], around: usize, limit: usize) -> Vec<Range<usize>> {
-        let lines = || self.bytes.split_inclusive(|byte| *byte == b'\n').filter(|line| !line.is_empty());
+        let lines = || {
+            self.bytes
+                .split_inclusive(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+        };
         let hits = lines().enumerate().filter_map(|(index, line)| {
-            forms.iter().any(|form| !form.is_empty() && memchr::memmem::find(line, form).is_some())
+            forms
+                .iter()
+                .any(|form| !form.is_empty() && memchr::memmem::find(line, form).is_some())
                 .then_some(index)
         });
         let mut ranges = selected_ranges(self.line_count, hits, around, limit);
@@ -109,7 +128,8 @@ impl RawWindow {
             }
             offset += line.len();
             if index + 1 == ranges[selected].end {
-                ranges[selected] = start.take().expect("selected range starts before its end")..offset;
+                ranges[selected] =
+                    start.take().expect("selected range starts before its end")..offset;
                 selected += 1;
             }
         }
@@ -118,7 +138,10 @@ impl RawWindow {
     }
 
     pub(crate) fn lines_rev(&self) -> impl Iterator<Item = &[u8]> {
-        self.bytes.split_inclusive(|byte| *byte == b'\n').rev().filter(|line| !line.is_empty())
+        self.bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .rev()
+            .filter(|line| !line.is_empty())
     }
 
     pub(crate) fn selected_bytes(&self, range: Range<usize>) -> &[u8] {
@@ -140,7 +163,9 @@ mod tests {
         let mut after = 0;
         for (position, matched) in lines.iter().enumerate() {
             if *matched {
-                active = Rc::new(RefCell::new(before.iter().copied().chain([position]).collect()));
+                active = Rc::new(RefCell::new(
+                    before.iter().copied().chain([position]).collect(),
+                ));
                 if earliest.len() < limit {
                     earliest.push(Rc::clone(&active));
                 }
@@ -168,7 +193,10 @@ mod tests {
                 windows.push(window);
             }
         }
-        windows.into_iter().flat_map(|window| window.borrow().clone()).collect()
+        windows
+            .into_iter()
+            .flat_map(|window| window.borrow().clone())
+            .collect()
     }
 
     #[test]
@@ -178,9 +206,21 @@ mod tests {
                 let lines = (0..count).map(|i| bits & (1 << i) != 0).collect::<Vec<_>>();
                 for around in 0..=3 {
                     for limit in 0..=3 {
-                        let selected = selected_ranges(count, lines.iter().enumerate().filter_map(|(i, hit)| hit.then_some(i)), around, limit);
+                        let selected = selected_ranges(
+                            count,
+                            lines
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, hit)| hit.then_some(i)),
+                            around,
+                            limit,
+                        );
                         let actual = selected.into_iter().flatten().collect::<Vec<_>>();
-                        assert_eq!(actual, original_loop(&lines, around, limit), "count={count} bits={bits} around={around} limit={limit}");
+                        assert_eq!(
+                            actual,
+                            original_loop(&lines, around, limit),
+                            "count={count} bits={bits} around={around} limit={limit}"
+                        );
                     }
                 }
             }
@@ -192,17 +232,38 @@ mod tests {
         for count in 0..=9 {
             for bits in 0..1usize << count {
                 let flags = (0..count).map(|i| bits & (1 << i) != 0).collect::<Vec<_>>();
-                let lines = flags.iter().enumerate().map(|(i, hit)| {
-                    format!("{}-{i}{}", if *hit { "needle" } else { "other" }, if i + 1 == count { "" } else { "\r\n" }).into_bytes()
-                }).collect::<Vec<_>>();
+                let lines = flags
+                    .iter()
+                    .enumerate()
+                    .map(|(i, hit)| {
+                        format!(
+                            "{}-{i}{}",
+                            if *hit { "needle" } else { "other" },
+                            if i + 1 == count { "" } else { "\r\n" }
+                        )
+                        .into_bytes()
+                    })
+                    .collect::<Vec<_>>();
                 let raw = RawWindow::from_line_boundary_bytes(lines.concat());
                 for around in 0..=3 {
                     for limit in 0..=3 {
                         let ranges = raw.select(&[b"needle"], around, limit);
-                        assert!(ranges.capacity() * std::mem::size_of::<Range<usize>>() <= raw.selection_work_bound(limit));
-                        let actual = ranges.into_iter().flat_map(|range| raw.selected_bytes(range).iter().copied()).collect::<Vec<_>>();
-                        let expected = original_loop(&flags, around, limit).into_iter().flat_map(|i| lines[i].iter().copied()).collect::<Vec<_>>();
-                        assert_eq!(actual, expected, "count={count} bits={bits} around={around} limit={limit}");
+                        assert!(
+                            ranges.capacity() * std::mem::size_of::<Range<usize>>()
+                                <= raw.selection_work_bound(limit)
+                        );
+                        let actual = ranges
+                            .into_iter()
+                            .flat_map(|range| raw.selected_bytes(range).iter().copied())
+                            .collect::<Vec<_>>();
+                        let expected = original_loop(&flags, around, limit)
+                            .into_iter()
+                            .flat_map(|i| lines[i].iter().copied())
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            actual, expected,
+                            "count={count} bits={bits} around={around} limit={limit}"
+                        );
                     }
                 }
             }
@@ -211,17 +272,24 @@ mod tests {
 
     #[test]
     fn raw_window_byte_forms_are_literal_and_do_not_retain_line_tables() {
-        let source = "ordinary\nquoted \\u00e9\nowner é\nlast".as_bytes().to_vec();
+        let source = "ordinary\nquoted \\u00e9\nowner é\nlast"
+            .as_bytes()
+            .to_vec();
         let capacity = source.capacity();
         let raw = RawWindow::from_line_boundary_bytes(source);
         assert_eq!(raw.payload_capacity(), capacity);
         let selected = raw.select(&[b"\\u00e9", "é".as_bytes()], 0, 20);
         assert_eq!(selected.len(), 2);
         assert_eq!(raw.selected_bytes(selected[0].clone()), b"quoted \\u00e9\n");
-        assert_eq!(raw.selected_bytes(selected[1].clone()), "owner é\n".as_bytes());
+        assert_eq!(
+            raw.selected_bytes(selected[1].clone()),
+            "owner é\n".as_bytes()
+        );
         assert!(raw.select(&[b""], 2, 20).is_empty());
         assert!(raw.select(&[], 2, 20).is_empty());
-        assert!(RawWindow::from_line_boundary_bytes(Vec::new()).select(&[b"x"], 2, 20).is_empty());
+        assert!(RawWindow::from_line_boundary_bytes(Vec::new())
+            .select(&[b"x"], 2, 20)
+            .is_empty());
     }
 
     #[test]
@@ -231,7 +299,9 @@ mod tests {
             assert_eq!(selected.len(), count.min(40));
             assert_eq!(selected.first(), Some(&(0..1)));
             assert_eq!(selected.last(), Some(&(count - 1..count)));
-            assert!(selected.windows(2).all(|ranges| ranges[0].end <= ranges[1].start));
+            assert!(selected
+                .windows(2)
+                .all(|ranges| ranges[0].end <= ranges[1].start));
         }
     }
 }

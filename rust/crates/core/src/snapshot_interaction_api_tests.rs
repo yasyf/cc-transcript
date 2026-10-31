@@ -1,3 +1,5 @@
+use sonic_rs::JsonValueMutTrait;
+
 fn interaction_api_request(acquired: &Value, query: Value) -> Value {
     json!({"schema":SCHEMA,"id":"interaction-query","operation":"query",
         "view":{"handle":handle(acquired),"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},
@@ -118,7 +120,7 @@ fn native_interaction_views_rollback_only_new_leases_on_capacity_failure() {
 #[test]
 fn native_interaction_meta_text_join_preserves_empty_and_unicode_blocks() {
     for count in [0, 1, 32, 4096] {
-        let mut blocks = vec![crate::types::ContentBlock::Text(String::new()); count];
+        let mut blocks = (0..count).map(|_| crate::types::ContentBlock::Text(String::new())).collect::<Vec<_>>();
         blocks.push(crate::types::ContentBlock::Text("雪".to_owned()));
         blocks.push(crate::types::ContentBlock::Text(String::new()));
         let expected = blocks.iter().map(|block| match block {

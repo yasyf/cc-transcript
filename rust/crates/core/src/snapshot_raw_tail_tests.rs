@@ -33,7 +33,7 @@ fn raw_tail_projection_matches_full_parse_and_shares_one_raw_owner() {
         assert!(usage[3] <= 320, "{usage:?}");
         assert_eq!(reads.load(Ordering::Relaxed), 0);
         assert!(!tail.chunks[0].entries.arenas().is_empty());
-        let interactions = store.indexed_interactions(Arc::clone(&tail), &owner, &Cancellation::default(), now_ms()+30_000).unwrap();
+        let interactions = store.indexed_interactions(Arc::clone(&tail), &owner, &Cancellation::default(), raw_scope_bounds()).unwrap();
         let winner = interactions.winner("same").unwrap();
         assert_eq!(winner.first, tail.event_count - 2);
         assert_eq!(winner.event, tail.event_count - 1);
@@ -193,7 +193,7 @@ fn raw_tail_projection_session_refs_follow_first_selected_event_metadata() {
         let excerpt = store.raw_excerpt_from_scope(handle(&response), &raw, &[b"selected-call"], 0, 1, &owner, &Cancellation::default(), raw_scope_bounds(), &mut usage).unwrap();
         for (scope, expected_session) in [(&tail, selected_session.as_str()), (&excerpt, "call-session")] {
             assert_eq!(scope.session_id, expected_session);
-            let index = store.indexed_interactions(Arc::clone(scope), &owner, &Cancellation::default(), now_ms()+30_000).unwrap();
+            let index = store.indexed_interactions(Arc::clone(scope), &owner, &Cancellation::default(), raw_scope_bounds()).unwrap();
             let mut reservation = store.reserve_projection(&owner, 0).unwrap();
             let selected = index.call(index.winner("same").unwrap(), &mut reservation, &owner).unwrap();
             let actual = crate::snapshot_codec::ToolUseWire::new(&selected, &scope.session_id);
