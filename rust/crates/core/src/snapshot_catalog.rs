@@ -1676,18 +1676,18 @@ impl SourceCatalog {
     }
 
     fn hold_prefix<'c>(&mut self, store: &NativeStore, context: &Value, cancel: &Cancellation,
-        deadline: u64, bound: Option<&'c Vec<usize>>, query: &mut CatalogLocateQuery,
+        deadline: u64, bound: std::ops::Bound<&'c Vec<usize>>, query: &mut CatalogLocateQuery,
         budget: &mut CatalogBudget<'_, '_>) -> Result<Option<CatalogPrefixCertificate<'c>>,SnapshotError> {
         budget.scratch(LOCATE_USER_PATH_SLOTS)?;
         let mut proof_reader = None;
         loop {
             cancel.check(deadline)?;
             let lower = query.validated_after.as_ref().map_or(std::ops::Bound::Unbounded,std::ops::Bound::Excluded);
-            let upper = bound.map_or(std::ops::Bound::Unbounded,std::ops::Bound::Included);
-            let Some((order,check)) = self.checks.range::<Vec<usize>,_>((lower,upper)).next() else {
+            let Some((order,check)) = self.checks.range::<Vec<usize>,_>((lower,bound)).next() else {
                 return Ok(Some(match bound {
-                    Some(through) => CatalogPrefixCertificate::Closed { generation_version:self.generation_version,through },
-                    None => CatalogPrefixCertificate::Complete { generation_version:self.generation_version },
+                    std::ops::Bound::Included(through) => CatalogPrefixCertificate::Closed { generation_version:self.generation_version,through },
+                    std::ops::Bound::Excluded(before) => CatalogPrefixCertificate::Before { generation_version:self.generation_version,before },
+                    std::ops::Bound::Unbounded => CatalogPrefixCertificate::Complete { generation_version:self.generation_version },
                 }));
             };
             let check = *check;
@@ -1760,10 +1760,14 @@ impl SourceCatalog {
             };
             let uncertain = uncertain_identity.is_some_and(|identity| {
                 let node = self.directories.get(&identity).expect("prefix directory");
-                node.first_unproven.is_some_and(|offset| bound.is_none_or(|bound| {
+                node.first_unproven.is_some_and(|offset| {
                     let route = self.route_index.get(&identity).expect("prefix route");
-                    route.order.iter().copied().chain(std::iter::once(offset)).cmp(bound.iter().copied()).is_le()
-                }))
+                    match bound {
+                        std::ops::Bound::Included(bound) => route.order.iter().copied().chain(std::iter::once(offset)).cmp(bound.iter().copied()).is_le(),
+                        std::ops::Bound::Excluded(bound) => route.order.iter().copied().chain(std::iter::once(offset)).cmp(bound.iter().copied()).is_lt(),
+                        std::ops::Bound::Unbounded => true,
+                    }
+                })
             });
             let unchanged = match check.kind {
                 CatalogCheckKind::Edge(identity,index) => self.directories.get(&identity).expect("prefix parent").edges[index].unchanged(&fresh),

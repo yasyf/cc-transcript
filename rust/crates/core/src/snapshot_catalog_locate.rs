@@ -5,6 +5,7 @@ enum CatalogCachePublication {
 
 enum CatalogPrefixCertificate<'a> {
     Closed { generation_version: u64, through: &'a [usize] },
+    Before { generation_version: u64, before: &'a [usize] },
     Complete { generation_version: u64 },
 }
 
@@ -304,11 +305,21 @@ impl SourceCatalog {
                 if let Some(choice) = query.pop_choice() {
                     if query.found.contains(&choice.id) { continue; }
                     if self.frontier_closed(&choice.order) {
-                        if self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,Some(&choice.order),query,budget)?.is_none() {
+                        let terminal_root = choice.order.len() == 1
+                            && self.roots[self.roots.len() - choice.order[0] - 1].binding.regular;
+                        let bound = if terminal_root { std::ops::Bound::Excluded(&choice.order) }
+                            else { std::ops::Bound::Included(&choice.order) };
+                        if self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,bound,query,budget)?.is_none() {
                             query.push_choice(choice,budget)?;
                             continue;
                         }
                         let stamp = store.location_candidate(&choice.path,&query.scope,context)?;
+                        if terminal_root && stamp.is_none()
+                            && self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,
+                                std::ops::Bound::Included(&choice.order),query,budget)?.is_none() {
+                            query.push_choice(choice,budget)?;
+                            continue;
+                        }
                         self.observe_cached_prefix(query,&choice.order,budget)?;
                         query.position(&choice.order,None,budget)?;
                         if let Some(stamp) = stamp {
@@ -324,7 +335,7 @@ impl SourceCatalog {
                     continue;
                 }
                 if self.complete {
-                    if self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,None,query,budget)?.is_none() { continue; }
+                    if self.hold_prefix(store,context,cancel,remaining.deadline_unix_ms,std::ops::Bound::Unbounded,query,budget)?.is_none() { continue; }
                     if !self.complete { continue; }
                     self.publication = if query.used_name_stream { CatalogCachePublication::Uncertified }
                         else { CatalogCachePublication::Complete { generation_version:self.generation_version } };
@@ -536,6 +547,15 @@ impl SourceCatalog {
                             return Ok(CatalogObservationStep::CachedSpan);
                         }
                         query.cache_bridge = false;
+                    }
+                    if query.frames.is_empty() && query.next_observation_root != 0 {
+                        budget.reserve(vec_growth(&ended.order,1))?;
+                        let mut after = ended.order;
+                        after.push(usize::MAX);
+                        query.position(&after,None,budget)?;
+                        query.cache_bridge = false;
+                        query.cache_bridge_depth = None;
+                        return Ok(CatalogObservationStep::CachedSpan);
                     }
                     continue;
                 }

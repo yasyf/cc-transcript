@@ -521,3 +521,44 @@ fn public_catalog_review_narrowed_resume_checks_unconsumed_children_of_a_symlink
     assert!(response["cursor"].is_null());
     store.assert_conserved();
 }
+
+#[test]
+fn public_catalog_review_a_cached_root_positive_that_became_a_directory_is_traversed() {
+    let consumed = LedgerSource::new("");
+    let wanted = LedgerSource::new("");
+    let later = LedgerSource::new("");
+    std::fs::remove_file(&consumed.path).unwrap();
+    consumed.file("consumed.txt", "");
+    for index in 0..256 { later.file(&format!("later-{index:03}.txt"), ""); }
+    let store = public_review_store(1);
+    let owner = context_for("public-review-positive-became-directory", false);
+    let mut request = public_review_request(&consumed, &["s"]);
+    request.insert("roots", json!([later.directory, wanted.path, consumed.directory]));
+    let first = store.request(&request, &owner, &Cancellation::default());
+    let cursor = first["cursor"].as_str().expect("consumed root cursor").to_owned();
+    let mut missing = request.clone();
+    missing.insert("session_ids", json!(["missing"]));
+    public_review_finish(&store, &missing, &owner);
+    std::fs::remove_file(&wanted.path).unwrap();
+    std::fs::create_dir(&wanted.path).unwrap();
+    let nested = wanted.path.join("s.jsonl");
+    std::fs::write(&nested, "").unwrap();
+    let mut narrowed = owner.clone();
+    narrowed.insert("authority", json!({"kind":"restricted_roots","roots":[wanted.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let mut response = store.request(&json!({"schema":SCHEMA,"id":"positive-became-directory","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
+    let mut entries = 0;
+    for _ in 0..8 {
+        assert!(matches!(response["status"].as_str(), Some("ok" | "incomplete")), "{response:?}");
+        entries += response["usage"]["discovery_entries_examined"].as_u64().unwrap();
+        if let Some(cursor) = response["cursor"].as_str() {
+            response = store.request(&json!({"schema":SCHEMA,"id":"positive-became-directory","operation":"resume","cursor":cursor}), &narrowed, &Cancellation::default());
+        } else {
+            assert_eq!(response["data"]["sessions"][0]["status"].as_str(), Some("ok"));
+            assert_eq!(Path::new(response["data"]["sessions"][0]["path"].as_str().unwrap()), nested);
+            assert_eq!(entries, 1);
+            store.assert_conserved();
+            return;
+        }
+    }
+    panic!("changed root positive did not traverse its current directory");
+}
