@@ -21781,7 +21781,10 @@ mod tests {
                         &owner,
                     );
                     assert_eq!(prepared["status"].as_str(), Some("ok"), "{prepared:?}");
-                    let graph_id = prepared["data"]["handle"]["graph_id"].as_str().unwrap().to_owned();
+                    let graph_id = prepared["data"]["handle"]["graph_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
                     let graph = store.lock_state().remove_prepared_graph(&graph_id).unwrap();
                     let Ok(graph) = Arc::try_unwrap(graph) else {
                         panic!("prepared graph has another owner");
@@ -21791,9 +21794,9 @@ mod tests {
                     };
                     let revision = graph.revision.clone();
                     let (idle, record, metadata) = {
-                        let state = store.lock_state();
+                        let mut state = store.lock_state();
                         (
-                            NativeStore::retained_total(&state),
+                            NativeStore::retained_total(&mut state),
                             charged_bytes(&graph_id, &graph)
                                 + state.ledger.shared.unowned_bytes(graph.anchors()),
                             state.ledger.shared.growth(graph.anchors())
@@ -21805,7 +21808,8 @@ mod tests {
                     assert!(record > coverage);
                     let reply = store.reserve_projection(&owner, REPLY_RESERVATION).unwrap();
                     let mut reservation = store.reserve_projection(&owner, coverage).unwrap();
-                    let padding = cap - idle - REPLY_RESERVATION - coverage - fresh + usize::from(crowded);
+                    let padding =
+                        cap - idle - REPLY_RESERVATION - coverage - fresh + usize::from(crowded);
                     let fitted = store.reserve_projection(&owner, padding).unwrap();
                     let before = store.retained_accounted_bytes();
                     assert_eq!(before + fresh, cap + usize::from(crowded));
