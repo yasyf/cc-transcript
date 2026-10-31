@@ -519,6 +519,51 @@ pub fn project_with_usage(
     result
 }
 
+pub(crate) fn metadata_selection<'a>(
+    activity: &crate::snapshot_activity::ActivityIndex,
+    mut range: Range<usize>, selector: &Value,
+    mut entry: impl FnMut(usize) -> Result<&'a Entry, SnapshotError>,
+) -> Result<Option<Range<usize>>, SnapshotError> {
+    match string(selector, "kind")? {
+        "current_turn" => {
+            if !range.is_empty() {
+                let turn = activity.turn_of_event(range.end - 1).expect("existing event");
+                range.start = range.start.max(activity.turn_bounds(turn).expect("existing turn").start);
+            }
+        }
+        "recent_events" => range.start = range.start.max(range.end.saturating_sub(count(selector, "count")?)),
+        "event_range" => {
+            let len = range.len();
+            let start = count(selector, "start")?.min(len);
+            let stop = count(selector, "stop")?.min(len).max(start);
+            range = range.start + start..range.start + stop;
+        }
+        "prior" | "recent_messages" => {
+            let prior = string(selector, "kind")? == "prior";
+            let wanted = if prior { 1 } else { count(selector, "count")? };
+            if wanted == 0 {
+                range.start = range.end;
+            } else {
+                let mut found = 0;
+                let mut boundary = None;
+                for index in range.clone().rev() {
+                    let event = entry(index)?;
+                    let message = matches!(event, Entry::User(_) | Entry::Assistant(_))
+                        || (!prior && matches!(event, Entry::Attachment(a) if matches!(&a.detail, AttachmentDetail::QueuedCommand(_))));
+                    if message {
+                        found += 1;
+                        if found == wanted { boundary = Some(index); break; }
+                    }
+                }
+                if prior { range.end = boundary.unwrap_or(range.start); }
+                else if let Some(index) = boundary { range.start = index; }
+            }
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(range))
+}
+
 fn selected_range(work: &mut Work, request: &Value) -> Result<Range<usize>, SnapshotError> {
     let view = field(request, "view")?;
     if !array(view, "attachments")?.is_empty() {
@@ -527,64 +572,18 @@ fn selected_range(work: &mut Work, request: &Value) -> Result<Range<usize>, Snap
     let mut range = 0..work.snapshot.event_count;
     for selector in array(view, "selectors")? {
         work.cancel.check(work.limits.deadline_unix_ms)?;
+        let snapshot = work.snapshot;
+        if let Some(selected) = metadata_selection(
+            &snapshot.activity, range.clone(), selector,
+            |index| {
+                work.charge_range(index..index + 1)?;
+                Ok(snapshot.entry(index))
+            },
+        )? {
+            range = selected;
+            continue;
+        }
         match string(selector, "kind")? {
-            "current_turn" => {
-                if range.is_empty() {
-                    continue;
-                }
-                let turn = work
-                    .snapshot
-                    .activity
-                    .turn_of_event(range.end - 1)
-                    .expect("existing event");
-                range.start = range.start.max(
-                    work.snapshot
-                        .activity
-                        .turn_bounds(turn)
-                        .expect("existing turn")
-                        .start,
-                );
-            }
-            "recent_events" => {
-                range.start = range
-                    .start
-                    .max(range.end.saturating_sub(count(selector, "count")?))
-            }
-            "event_range" => {
-                let len = range.len();
-                let start = count(selector, "start")?.min(len);
-                let stop = count(selector, "stop")?.min(len).max(start);
-                range = range.start + start..range.start + stop;
-            }
-            "prior" | "recent_messages" => {
-                let prior = string(selector, "kind")? == "prior";
-                let wanted = if prior { 1 } else { count(selector, "count")? };
-                if wanted == 0 {
-                    range.start = range.end;
-                    continue;
-                }
-                let mut found = 0;
-                let mut boundary = None;
-                for index in range.clone().rev() {
-                    work.charge_range(index..index + 1)?;
-                    let entry = work.snapshot.entry(index);
-                    let message = matches!(entry, Entry::User(_) | Entry::Assistant(_))
-                        || (!prior
-                            && matches!(entry, Entry::Attachment(a) if matches!(&a.detail, AttachmentDetail::QueuedCommand(_))));
-                    if message {
-                        found += 1;
-                        if found == wanted {
-                            boundary = Some(index);
-                            break;
-                        }
-                    }
-                }
-                if prior {
-                    range.end = boundary.unwrap_or(range.start);
-                } else if let Some(index) = boundary {
-                    range.start = index;
-                }
-            }
             "after_last_tool" | "before_last_tool" => {
                 let name = string(selector, "name")?;
                 let file = selector.get("file").and_then(|v| v.as_str());
@@ -1014,6 +1013,163 @@ pub(crate) fn strip_parts(parts: &mut Vec<&str>) {
     parts[0] = crate::pystr::lstrip(parts[0]);
     let last = parts.len() - 1;
     parts[last] = crate::pystr::rstrip(parts[last]);
+}
+
+fn suffix_parts(parts: &mut Vec<&str>, count: usize) {
+    let mut remaining = count;
+    for index in (0..parts.len()).rev() {
+        if remaining == 0 {
+            parts.drain(..index + 1);
+            return;
+        }
+        let part = parts[index];
+        if let Some((start, character)) = part.char_indices().rev().nth(remaining) {
+            parts[index] = &part[start + character.len_utf8()..];
+            parts.drain(..index);
+            return;
+        }
+        remaining -= part.chars().count();
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct InstructionTurn<'a> {
+    pub(crate) prompt: &'a str,
+    pub(crate) started_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+    pub(crate) queued: Vec<(&'a str, chrono::DateTime<chrono::FixedOffset>)>,
+    pub(crate) rejections: Vec<(&'a str, &'a str, chrono::DateTime<chrono::FixedOffset>)>,
+    pub(crate) assistant_tail: Vec<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InstructionRead {
+    Header,
+    Call,
+    Block,
+    Text(usize),
+    Check,
+}
+
+fn queued_instruction(event: &Entry) -> Option<(&str, chrono::DateTime<chrono::FixedOffset>)> {
+    let Entry::Attachment(attachment) = event else {
+        return None;
+    };
+    let AttachmentDetail::QueuedCommand(command) = &attachment.detail else {
+        return None;
+    };
+    (command.origin.as_deref() == Some("human"))
+        .then_some((command.prompt.as_deref().unwrap_or(""), attachment.meta.timestamp))
+}
+
+fn rejected_instruction<'a>(
+    name: &'a str, position: Option<(usize, usize)>, entry: &impl Fn(usize) -> &'a Entry,
+    charge: &mut impl FnMut(InstructionRead) -> Result<(), SnapshotError>,
+) -> Result<Option<(&'a str, &'a str, chrono::DateTime<chrono::FixedOffset>)>, SnapshotError> {
+    let Some((event, ordinal)) = position else { return Ok(None); };
+    charge(InstructionRead::Header)?;
+    let Entry::User(user) = entry(event) else { unreachable!() };
+    let ContentBlock::ToolResult(result) = &user.blocks()[ordinal] else { unreachable!() };
+    if result.denial_kind.as_deref() != Some(crate::protocol::DENIAL_KIND_USER_REJECTED) { return Ok(None); }
+    Ok(Some((&result.content, name, user.meta.timestamp)))
+}
+
+fn instruction_shape<'a>(
+    activity: &'a crate::snapshot_activity::ActivityIndex, index: usize, range: &Range<usize>,
+    entry: &impl Fn(usize) -> &'a Entry,
+    charge: &mut impl FnMut(InstructionRead) -> Result<(), SnapshotError>,
+) -> Result<Option<(Range<usize>, usize, usize, usize)>, SnapshotError> {
+    charge(InstructionRead::Check)?;
+    let Some(bounds) = activity.turn_bounds(index) else { return Ok(None); };
+    let selected = bounds.start.max(range.start)..bounds.end.min(range.end);
+    if selected.is_empty() { return Ok(None); }
+    let mut queued = 0;
+    let mut parts = 0;
+    for position in selected.clone() {
+        charge(InstructionRead::Header)?;
+        match entry(position) {
+            event @ Entry::Attachment(_) => queued += usize::from(queued_instruction(event).is_some()),
+            Entry::Assistant(assistant) => {
+                let mut texts = 0;
+                for block in &assistant.blocks {
+                    charge(InstructionRead::Block)?;
+                    texts += usize::from(matches!(block, ContentBlock::Text(_)));
+                }
+                parts = parts.max(texts * 2 - usize::from(texts != 0));
+            }
+            _ => {}
+        }
+    }
+    charge(InstructionRead::Check)?;
+    let mut calls = activity.call_results(index, selected.clone());
+    let mut rejections = 0;
+    for _ in 0..calls.len() {
+        charge(InstructionRead::Call)?;
+        let (name, _, position) = calls.next().expect("selected call count");
+        rejections += usize::from(rejected_instruction(name, position, entry, charge)?.is_some());
+    }
+    Ok(Some((selected, queued, rejections, parts)))
+}
+
+pub(crate) fn instruction_turn_heap_bound<'a>(
+    activity: &'a crate::snapshot_activity::ActivityIndex, index: usize, range: &Range<usize>,
+    entry: impl Fn(usize) -> &'a Entry,
+    mut charge: impl FnMut(InstructionRead) -> Result<(), SnapshotError>,
+) -> Result<Option<usize>, SnapshotError> {
+    let Some((_, queued, rejections, parts)) = instruction_shape(activity, index, range, &entry, &mut charge)? else { return Ok(None); };
+    Ok(Some(queued * std::mem::size_of::<(&str, chrono::DateTime<chrono::FixedOffset>)>()
+        + rejections * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::FixedOffset>)>()
+        + pushed_capacity(parts) * std::mem::size_of::<&str>()))
+}
+
+pub(crate) fn instruction_turn<'a>(
+    activity: &'a crate::snapshot_activity::ActivityIndex, index: usize, range: &Range<usize>,
+    entry: impl Fn(usize) -> &'a Entry,
+    mut charge: impl FnMut(InstructionRead) -> Result<(), SnapshotError>,
+) -> Result<Option<InstructionTurn<'a>>, SnapshotError> {
+    let Some((selected, queued_count, rejected_count, _)) = instruction_shape(activity, index, range, &entry, &mut charge)? else { return Ok(None); };
+    let mut queued = Vec::with_capacity(queued_count);
+    for position in selected.clone() {
+        charge(InstructionRead::Header)?;
+        if let Some(item) = queued_instruction(entry(position)) {
+            charge(InstructionRead::Text(item.0.len()))?;
+            queued.push(item);
+        }
+    }
+    let mut rejections = Vec::with_capacity(rejected_count);
+    charge(InstructionRead::Check)?;
+    let mut calls = activity.call_results(index, selected.clone());
+    for _ in 0..calls.len() {
+        charge(InstructionRead::Call)?;
+        let (name, _, position) = calls.next().expect("selected call count");
+        if let Some(item) = rejected_instruction(name, position, &entry, &mut charge)? {
+            charge(InstructionRead::Text(item.0.len() + item.1.len()))?;
+            rejections.push(item);
+        }
+    }
+    let mut assistant_tail = Vec::new();
+    for position in selected.rev() {
+        charge(InstructionRead::Header)?;
+        let event = entry(position);
+        let Entry::Assistant(assistant) = event else { continue; };
+        for _ in &assistant.blocks { charge(InstructionRead::Block)?; }
+        charge(InstructionRead::Text(crate::types::joined_text_len(&assistant.blocks)))?;
+        let mut parts = joined_event_parts(event);
+        strip_parts(&mut parts);
+        if !parts.is_empty() {
+            suffix_parts(&mut parts, 400);
+            assistant_tail = parts;
+            break;
+        }
+    }
+    let prompt = if activity.turn_bounds(index).expect("existing turn").start < range.start { "" }
+        else { activity.prompt(index).expect("existing turn") };
+    charge(InstructionRead::Text(prompt.len()))?;
+    let started_at = if let Some(position) = activity.turn_started(index) {
+        charge(InstructionRead::Header)?;
+        Some(entry(position).meta().unwrap().timestamp)
+    } else { None };
+    charge(InstructionRead::Check)?;
+    Ok(Some(InstructionTurn { prompt, started_at, queued, rejections, assistant_tail }))
 }
 
 fn prefix_parts(parts: &mut Vec<&str>, count: usize) {
@@ -2373,6 +2529,181 @@ mod tests {
 
     fn said(uuid: &str, text: &str) -> Value {
         json!({"type":"assistant","uuid":uuid,"sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"model":"test","content":[{"type":"text","text":text}]}})
+    }
+
+    fn instruction_value(value: &InstructionTurn<'_>) -> Value {
+        json!({
+            "prompt":value.prompt,
+            "started_at":value.started_at,
+            "queued":value.queued,
+            "rejections":value.rejections,
+            "assistant_tail":value.assistant_tail.concat(),
+        })
+    }
+
+    fn instruction_oracle(lift: &LiftedSession<'_>, index: usize, range: Range<usize>) -> Option<Value> {
+        let window = Session::from_lift(lift).windowed(range.start, range.end);
+        let (_, prompt, events, uses) = window.turn_views().find(|(turn, _, _, _)| *turn == index)?;
+        let queued: Vec<_> = events.iter().filter_map(|event| {
+            let Entry::Attachment(attachment) = event else { return None; };
+            let AttachmentDetail::QueuedCommand(command) = &attachment.detail else { return None; };
+            (command.origin.as_deref() == Some("human"))
+                .then_some((command.prompt.as_deref().unwrap_or(""), attachment.meta.timestamp))
+        }).collect();
+        let rejections: Vec<_> = uses.iter().filter_map(|use_| {
+            let result = use_.result?;
+            (result.denial_kind.as_deref() == Some(crate::protocol::DENIAL_KIND_USER_REJECTED))
+                .then_some((result.content.as_str(), use_.call.name(), use_.result_ts.unwrap_or(use_.ts)))
+        }).collect();
+        let assistant = events.iter().filter_map(|event| {
+            let Entry::Assistant(assistant) = event else { return None; };
+            let text = crate::types::joined_text(&assistant.blocks);
+            let text = crate::pystr::strip(&text);
+            (!text.is_empty()).then(|| text.to_owned())
+        }).last().unwrap_or_default();
+        let tail: String = assistant.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+        Some(json!({
+            "prompt":prompt,
+            "started_at":lift.turns[index].started_at,
+            "queued":queued,
+            "rejections":rejections,
+            "assistant_tail":tail,
+        }))
+    }
+
+    #[test]
+    fn instruction_projection_matches_full_turn_windows_and_late_rejections() {
+        let queue = |id: &str, origin: &str, prompt: Option<&str>| {
+            json!({"type":"attachment","uuid":id,"sessionId":"s","timestamp":"2026-01-02T03:04:06Z","attachment":{"type":"queued_command","origin":{"kind":origin},"prompt":prompt}})
+        };
+        let mut rejected = tool_result("late-result", "rejected", "No, do not post".into());
+        rejected.insert("toolDenialKind", json!(crate::protocol::DENIAL_KIND_USER_REJECTED));
+        let raw = vec![
+            user("root", "repeat"),
+            queue("human", "human", Some("queued words")),
+            queue("empty", "human", None),
+            queue("agent", "agent", Some("not the user's words")),
+            tool("reject-call", "rejected", "Bash", json!({"command":"private successful input"})),
+            tool("pending-call", "pending", "Bash", json!({"command":"pending"})),
+            said("answer", &format!("\u{1c}{} END\u{1f}", "é🦀 ".repeat(180))),
+            said("empty-answer", " \u{1c}\u{1f}"),
+            user("next", "next prompt"),
+            rejected,
+            said("next-answer", "a different offer"),
+            user("repeat", "repeat"),
+        ];
+        let snapshot = snapshot(&raw);
+        let entries: Vec<_> = (0..snapshot.event_count).map(|position| snapshot.entry(position)).collect();
+        let indices: Vec<_> = (0..snapshot.activity.turn_count()).collect();
+        let old = snapshot.activity.project("s", &entries, &indices);
+        assert_eq!(old.turns.iter().filter(|turn| turn.prompt == "repeat").count(), 2);
+        for start in 0..=snapshot.event_count {
+            for stop in start..=snapshot.event_count {
+                let range = start..stop;
+                for index in 0..snapshot.activity.turn_count() {
+                    let actual = instruction_turn(&snapshot.activity, index, &range, |position| snapshot.entry(position), |_| Ok(())).unwrap();
+                    let expected = instruction_oracle(&old, index, range.clone());
+                    assert_eq!(actual.as_ref().map(instruction_value), expected, "turn={index} range={range:?}");
+                    let bound = instruction_turn_heap_bound(&snapshot.activity, index, &range, |position| snapshot.entry(position), |_| Ok(())).unwrap();
+                    assert_eq!(bound.is_some(), actual.is_some());
+                    if let Some(actual) = actual {
+                        let capacity = actual.queued.capacity() * std::mem::size_of::<(&str, chrono::DateTime<chrono::FixedOffset>)>()
+                            + actual.rejections.capacity() * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::FixedOffset>)>()
+                            + actual.assistant_tail.capacity() * std::mem::size_of::<&str>();
+                        assert!(capacity <= bound.unwrap(), "{capacity} exceeds {bound:?}");
+                    }
+                }
+            }
+        }
+        let clipped = instruction_turn(&snapshot.activity, 0, &(1..8), |position| snapshot.entry(position), |_| Ok(())).unwrap().unwrap();
+        assert!(clipped.prompt.is_empty());
+        assert_eq!(clipped.started_at, old.turns[0].started_at);
+        assert_eq!(clipped.rejections[0].0, "No, do not post");
+        assert_eq!(clipped.rejections[0].2, snapshot.entry(9).meta().unwrap().timestamp);
+        assert_eq!(clipped.assistant_tail.concat().chars().count(), 400);
+    }
+
+    #[test]
+    fn instruction_projection_borrows_evidence_without_successful_payload_growth() {
+        let mut previous = None;
+        for count in [32, 4096] {
+            let mut raw = vec![user("prompt", "do the work")];
+            for index in 0..count {
+                let id = format!("successful-{index}");
+                raw.push(tool(&format!("call-{index}"), &id, "Bash", json!({"command":"x".repeat(512)})));
+                raw.push(tool_result(&format!("result-{index}"), &id, "y".repeat(512)));
+            }
+            raw.push(said("response", "done"));
+            let snapshot = snapshot(&raw);
+            let range = 0..snapshot.event_count;
+            let visits = std::cell::Cell::new(0);
+            let entry = |position| {
+                visits.set(visits.get() + 1);
+                snapshot.entry(position)
+            };
+            let bound = instruction_turn_heap_bound(&snapshot.activity, 0, &range, entry, |_| Ok(())).unwrap().unwrap();
+            let actual = instruction_turn(&snapshot.activity, 0, &range, entry, |_| Ok(())).unwrap().unwrap();
+            assert!(actual.queued.is_empty() && actual.rejections.is_empty());
+            assert_eq!(actual.assistant_tail.concat(), "done");
+            assert!(visits.get() <= 4 * snapshot.event_count + 4 * count + 8);
+            let entries: Vec<_> = range.clone().map(|position| snapshot.entry(position)).collect();
+            let old = snapshot.activity.project("s", &entries, &[0]);
+            assert_eq!(Some(instruction_value(&actual)), instruction_oracle(&old, 0, range));
+            let old_bytes = snapshot.activity.projected_bytes(0).unwrap();
+            if let Some((small_bound, small_old_bytes)) = previous {
+                assert_eq!(bound, small_bound);
+                assert!(old_bytes > small_old_bytes * 32);
+            }
+            previous = Some((bound, old_bytes));
+            eprintln!("instruction_projection successful={count} metadata_visits={} transient_bound={bound} old_turn_bytes={old_bytes}", visits.get());
+        }
+    }
+
+    #[test]
+    fn instruction_projection_small_window_avoids_historical_call_metadata() {
+        for count in [32_usize, 4096] {
+            let mut raw = vec![user("prompt", "do the work")];
+            for index in 0..count {
+                let id = format!("past-{index}");
+                raw.push(tool(&format!("call-{index}"), &id, "Bash", json!({"command":"x".repeat(512)})));
+                raw.push(tool_result(&format!("result-{index}"), &id, "y".repeat(512)));
+            }
+            raw.push(said("reply", "done"));
+            let snapshot = snapshot(&raw);
+            let range = snapshot.event_count - 8..snapshot.event_count;
+            crate::snapshot_activity::reset_instruction_call_work();
+            let bound = instruction_turn_heap_bound(&snapshot.activity, 0, &range, |position| snapshot.entry(position), |_| Ok(())).unwrap().unwrap();
+            let actual = instruction_turn(&snapshot.activity, 0, &range, |position| snapshot.entry(position), |_| Ok(())).unwrap().unwrap();
+            let (comparisons, visits) = crate::snapshot_activity::instruction_call_work();
+            assert_eq!(visits, 9);
+            assert!(comparisons <= 6 * (count.ilog2() as usize + 2));
+            assert!(actual.prompt.is_empty());
+            assert_eq!(actual.assistant_tail.concat(), "done");
+            let entries: Vec<_> = (0..snapshot.event_count).map(|position| snapshot.entry(position)).collect();
+            let old = snapshot.activity.project("s", &entries, &[0]);
+            assert_eq!(Some(instruction_value(&actual)), instruction_oracle(&old, 0, range));
+            eprintln!("instruction_small_window historical_calls={count} selected_calls=3 lookup_comparisons={comparisons} call_metadata_visits={visits} transient_bound={bound}");
+        }
+    }
+
+    #[test]
+    fn instruction_suffix_preserves_unicode_after_python_strip() {
+        for parts in [
+            vec![""],
+            vec![" \u{1c}", "é", " ", "🦀", "\u{1f}"],
+            vec!["a", "", "  ", "b"],
+            vec!["é🦀xyz", " ", "last"],
+        ] {
+            for count in 0..=12 {
+                let mut actual = parts.clone();
+                strip_parts(&mut actual);
+                suffix_parts(&mut actual, count);
+                let joined = parts.concat();
+                let expected: String = crate::pystr::strip(&joined).chars().rev().take(count)
+                    .collect::<Vec<_>>().into_iter().rev().collect();
+                assert_eq!(actual.concat(), expected, "parts={parts:?} count={count}");
+            }
+        }
     }
 
     fn hook_scale_snapshot() -> TranscriptSnapshot {

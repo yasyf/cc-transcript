@@ -21,6 +21,30 @@ use crate::toolcall::{
 };
 use crate::types::{ContentBlock, Entry};
 
+#[cfg(test)]
+thread_local! {
+    static INSTRUCTION_CALL_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_instruction_call_work() {
+    INSTRUCTION_CALL_WORK.with(|work| work.set((0, 0)));
+}
+
+#[cfg(test)]
+pub(crate) fn instruction_call_work() -> (usize, usize) {
+    INSTRUCTION_CALL_WORK.with(std::cell::Cell::get)
+}
+
+fn instruction_call_before(call: &CachedCall, event: usize) -> bool {
+    #[cfg(test)]
+    INSTRUCTION_CALL_WORK.with(|work| {
+        let (comparisons, visits) = work.get();
+        work.set((comparisons + 1, visits));
+    });
+    call.event < event
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActivityWork {
     pub indexed_entries: usize,
@@ -391,6 +415,10 @@ impl ActivityIndex {
             .partition_point(|turn| turn.prompt_count <= ordinal)
     }
 
+    pub(crate) fn turn_started(&self, index: usize) -> Option<usize> {
+        self.turns.get(index).and_then(|turn| turn.started)
+    }
+
     pub fn turn_bounds(&self, index: usize) -> Option<Range<usize>> {
         self.turns.get(index).map(|turn| turn.bounds.clone())
     }
@@ -559,6 +587,30 @@ impl ActivityIndex {
                     call.call.name(),
                     call.event,
                     self.results.get(&call.id).map(|position| position.event),
+                )
+            })
+    }
+
+    pub(crate) fn call_results(
+        &self,
+        index: usize,
+        range: Range<usize>,
+    ) -> impl DoubleEndedIterator<Item = (&str, usize, Option<(usize, usize)>)> + ExactSizeIterator + '_ {
+        let calls = self.turns.get(index).map_or(&[][..], |turn| {
+                let start = turn.calls.partition_point(|call| instruction_call_before(call, range.start));
+                let stop = turn.calls.partition_point(|call| instruction_call_before(call, range.end));
+                &turn.calls[start..stop]
+            });
+        calls.iter().map(|call| {
+                #[cfg(test)]
+                INSTRUCTION_CALL_WORK.with(|work| {
+                    let (comparisons, visits) = work.get();
+                    work.set((comparisons, visits + 1));
+                });
+                (
+                    call.call.name(),
+                    call.event,
+                    self.results.get(&call.id).map(|position| (position.event, position.ordinal)),
                 )
             })
     }

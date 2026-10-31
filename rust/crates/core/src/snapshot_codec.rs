@@ -76,6 +76,51 @@ pub struct MetaMessageRecord {
     pub origin: Option<String>,
 }
 
+#[derive(Serialize)]
+pub(crate) struct InstructionTurnWire<'a> {
+    pub(crate) index: usize,
+    pub(crate) prompt: &'a str,
+    pub(crate) started_at: Option<DateTime<FixedOffset>>,
+    #[serde(serialize_with = "instruction_queued")]
+    pub(crate) queued: &'a [(&'a str, DateTime<FixedOffset>)],
+    #[serde(serialize_with = "instruction_rejections")]
+    pub(crate) rejections: &'a [(&'a str, &'a str, DateTime<FixedOffset>)],
+    pub(crate) assistant_tail: &'a str,
+}
+
+#[derive(Serialize)]
+struct InstructionQueuedWire<'a> { text: &'a str, ts: DateTime<FixedOffset> }
+
+fn instruction_queued<S: serde::Serializer>(items: &[(&str, DateTime<FixedOffset>)], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(items.iter().map(|(text, ts)| InstructionQueuedWire { text, ts: *ts }))
+}
+
+#[derive(Serialize)]
+struct InstructionRejectionWire<'a> { name: &'a str, content: &'a str, result_ts: DateTime<FixedOffset> }
+
+fn instruction_rejections<S: serde::Serializer>(items: &[(&str, &str, DateTime<FixedOffset>)], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(items.iter().map(|(content, name, result_ts)| InstructionRejectionWire { name, content, result_ts: *result_ts }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstructionQueuedRecord { pub text: String, pub ts: DateTime<FixedOffset> }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstructionRejectionRecord { pub name: String, pub content: String, pub result_ts: DateTime<FixedOffset> }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstructionTurnRecord {
+    pub index: usize,
+    pub prompt: String,
+    pub started_at: Option<DateTime<FixedOffset>>,
+    pub queued: Vec<InstructionQueuedRecord>,
+    pub rejections: Vec<InstructionRejectionRecord>,
+    pub assistant_tail: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionKeyRecord {
@@ -592,6 +637,14 @@ pub fn decode_meta_messages(
     max_bytes: usize,
 ) -> Result<Vec<MetaMessageRecord>, SnapshotError> {
     decode(records, max_bytes)
+}
+
+pub fn decode_instruction_turns(records: &[String], max_bytes: usize) -> Result<Vec<InstructionTurnRecord>, SnapshotError> {
+    let records: Vec<InstructionTurnRecord> = decode(records, max_bytes)?;
+    if records.iter().any(|record| record.assistant_tail.chars().count() > 400) {
+        return Err(SnapshotError::new(Status::InvalidRequest, "instruction assistant tail exceeds 400 characters"));
+    }
+    Ok(records)
 }
 
 pub fn decode_interaction_keys(

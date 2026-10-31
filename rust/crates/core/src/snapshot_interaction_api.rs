@@ -296,3 +296,155 @@ impl NativeStore {
         Ok((json!({"kind":"acquired_views","views":descriptions}), None, None))
     }
 }
+
+struct InstructionMeter<'a> {
+    store: &'a NativeStore,
+    cancel: &'a Cancellation,
+    bounds: WorkLimits,
+    read_bytes: usize,
+    events: usize,
+}
+
+impl InstructionMeter<'_> {
+    fn charge(&mut self, read: crate::snapshot_projection::InstructionRead) -> Result<(), SnapshotError> {
+        use crate::snapshot_projection::InstructionRead;
+        if !matches!(read, InstructionRead::Check) { self.store.before_decode("instruction"); }
+        self.cancel.check(self.bounds.deadline_unix_ms)?;
+        let (bytes, events) = match read {
+            InstructionRead::Header => (size_of::<Entry>(), 1),
+            InstructionRead::Call => (size_of::<(usize, usize, &str, Option<(usize, usize)>)>(), 1),
+            InstructionRead::Block => (size_of::<crate::types::ContentBlock>(), 1),
+            InstructionRead::Text(bytes) => (bytes, 0),
+            InstructionRead::Check => (0, 0),
+        };
+        if bytes > self.bounds.max_read_bytes.saturating_sub(self.read_bytes) {
+            return Err(SnapshotError::new(Status::Incomplete, "read_limit"));
+        }
+        if events > self.bounds.max_events.saturating_sub(self.events) {
+            return Err(SnapshotError::new(Status::Incomplete, "event_limit"));
+        }
+        self.read_bytes += bytes;
+        self.events += events;
+        Ok(())
+    }
+}
+
+impl NativeStore {
+    fn instruction_authority(
+        &self, snapshot: &Arc<TranscriptSnapshot>, handle: &Value,
+        context: &Value, cancel: &Cancellation, bounds: WorkLimits,
+    ) -> Result<(), SnapshotError> {
+        cancel.check(bounds.deadline_unix_ms)?;
+        let current = std::fs::canonicalize(&snapshot.canonical_path).map_err(io_error)?;
+        self.authority(context, Some(&current))?;
+        let state = self.lock_state();
+        let source = self.lease(&state, handle, context)?;
+        if !Arc::ptr_eq(&source.snapshot, snapshot) {
+            return Err(SnapshotError::new(Status::StaleHandle, "instruction view changed generation"));
+        }
+        cancel.check(bounds.deadline_unix_ms)
+    }
+
+    fn instruction_projection(
+        &self, snapshot: &Arc<TranscriptSnapshot>, request: &Value, context: &Value,
+        cancel: &Cancellation, bounds: WorkLimits, next: usize,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> Result<Projection, SnapshotError> {
+        use crate::snapshot_projection::{InstructionRead, instruction_turn, instruction_turn_heap_bound, metadata_selection};
+        let handle = &request["view"]["handle"];
+        self.instruction_authority(snapshot, handle, context, cancel, bounds)?;
+        if !request["view"]["attachments"].as_array().ok_or_else(|| invalid("missing instruction attachments"))?.is_empty() {
+            return Err(invalid("instruction projections require a local generation"));
+        }
+        let selectors = request["view"]["selectors"].as_array().ok_or_else(|| invalid("missing instruction selectors"))?;
+        let reverse = match str_field(&request["query"], "order")? {
+            "forward" => false, "reverse" => true, _ => return Err(invalid("invalid instruction order")),
+        };
+        let mut meter = InstructionMeter { store: self, cancel, bounds, read_bytes: 0, events: 0 };
+        let result = (|| {
+            let mut range = 0..snapshot.event_count;
+            for selector in selectors {
+                meter.charge(InstructionRead::Check)?;
+                range = metadata_selection(&snapshot.activity, range, selector, |index| {
+                    meter.charge(InstructionRead::Header)?;
+                    Ok(snapshot.entry(index))
+                })?.ok_or_else(|| invalid("instruction projections do not support tool-boundary selectors"))?;
+            }
+            let turns = if range.is_empty() { 0..0 } else {
+                snapshot.activity.turn_of_event(range.start).unwrap()
+                    ..snapshot.activity.turn_of_event(range.end - 1).unwrap() + 1
+            };
+            let total = turns.len();
+            if next > total { return Err(invalid("instruction cursor out of range")); }
+            let schema = "cc-transcript.instruction-turn/1";
+            let mut output = encoded_size(&json!({"kind":"records","record_schema":schema,"records_json":[]}), bounds.max_output_bytes)?;
+            let mut records = Vec::new();
+            let mut at = next;
+            let mut reason = "item_limit";
+            while at < total && records.len() < bounds.max_items.min(256) {
+                meter.charge(InstructionRead::Check)?;
+                let index = if reverse { turns.end - 1 - at } else { turns.start + at };
+                let heap = instruction_turn_heap_bound(&snapshot.activity, index, &range,
+                    |position| snapshot.entry(position), |read| meter.charge(read))?.expect("selected instruction turn");
+                let _heap_reservation = if heap > 0 { Some(self.reserve_projection(context, heap)?) } else { None };
+                let row = instruction_turn(&snapshot.activity, index, &range,
+                    |position| snapshot.entry(position), |read| meter.charge(read))?.expect("selected instruction turn");
+                let tail_bytes = row.assistant_tail.iter().map(|part| part.len()).sum();
+                let _tail_reservation = if tail_bytes > 0 { Some(self.reserve_projection(context, tail_bytes)?) } else { None };
+                let assistant_tail = row.assistant_tail.concat();
+                let wire = crate::snapshot_codec::InstructionTurnWire {
+                    index, prompt: row.prompt, started_at: row.started_at,
+                    queued: &row.queued, rejections: &row.rejections, assistant_tail: &assistant_tail,
+                };
+                let bytes = crate::snapshot_codec::encoded_size(&wire, bounds.max_output_bytes)?;
+                self.extend_projection_reservation(reservation, context, bytes.saturating_mul(8) + vec_growth(&records, 1))?;
+                let record = crate::snapshot_codec::encode(&wire, bounds.max_output_bytes)?;
+                let quoted = encoded_size(&json!(&record), bounds.max_output_bytes)? + 1;
+                if quoted > bounds.max_output_bytes.saturating_sub(output) {
+                    if records.is_empty() { return Err(SnapshotError::new(Status::OutputLimit, "instruction record exceeds page budget")); }
+                    reason = "output_limit";
+                    break;
+                }
+                output += quoted;
+                records.push(record);
+                at += 1;
+            }
+            let complete = at == total;
+            let items = records.len();
+            let data = json!({"kind":"records","record_schema":schema,"records_json":records});
+            encoded_size(&data, bounds.max_output_bytes)?;
+            Ok(Projection { read_bytes: 0, events: 0, items, data, complete,
+                next: (!complete).then_some(at), reason: (!complete).then(|| reason.to_owned()) })
+        })();
+        self.before_decode("instruction_publish");
+        self.instruction_authority(snapshot, handle, context, cancel, bounds)?;
+        let mut projection = match result {
+            Err(error) if error.status == Status::Incomplete => Projection {
+                read_bytes: 0, events: 0, items: 0, data: Value::new(), complete: false,
+                next: None, reason: Some(error.reason),
+            },
+            other => other?,
+        };
+        projection.read_bytes = meter.read_bytes;
+        projection.events = meter.events;
+        Ok(projection)
+    }
+
+    fn instruction_request(
+        &self, snapshot: Arc<TranscriptSnapshot>, request: Cow<'_, Value>, context: &Value,
+        cancel: &Cancellation, bounds: WorkLimits, next: usize, reservation: &mut ProjectionReservation<'_>,
+    ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let handle = request["view"]["handle"].clone();
+        let mut page = bounds;
+        page.max_output_bytes = page.max_output_bytes.min(MAX_DATA_BYTES);
+        page.max_items = page.max_items.min(self.config.page_items);
+        let projection = self.instruction_projection(&snapshot, &request, context, cancel, page, next, reservation)?;
+        let result = self.projection_result(request, context, bounds, projection, reservation)?;
+        self.before_decode("instruction_published");
+        if let Err(error) = self.instruction_authority(&snapshot, &handle, context, cancel, page) {
+            if let Some(cursor) = &result.1 { self.lock_state().projections.remove(cursor); }
+            return Err(error);
+        }
+        Ok(result)
+    }
+}
