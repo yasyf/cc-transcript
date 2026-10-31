@@ -769,7 +769,10 @@ impl SourceCatalog {
                     self.pending_edge = Some(pending);
                     return Err(error);
                 }
+                let needs_frontier_sort = pending.edge.directory().is_some()
+                    && self.pending.last() != Some(&pending.directory);
                 self.commit_edge(pending);
+                if needs_frontier_sort { self.sort_pending(); }
                 continue;
             }
             let Some(identity) = self.pending.last().copied() else {
