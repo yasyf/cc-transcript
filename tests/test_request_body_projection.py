@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -73,7 +75,8 @@ print(json.dumps([project_request_body(path) for path in sys.argv[1:]]))
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux peak RSS units and independent process accounting")
-def test_request_body_projection_memory_is_independent_of_large_tokens(tmp_path):
+@pytest.mark.parametrize("transport", ["identity", "curl-data"])
+def test_request_body_projection_memory_is_independent_of_large_tokens(tmp_path, transport):
     reports = []
     script = '''
 import json, resource, sys
@@ -81,10 +84,12 @@ from pathlib import Path
 from cc_transcript.parser import project_request_body
 if sys.argv[2] == "legacy":
     text = Path(sys.argv[1]).read_text()
+    if sys.argv[3] == "curl-data":
+        text = text.replace("\\r", "").replace("\\n", "").replace("\\x00", "")
     body = json.loads(text)
     assert body["bypass_rules"] is True and body["sha"] == "a" * 40
 else:
-    result = project_request_body(sys.argv[1])
+    result = project_request_body(sys.argv[1], transport=sys.argv[3])
     assert result == {"bypass_rules": True, "sha": "a" * 40}, result
 peak = next(line.split() for line in Path("/proc/self/status").read_text().splitlines() if line.startswith("VmHWM:"))
 assert len(peak) == 3 and peak[2] == "kB", peak
@@ -94,16 +99,16 @@ print(json.dumps({"peak_rss_kib": int(peak[1]), "historical_ru_maxrss_kib": reso
         path = tmp_path / f"request-{size}.json"
         with path.open("wb") as output:
             output.write(b'{"bypass_rules":false,"ignored":"')
-            block = b"x" * 8192
+            block = b"x" * 8192 if transport == "identity" else b"x\r\n\0" * 2048
             for _ in range(size // len(block)):
                 output.write(block)
             output.write(b'","')
             for _ in range(size // len(block)):
                 output.write(block)
             output.write(b'": [NaN, Infinity, -Infinity], "sha":"' + b"a" * 40 + b'", "bypass_rules":true}')
-        report = {"source_bytes": path.stat().st_size}
+        report = {"source_bytes": path.stat().st_size, "transport": transport}
         for mode in ("native", "legacy"):
-            completed = subprocess.run([sys.executable, "-c", script, str(path), mode], check=True, capture_output=True, text=True, timeout=120, env=os.environ.copy())
+            completed = subprocess.run([sys.executable, "-c", script, str(path), mode, transport], check=True, capture_output=True, text=True, timeout=120, env=os.environ.copy())
             measured = json.loads(completed.stdout)
             report[mode] = measured["peak_rss_kib"]
             report[mode + "_historical_ru_maxrss"] = measured["historical_ru_maxrss_kib"]
@@ -113,3 +118,49 @@ print(json.dumps({"peak_rss_kib": int(peak[1]), "historical_ru_maxrss_kib": reso
     assert reports[1]["legacy"] >= reports[0]["legacy"] + 32 * 1024, reports
     assert reports[1]["legacy"] >= reports[1]["native"] + 32 * 1024, reports
     print(json.dumps({"request_projection_memory": reports}), flush=True)
+
+
+def test_request_body_transport_rejects_unknown_before_open(tmp_path):
+    with pytest.raises(ValueError, match="unknown request body transport"):
+        project_request_body(tmp_path / "does-not-exist", transport="unknown")
+
+
+@pytest.mark.parametrize("broken", [False, True])
+@pytest.mark.parametrize("flag", ["-d", "--data", "--data-binary", "--json", "--data-raw"])
+def test_request_body_projection_matches_actual_curl_wire(tmp_path, flag, broken):
+    wire = []
+
+    class Receiver(BaseHTTPRequestHandler):
+        def do_PUT(self):
+            wire.append(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    path = tmp_path / "request.json"
+    flag_bytes = b"tr\r\n\0ue" if broken else b"true"
+    path.write_bytes(b'{"bypass_rules":' + flag_bytes + b',"sha":"' + b"a" * 40 + b'"}')
+    with HTTPServer(("127.0.0.1", 0), Receiver) as server:
+        server.timeout = 5
+        receiver = threading.Thread(target=server.handle_request)
+        receiver.start()
+        try:
+            subprocess.run(["curl", "--disable", "--noproxy", "*", "--silent", "--show-error", "--connect-timeout", "2", "--max-time", "4", "--request", "PUT", flag, "@" + str(path), f"http://127.0.0.1:{server.server_port}/"], check=True, capture_output=True, timeout=6)
+        finally:
+            receiver.join(timeout=6)
+        assert not receiver.is_alive()
+    assert len(wire) == 1
+    try:
+        expected = json.loads(wire[0])
+    except ValueError:
+        expected = None
+    if flag == "--data-raw":
+        assert wire[0] == ("@" + str(path)).encode()
+        assert expected is None
+        return
+    transport = "curl-data" if flag in {"-d", "--data"} else "identity"
+    actual = project_request_body(path, transport=transport)
+    assert actual == expected
+    assert path.read_bytes() == b'{"bypass_rules":' + flag_bytes + b',"sha":"' + b"a" * 40 + b'"}'
