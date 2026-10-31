@@ -3407,10 +3407,6 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) directory_opens: AtomicUsize,
     #[cfg(test)]
-    directory_force_unknown: AtomicBool,
-    #[cfg(test)]
-    directory_descriptor_metadata: AtomicUsize,
-    #[cfg(test)]
     directory_parent_proof_metadata: AtomicUsize,
     #[cfg(test)]
     directory_logical_type_metadata: AtomicUsize,
@@ -3917,10 +3913,6 @@ impl NativeStore {
             warm_records: AtomicUsize::new(0),
             #[cfg(test)]
             directory_opens: AtomicUsize::new(0),
-            #[cfg(test)]
-            directory_force_unknown: AtomicBool::new(false),
-            #[cfg(test)]
-            directory_descriptor_metadata: AtomicUsize::new(0),
             #[cfg(test)]
             directory_parent_proof_metadata: AtomicUsize::new(0),
             #[cfg(test)]
