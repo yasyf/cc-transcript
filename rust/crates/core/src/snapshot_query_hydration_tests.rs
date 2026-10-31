@@ -265,7 +265,10 @@ fn prepared_cache_hydration_legal_append_without_pressure_is_incremental() {
 fn prepared_cache_hydration_context_fences_and_cancellation_remain_authoritative() {
     let source = Source::new(&format!("{}\n", user("root")));
     let paths = hydration_sources(&source, 1);
-    let store = hydration_store();
+    let store = NativeStore::new(&json!({"max_retained_bytes":128*1024*1024,
+        "max_prepared_fact_memory_bytes":16*1024*1024,"reserved_hook_accounted_bytes":4096})).unwrap();
+    *store.hydration_observations.lock().unwrap() = Some(Vec::new());
+    assert_eq!(store.recent_codex_raw_bound(), 128*1024*1024);
     let owner = context("hydration-context");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
@@ -277,6 +280,9 @@ fn prepared_cache_hydration_context_fences_and_cancellation_remain_authoritative
     registry.insert("registry_generation", json!(register_changed_registry(&store)));
     let mut admission = owner.clone();
     admission.insert("admission", json!("review"));
+    let review_cap = store.memory_cap(&admission).unwrap();
+    let retained = NativeStore::retained_total(&store.lock_state());
+    assert!(retained.saturating_add(2 * MAX_REPLY_BYTES) <= review_cap);
     let mut authority = owner.clone();
     authority.insert("authority", json!({"kind":"restricted_roots","roots":[source.directory.to_string_lossy().as_ref()],"effective_uid":unsafe {libc::geteuid()}.to_string()}));
     for changed in [registry, admission, authority] {
