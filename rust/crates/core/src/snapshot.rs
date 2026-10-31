@@ -21987,14 +21987,16 @@ mod tests {
                 &owner,
             );
             assert_eq!(slices(&prepared), 0);
-            let slice_anchor = {
-                let state = store.lock_state();
-                let graph = state.prepared_graphs
+            let slice_anchor = facts_anchor(
+                store.lock_state().prepared_graphs
                     [measured["data"]["handle"]["graph_id"].as_str().unwrap()]
                 .lock()
-                .unwrap();
-                facts_anchor(graph.root_slices.values().next().unwrap())
-            };
+                .unwrap()
+                .root_slices
+                .values()
+                .next()
+                .unwrap(),
+            );
             release_graph(&store, &measured, &owner);
             let table_growth = store.lock_state().ledger.shared.growth([slice_anchor]);
             let idle = store.retained_accounted_bytes();
