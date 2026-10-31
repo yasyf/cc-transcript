@@ -313,7 +313,9 @@ impl NativeStore {
                 ));
             }
             load.chunks.clear();
+            load.fresh_chunk_bytes = 0;
             load.activity = ActivityIndex::default();
+            load.activity_from_previous = false;
             load.indexed = 0;
             load.session_id = None;
             let arenas = session_arenas(&session, &entries);
@@ -347,8 +349,10 @@ impl NativeStore {
             .last()
             .map_or(0, |chunk| chunk.start + chunk.entries.len());
         if !entries.is_empty() {
-            load.chunks
-                .push(Arc::new(EntryChunk::retaining(start, entries, arenas)));
+            let chunk = Arc::new(EntryChunk::retaining(start, entries, arenas));
+            load.fresh_chunk_bytes += chunk.charge.owned_capacity_bytes
+                + chunk.charge.opaque_dom_accounted_bytes;
+            load.chunks.push(chunk);
         }
         load.count = load.chunks.iter().map(|chunk| chunk.entries.len()).sum();
         let committed = raw
@@ -360,6 +364,7 @@ impl NativeStore {
         load.fence = raw[committed.saturating_sub(64)..committed].to_vec();
         let cached = raw.len() <= 64 * 1024 * 1024;
         load.codex_append = cached.then(|| Arc::new(index));
+        load.codex_append_bytes = load.codex_append.as_ref().map_or(0, |index| index.accounted_bytes());
         load.codex_raw = cached.then(|| Arc::new(raw));
         load.pending.clear();
         Ok(())
