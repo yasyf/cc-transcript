@@ -1,0 +1,26 @@
+name: Private Instruction Projection
+on:
+  push:
+    branches: [perf/instruction-evidence-selected]
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: git rev-parse HEAD && rustc -Vv
+      - name: Test four exact instruction fixtures
+        run: |
+          cargo test -p cc-transcript-core --no-default-features --lib snapshot_projection::tests::instruction_projection_matches_full_turn_windows_and_late_rejections -- --exact --nocapture --test-threads=1
+          cargo test -p cc-transcript-core --no-default-features --lib snapshot_projection::tests::instruction_projection_borrows_evidence_without_successful_payload_growth -- --exact --nocapture --test-threads=1
+          cargo test -p cc-transcript-core --no-default-features --lib snapshot_projection::tests::instruction_projection_small_window_avoids_historical_call_metadata -- --exact --nocapture --test-threads=1
+          cargo test -p cc-transcript-core --no-default-features --lib snapshot_projection::tests::instruction_suffix_preserves_unicode_after_python_strip -- --exact --nocapture --test-threads=1
+      - name: Check mechanical Rust formatting
+        if: always()
+        run: cargo fmt --all -- --check

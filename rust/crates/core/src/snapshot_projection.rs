@@ -1016,6 +1016,141 @@ pub(crate) fn strip_parts(parts: &mut Vec<&str>) {
     parts[last] = crate::pystr::rstrip(parts[last]);
 }
 
+fn suffix_parts(parts: &mut Vec<&str>, count: usize) {
+    let mut remaining = count;
+    for index in (0..parts.len()).rev() {
+        if remaining == 0 {
+            parts.drain(..index + 1);
+            return;
+        }
+        let part = parts[index];
+        if let Some((start, character)) = part.char_indices().rev().nth(remaining) {
+            parts[index] = &part[start + character.len_utf8()..];
+            parts.drain(..index);
+            return;
+        }
+        remaining -= part.chars().count();
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct InstructionTurn<'a> {
+    pub(crate) prompt: &'a str,
+    pub(crate) started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) queued: Vec<(&'a str, chrono::DateTime<chrono::Utc>)>,
+    pub(crate) rejections: Vec<(&'a str, &'a str, chrono::DateTime<chrono::Utc>)>,
+    pub(crate) assistant_tail: Vec<&'a str>,
+}
+
+fn queued_instruction(event: &Entry) -> Option<(&str, chrono::DateTime<chrono::Utc>)> {
+    let Entry::Attachment(attachment) = event else {
+        return None;
+    };
+    let AttachmentDetail::QueuedCommand(command) = &attachment.detail else {
+        return None;
+    };
+    (command.origin.as_deref() == Some("human"))
+        .then_some((command.prompt.as_deref().unwrap_or(""), attachment.meta.timestamp))
+}
+
+fn rejected_instruction<'a>(
+    name: &'a str,
+    position: Option<(usize, usize)>,
+    entry: &impl Fn(usize) -> &'a Entry,
+) -> Option<(&'a str, &'a str, chrono::DateTime<chrono::Utc>)> {
+    let (event, ordinal) = position?;
+    let Entry::User(user) = entry(event) else {
+        unreachable!()
+    };
+    let ContentBlock::ToolResult(result) = &user.blocks()[ordinal] else {
+        unreachable!()
+    };
+    if result.denial_kind.as_deref() != Some(crate::protocol::DENIAL_KIND_USER_REJECTED) {
+        return None;
+    }
+    Some((&result.content, name, user.meta.timestamp))
+}
+
+fn instruction_shape<'a>(
+    activity: &'a crate::snapshot_activity::ActivityIndex,
+    index: usize,
+    range: &Range<usize>,
+    entry: &impl Fn(usize) -> &'a Entry,
+) -> Option<(Range<usize>, usize, usize, usize)> {
+    let bounds = activity.turn_bounds(index)?;
+    let selected = bounds.start.max(range.start)..bounds.end.min(range.end);
+    if selected.is_empty() {
+        return None;
+    }
+    let mut queued = 0;
+    let mut parts = 0;
+    for position in selected.clone() {
+        match entry(position) {
+            event @ Entry::Attachment(_) => {
+                queued += usize::from(queued_instruction(event).is_some());
+            }
+            Entry::Assistant(assistant) => {
+                let texts = assistant.blocks.iter().filter(|block| matches!(block, ContentBlock::Text(_))).count();
+                parts = parts.max(texts * 2 - usize::from(texts != 0));
+            }
+            _ => {}
+        }
+    }
+    let rejections = activity.call_results(index, selected.clone())
+        .filter(|(name, _, position)| rejected_instruction(name, *position, entry).is_some())
+        .count();
+    Some((selected, queued, rejections, parts))
+}
+
+pub(crate) fn instruction_turn_heap_bound<'a>(
+    activity: &'a crate::snapshot_activity::ActivityIndex,
+    index: usize,
+    range: &Range<usize>,
+    entry: impl Fn(usize) -> &'a Entry,
+) -> Option<usize> {
+    let (_, queued, rejections, parts) = instruction_shape(activity, index, range, &entry)?;
+    Some(
+        queued * std::mem::size_of::<(&str, chrono::DateTime<chrono::Utc>)>()
+            + rejections * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::Utc>)>()
+            + pushed_capacity(parts) * std::mem::size_of::<&str>(),
+    )
+}
+
+pub(crate) fn instruction_turn<'a>(
+    activity: &'a crate::snapshot_activity::ActivityIndex,
+    index: usize,
+    range: &Range<usize>,
+    entry: impl Fn(usize) -> &'a Entry,
+) -> Option<InstructionTurn<'a>> {
+    let (selected, queued_count, rejected_count, _) = instruction_shape(activity, index, range, &entry)?;
+    let mut queued = Vec::with_capacity(queued_count);
+    queued.extend(selected.clone().filter_map(|position| queued_instruction(entry(position))));
+    let mut rejections = Vec::with_capacity(rejected_count);
+    rejections.extend(activity.call_results(index, selected.clone())
+        .filter_map(|(name, _, position)| rejected_instruction(name, position, &entry)));
+    let mut assistant_tail = Vec::new();
+    for position in selected.rev() {
+        let event = entry(position);
+        if !matches!(event, Entry::Assistant(_)) {
+            continue;
+        }
+        let mut parts = joined_event_parts(event);
+        strip_parts(&mut parts);
+        if !parts.is_empty() {
+            suffix_parts(&mut parts, 400);
+            assistant_tail = parts;
+            break;
+        }
+    }
+    Some(InstructionTurn {
+        prompt: if activity.turn_bounds(index)?.start < range.start { "" } else { activity.prompt(index)? },
+        started_at: activity.turn_started(index).map(|position| entry(position).meta().unwrap().timestamp),
+        queued,
+        rejections,
+        assistant_tail,
+    })
+}
+
 fn prefix_parts(parts: &mut Vec<&str>, count: usize) {
     let mut remaining = count;
     for index in 0..parts.len() {
@@ -2373,6 +2508,181 @@ mod tests {
 
     fn said(uuid: &str, text: &str) -> Value {
         json!({"type":"assistant","uuid":uuid,"sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"model":"test","content":[{"type":"text","text":text}]}})
+    }
+
+    fn instruction_value(value: &InstructionTurn<'_>) -> Value {
+        json!({
+            "prompt":value.prompt,
+            "started_at":value.started_at,
+            "queued":value.queued,
+            "rejections":value.rejections,
+            "assistant_tail":value.assistant_tail.concat(),
+        })
+    }
+
+    fn instruction_oracle(lift: &LiftedSession<'_>, index: usize, range: Range<usize>) -> Option<Value> {
+        let window = Session::from_lift(lift).windowed(range.start, range.end);
+        let (_, prompt, events, uses) = window.turn_views().find(|(turn, _, _, _)| *turn == index)?;
+        let queued: Vec<_> = events.iter().filter_map(|event| {
+            let Entry::Attachment(attachment) = event else { return None; };
+            let AttachmentDetail::QueuedCommand(command) = &attachment.detail else { return None; };
+            (command.origin.as_deref() == Some("human"))
+                .then_some((command.prompt.as_deref().unwrap_or(""), attachment.meta.timestamp))
+        }).collect();
+        let rejections: Vec<_> = uses.iter().filter_map(|use_| {
+            let result = use_.result?;
+            (result.denial_kind.as_deref() == Some(crate::protocol::DENIAL_KIND_USER_REJECTED))
+                .then_some((result.content.as_str(), use_.call.name(), use_.result_ts.unwrap_or(use_.ts)))
+        }).collect();
+        let assistant = events.iter().filter_map(|event| {
+            let Entry::Assistant(assistant) = event else { return None; };
+            let text = crate::types::joined_text(&assistant.blocks);
+            let text = crate::pystr::strip(&text);
+            (!text.is_empty()).then(|| text.to_owned())
+        }).last().unwrap_or_default();
+        let tail: String = assistant.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+        Some(json!({
+            "prompt":prompt,
+            "started_at":lift.turns[index].started_at,
+            "queued":queued,
+            "rejections":rejections,
+            "assistant_tail":tail,
+        }))
+    }
+
+    #[test]
+    fn instruction_projection_matches_full_turn_windows_and_late_rejections() {
+        let queue = |id: &str, origin: &str, prompt: Option<&str>| {
+            json!({"type":"attachment","uuid":id,"sessionId":"s","timestamp":"2026-01-02T03:04:06Z","attachment":{"type":"queued_command","origin":{"kind":origin},"prompt":prompt}})
+        };
+        let mut rejected = tool_result("late-result", "rejected", "No, do not post".into());
+        rejected.insert("toolDenialKind", json!(crate::protocol::DENIAL_KIND_USER_REJECTED));
+        let raw = vec![
+            user("root", "repeat"),
+            queue("human", "human", Some("queued words")),
+            queue("empty", "human", None),
+            queue("agent", "agent", Some("not the user's words")),
+            tool("reject-call", "rejected", "Bash", json!({"command":"private successful input"})),
+            tool("pending-call", "pending", "Bash", json!({"command":"pending"})),
+            said("answer", &format!("\u{1c}{} END\u{1f}", "é🦀 ".repeat(180))),
+            said("empty-answer", " \u{1c}\u{1f}"),
+            user("next", "next prompt"),
+            rejected,
+            said("next-answer", "a different offer"),
+            user("repeat", "repeat"),
+        ];
+        let snapshot = snapshot(&raw);
+        let entries: Vec<_> = (0..snapshot.event_count).map(|position| snapshot.entry(position)).collect();
+        let indices: Vec<_> = (0..snapshot.activity.turn_count()).collect();
+        let old = snapshot.activity.project("s", &entries, &indices);
+        assert_eq!(old.turns.iter().filter(|turn| turn.prompt == "repeat").count(), 2);
+        for start in 0..=snapshot.event_count {
+            for stop in start..=snapshot.event_count {
+                let range = start..stop;
+                for index in 0..snapshot.activity.turn_count() {
+                    let actual = instruction_turn(&snapshot.activity, index, &range, |position| snapshot.entry(position));
+                    let expected = instruction_oracle(&old, index, range.clone());
+                    assert_eq!(actual.as_ref().map(instruction_value), expected, "turn={index} range={range:?}");
+                    let bound = instruction_turn_heap_bound(&snapshot.activity, index, &range, |position| snapshot.entry(position));
+                    assert_eq!(bound.is_some(), actual.is_some());
+                    if let Some(actual) = actual {
+                        let capacity = actual.queued.capacity() * std::mem::size_of::<(&str, chrono::DateTime<chrono::Utc>)>()
+                            + actual.rejections.capacity() * std::mem::size_of::<(&str, &str, chrono::DateTime<chrono::Utc>)>()
+                            + actual.assistant_tail.capacity() * std::mem::size_of::<&str>();
+                        assert!(capacity <= bound.unwrap(), "{capacity} exceeds {bound:?}");
+                    }
+                }
+            }
+        }
+        let clipped = instruction_turn(&snapshot.activity, 0, &(1..8), |position| snapshot.entry(position)).unwrap();
+        assert!(clipped.prompt.is_empty());
+        assert_eq!(clipped.started_at, old.turns[0].started_at);
+        assert_eq!(clipped.rejections[0].0, "No, do not post");
+        assert_eq!(clipped.rejections[0].2, snapshot.entry(9).meta().unwrap().timestamp);
+        assert_eq!(clipped.assistant_tail.concat().chars().count(), 400);
+    }
+
+    #[test]
+    fn instruction_projection_borrows_evidence_without_successful_payload_growth() {
+        let mut previous = None;
+        for count in [32, 4096] {
+            let mut raw = vec![user("prompt", "do the work")];
+            for index in 0..count {
+                let id = format!("successful-{index}");
+                raw.push(tool(&format!("call-{index}"), &id, "Bash", json!({"command":"x".repeat(512)})));
+                raw.push(tool_result(&format!("result-{index}"), &id, "y".repeat(512)));
+            }
+            raw.push(said("response", "done"));
+            let snapshot = snapshot(&raw);
+            let range = 0..snapshot.event_count;
+            let visits = std::cell::Cell::new(0);
+            let entry = |position| {
+                visits.set(visits.get() + 1);
+                snapshot.entry(position)
+            };
+            let bound = instruction_turn_heap_bound(&snapshot.activity, 0, &range, entry).unwrap();
+            let actual = instruction_turn(&snapshot.activity, 0, &range, entry).unwrap();
+            assert!(actual.queued.is_empty() && actual.rejections.is_empty());
+            assert_eq!(actual.assistant_tail.concat(), "done");
+            assert!(visits.get() <= 4 * snapshot.event_count + 4 * count + 8);
+            let entries: Vec<_> = range.clone().map(|position| snapshot.entry(position)).collect();
+            let old = snapshot.activity.project("s", &entries, &[0]);
+            assert_eq!(Some(instruction_value(&actual)), instruction_oracle(&old, 0, range));
+            let old_bytes = snapshot.activity.projected_bytes(0).unwrap();
+            if let Some((small_bound, small_old_bytes)) = previous {
+                assert_eq!(bound, small_bound);
+                assert!(old_bytes > small_old_bytes * 32);
+            }
+            previous = Some((bound, old_bytes));
+            eprintln!("instruction_projection successful={count} metadata_visits={} transient_bound={bound} old_turn_bytes={old_bytes}", visits.get());
+        }
+    }
+
+    #[test]
+    fn instruction_projection_small_window_avoids_historical_call_metadata() {
+        for count in [32_usize, 4096] {
+            let mut raw = vec![user("prompt", "do the work")];
+            for index in 0..count {
+                let id = format!("past-{index}");
+                raw.push(tool(&format!("call-{index}"), &id, "Bash", json!({"command":"x".repeat(512)})));
+                raw.push(tool_result(&format!("result-{index}"), &id, "y".repeat(512)));
+            }
+            raw.push(said("reply", "done"));
+            let snapshot = snapshot(&raw);
+            let range = snapshot.event_count - 8..snapshot.event_count;
+            crate::snapshot_activity::reset_instruction_call_work();
+            let bound = instruction_turn_heap_bound(&snapshot.activity, 0, &range, |position| snapshot.entry(position)).unwrap();
+            let actual = instruction_turn(&snapshot.activity, 0, &range, |position| snapshot.entry(position)).unwrap();
+            let (comparisons, visits) = crate::snapshot_activity::instruction_call_work();
+            assert_eq!(visits, 9);
+            assert!(comparisons <= 6 * (count.ilog2() as usize + 2));
+            assert!(actual.prompt.is_empty());
+            assert_eq!(actual.assistant_tail.concat(), "done");
+            let entries: Vec<_> = (0..snapshot.event_count).map(|position| snapshot.entry(position)).collect();
+            let old = snapshot.activity.project("s", &entries, &[0]);
+            assert_eq!(Some(instruction_value(&actual)), instruction_oracle(&old, 0, range));
+            eprintln!("instruction_small_window historical_calls={count} selected_calls=3 lookup_comparisons={comparisons} call_metadata_visits={visits} transient_bound={bound}");
+        }
+    }
+
+    #[test]
+    fn instruction_suffix_preserves_unicode_after_python_strip() {
+        for parts in [
+            vec![""],
+            vec![" \u{1c}", "é", " ", "🦀", "\u{1f}"],
+            vec!["a", "", "  ", "b"],
+            vec!["é🦀xyz", " ", "last"],
+        ] {
+            for count in 0..=12 {
+                let mut actual = parts.clone();
+                strip_parts(&mut actual);
+                suffix_parts(&mut actual, count);
+                let joined = parts.concat();
+                let expected: String = crate::pystr::strip(&joined).chars().rev().take(count)
+                    .collect::<Vec<_>>().into_iter().rev().collect();
+                assert_eq!(actual.concat(), expected, "parts={parts:?} count={count}");
+            }
+        }
     }
 
     fn hook_scale_snapshot() -> TranscriptSnapshot {
