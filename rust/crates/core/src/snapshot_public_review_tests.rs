@@ -539,7 +539,8 @@ fn public_catalog_review_current_ordinary_errors_are_reobserved_per_caller_and_r
         let slot = state.catalogs.values().next().unwrap();
         let cell = slot.cell.lock().unwrap();
         let CatalogCell::Idle(catalog) = &*cell else { panic!("seed catalog is not idle"); };
-        catalog.directories.values().next().unwrap().edges[0].name.clone()
+        let neutral = catalog.directories.values().next().unwrap().edges[0].name.clone();
+        neutral
     };
     let target = std::fs::read_dir(&source.directory).unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -559,7 +560,8 @@ fn public_catalog_review_current_ordinary_errors_are_reobserved_per_caller_and_r
         let state = store.lock_state();
         let cell = state.catalogs.values().next().unwrap().cell.lock().unwrap();
         let CatalogCell::Idle(catalog) = &*cell else { panic!("failed catalog is not idle"); };
-        (state.catalogs.len(), catalog.complete, catalog.directories.values().all(|node| node.symlinks.is_empty()))
+        let observed = (state.catalogs.len(), catalog.complete, catalog.directories.values().all(|node| node.symlinks.is_empty()));
+        observed
     };
     assert_eq!(catalog_count, 1);
     assert!(complete);

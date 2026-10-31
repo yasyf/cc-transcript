@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: e048938ed06f9bcacb934bcce8c7dd4510eeaea9
+          ref: 0cf322f79e257acae5e35e3296ea24f701f2ff08
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Catalog authority, observations, and reuse
