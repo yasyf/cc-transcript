@@ -154,7 +154,7 @@ def decode_projection(
     match record_schema:
         case "cc-transcript.event/1" | "cc-transcript.sidechain/1":
             return payloads
-        case "cc-transcript.mining-signal/1":
+        case "cc-transcript.meta-message/1" | "cc-transcript.mining-signal/1" | "cc-transcript.interaction-key/1" | "cc-transcript.interaction-winner/1":
             return payloads
         case "cc-transcript.tool-use/1":
             return [_tool(payload) for payload in payloads]
