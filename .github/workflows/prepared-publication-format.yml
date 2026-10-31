@@ -1,0 +1,14 @@
+name: Prepared Publication Format
+on:
+  push:
+    branches: [ci/prepared-publication-format]
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
