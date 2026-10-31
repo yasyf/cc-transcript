@@ -10583,6 +10583,7 @@ impl NativeStore {
         let mut at = next;
         let mut read_bytes = 0;
         let mut events = 0;
+        let mut incomplete_reason = None;
         while at < windows.len() && output.len() < bound.max_items.min(self.config.page_items) {
             cancel.check(bound.deadline_unix_ms)?;
             let text = windows[at]
@@ -10598,15 +10599,16 @@ impl NativeStore {
                 single.insert("windows_json", json!([text]));
                 let projected =
                     crate::snapshot_projection::project(snapshot, &single, &remaining, cancel, 0)?;
-                if !projected.complete {
-                    break;
-                }
                 read_bytes += projected.read_bytes;
                 events += projected.events;
                 remaining.max_read_bytes = remaining
                     .max_read_bytes
                     .saturating_sub(projected.read_bytes);
                 remaining.max_events = remaining.max_events.saturating_sub(projected.events);
+                if !projected.complete {
+                    incomplete_reason = projected.reason;
+                    break;
+                }
                 let mut item = projected.data["windows"][0].clone();
                 item.insert("input_index", json!(at));
                 item
@@ -10630,7 +10632,9 @@ impl NativeStore {
             data: json!({"kind": "hydrated", "windows": output}),
             complete: at == windows.len(),
             next: (at < windows.len() && at > next).then_some(at),
-            reason: (at < windows.len()).then(|| "hydration work incomplete".to_owned()),
+            reason: (at < windows.len()).then(|| {
+                incomplete_reason.unwrap_or_else(|| "hydration work incomplete".to_owned())
+            }),
             read_bytes,
             events,
             items: count,
@@ -12078,6 +12082,7 @@ mod tests {
     include!("snapshot_raw_scope_tests.rs");
     include!("snapshot_raw_projection_tests.rs");
     include!("snapshot_raw_tail_tests.rs");
+    include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");
     include!("snapshot_catalog_tests.rs");
