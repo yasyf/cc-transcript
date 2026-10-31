@@ -11,11 +11,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: b1b3c9ef020fa9774ffda17a3d6dc2c269f249b6
+          ref: 97fcc3e6e83d61448960195d7f6889279a1bf2a2
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Preserve the exact cross-mode fixture
-        run: sed -n '/^fn public_review_name_barrier_state/,$p' rust/crates/core/src/snapshot_public_review_tests.rs > "$RUNNER_TEMP/name-barrier-fixture.rs"
+      - name: Preserve the two exact independent fixtures
+        run: |
+          python3 - <<'PYCODE'
+          import os, pathlib
+          source = pathlib.Path("rust/crates/core/src/snapshot_public_review_tests.rs").read_text()
+          begin = source.index("fn public_review_name_barrier_state(")
+          parent = source.index("#[test]\nfn public_catalog_review_a_later_current_parent_open_error_keeps_an_earlier_selected_chunk()")
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          (root / "name-barrier-fixture.rs").write_text(source[begin:parent])
+          (root / "parent-open-fixture.rs").write_text(source[parent:])
+          PYCODE
       - name: Catalog authority, observations, and reuse
         id: catalog
         continue-on-error: true
@@ -36,6 +45,27 @@ jobs:
           fi
           cat "$RUNNER_TEMP/name-barrier-negative.log"
           grep -F 'current caller must reuse the indexed NAME frontier' "$RUNNER_TEMP/name-barrier-negative.log"
+      - uses: actions/checkout@v7
+        with:
+          ref: b1b3c9ef020fa9774ffda17a3d6dc2c269f249b6
+      - name: Prove independent parent-open fixture fails before error mapping repair
+        run: |
+          cat "$RUNNER_TEMP/parent-open-fixture.rs" >> rust/crates/core/src/snapshot_public_review_tests.rs
+          python3 - <<'PYCODE'
+          import pathlib
+          path = pathlib.Path("rust/crates/core/src/snapshot_symlink_proof.rs")
+          source = path.read_text()
+          start = source.index("fn catalog_open_proof_directory(")
+          pos = source.index("    request.check()?;\n", start) + len("    request.check()?;\n")
+          source = source[:pos] + '    #[cfg(test)]\n    request.store.after_location_metadata("catalog_directory_proof");\n' + source[pos:]
+          path.write_text(source)
+          PYCODE
+          if cargo test -p cc-transcript-core --no-default-features --lib -- snapshot::ledger_tests::public_catalog_review_a_later_current_parent_open_error_keeps_an_earlier_selected_chunk --exact --nocapture > "$RUNNER_TEMP/parent-open-negative.log" 2>&1; then
+            cat "$RUNNER_TEMP/parent-open-negative.log"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/parent-open-negative.log"
+          grep -F 'a later current parent error must preserve an earlier selected chunk' "$RUNNER_TEMP/parent-open-negative.log"
       - name: Require both regression populations
         if: always()
         env:

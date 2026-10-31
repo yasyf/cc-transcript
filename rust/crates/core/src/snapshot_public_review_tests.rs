@@ -697,3 +697,52 @@ fn public_catalog_review_private_error_names_recover_in_a_foreign_public_prefix_
     assert_eq!(public_review_name_barrier_state(&store),(appends,0),"recovery must replace the exact NAME without directory replay");
     store.assert_conserved();
 }
+
+#[test]
+fn public_catalog_review_a_later_current_parent_open_error_keeps_an_earlier_selected_chunk() {
+    let source = LedgerSource::new(&line("parent-error-root"));
+    let good = source.directory.join("good");
+    let bad = source.directory.join("bad");
+    std::fs::create_dir(&good).unwrap();
+    std::fs::create_dir(&bad).unwrap();
+    let wanted = good.join("wanted.jsonl");
+    std::fs::write(&wanted,line("parent-error-wanted")).unwrap();
+    std::fs::write(bad.join("ordinary.txt"),"").unwrap();
+    let store = public_review_store(256);
+    let mut owner = context_for("public-review-current-parent-error",false);
+    owner.insert("authority",json!({"kind":"restricted_roots","roots":[source.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let (root,_pin) = acquired(&store,&source.path,&owner);
+    let roots = vec![bad.to_string_lossy().into_owned(),good.to_string_lossy().into_owned()];
+    *store.canonical_error_hook.lock().unwrap() = Some(Arc::new(|path| {
+        path.file_name().is_some_and(|name| name == "ordinary.txt").then(|| std::io::Error::other("seed current NAME refusal"))
+    }));
+    let seed = prepare_request(&root,&["missing".to_owned()],&roots,&[]);
+    let first = store.request(&seed,&owner,&Cancellation::default());
+    assert_eq!(first["status"].as_str(),Some("changed"),"{first:?}");
+    assert!(first["reason"].as_str().unwrap().contains("seed current NAME refusal"));
+    let initially_unselected = store.lock_state().locations.get("wanted").is_none();
+    assert!(initially_unselected);
+    store.assert_conserved();
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let arm = Arc::clone(&armed);
+    *store.location_metadata_hook.lock().unwrap() = Some(("catalog_directory_proof",Arc::new(move || {
+        arm.store(true,Ordering::Relaxed);
+    })));
+    let opened = Arc::clone(&armed);
+    let proof_parent = std::fs::canonicalize(&bad).unwrap();
+    *store.canonical_error_hook.lock().unwrap() = Some(Arc::new(move |path| {
+        (path == proof_parent && opened.load(Ordering::Relaxed)).then(|| std::io::Error::other("later current parent open failure"))
+    }));
+    let mut request = prepare_request(&root,&["wanted".to_owned(),"missing".to_owned()],&roots,&[]);
+    request["limits"].insert("max_items",json!(1));
+    let result = store.request(&request,&owner,&Cancellation::default());
+    assert!(armed.load(Ordering::Relaxed));
+    assert_eq!(result["status"].as_str(),Some("changed"),"{result:?}");
+    assert!(result["reason"].as_str().unwrap().contains("later current parent open failure"));
+    let remembered = store.lock_state().locations.get("wanted").map(|entry| entry.path.clone());
+    assert_eq!(remembered,Some(wanted),"a later current parent error must preserve an earlier selected chunk");
+    *store.canonical_error_hook.lock().unwrap() = None;
+    *store.location_metadata_hook.lock().unwrap() = None;
+    store.assert_conserved();
+}
