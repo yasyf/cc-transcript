@@ -9017,6 +9017,10 @@ fn cold_acquire(fixture: &Fixture) -> bool {
 fn cold_load_walk(slot: &LoadSlot) -> usize {
     let load = slot.work.lock().unwrap();
     let Load {
+        charge_work: _,
+        fresh_chunk_bytes: _,
+        activity_from_previous: _,
+        codex_append_bytes: _,
         file: _,
         offset: _,
         pending,

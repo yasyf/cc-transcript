@@ -78,6 +78,9 @@ jobs:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: cargo test -p cc-transcript-py --lib
 
+      - name: Test unpublished load charge work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- load_charge_ --nocapture
+
       - name: Test selective call projection work on Linux
         run: |
           cargo test -p cc-transcript-core --no-default-features --lib -- named_projection_does_not_clone_unrelated_call_payloads --nocapture
