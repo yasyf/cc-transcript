@@ -171,8 +171,9 @@ fn tail_cache_retained_selection_survives_record_registration_and_drops_with_sou
 fn tail_cache_rechecks_retargeted_authority_before_reuse() {
     let mut source = Source::new(&users(0..8));
     let allowed = source.directory.join("allowed");
-    std::fs::create_dir(&allowed).unwrap();
-    let path = allowed.join("s.jsonl");
+    let nested = allowed.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let path = nested.join("s.jsonl");
     std::fs::rename(&source.path, &path).unwrap();
     source.path = path;
     let store = NativeStore::new(&json!({})).unwrap();
@@ -183,8 +184,8 @@ fn tail_cache_rechecks_retargeted_authority_before_reuse() {
     store.request(&request, &owner, &Cancellation::default());
     assert_eq!(store.request(&request, &owner, &Cancellation::default())["usage"]["source_bytes_read"].as_u64(), Some(0));
     let outside = source.directory.join("outside");
-    std::fs::rename(&allowed, &outside).unwrap();
-    std::os::unix::fs::symlink(&outside, &allowed).unwrap();
+    std::fs::rename(&nested, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &nested).unwrap();
     let refused = store.request(&request, &owner, &Cancellation::default());
     assert_eq!(refused["status"].as_str(), Some("permission_denied"));
     assert_eq!(refused["usage"]["source_bytes_read"].as_u64(), Some(0));
@@ -240,7 +241,7 @@ fn tail_cache_optional_retention_refusal_keeps_the_original_empty_reply() {
     let key = snapshot_key(&pinned);
     let before = NativeStore::retained_total(&mut store.lock_state());
     let original_cap = store.config.retained;
-    store.config.retained = before;
+    store.config.retained = before + MAX_REPLY_BYTES.saturating_mul(2);
     let request = tail_request(&source.path, 3, 1024*1024);
     let refused_retention = store.request(&request, &owner, &Cancellation::default());
     let reference = NativeStore::new(&json!({})).unwrap();
