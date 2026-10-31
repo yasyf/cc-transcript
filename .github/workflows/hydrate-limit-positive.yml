@@ -1,0 +1,21 @@
+name: Native hydrate limit propagation positive
+on:
+  push:
+    branches: [test/hydrate-limit-work-after]
+permissions:
+  contents: read
+jobs:
+  hydrate-limit-positive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+      RUST_TEST_THREADS: 1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Record exact corrected source and compiler
+        run: git rev-parse HEAD && rustc -Vv && uname -m
+      - name: Grade corrected real hydrate reasons and consumed work
+        run: cargo test -p cc-transcript-core --no-default-features --lib snapshot::tests::hydrate_ -- --nocapture --test-threads=1
