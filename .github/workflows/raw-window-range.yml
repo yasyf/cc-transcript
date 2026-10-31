@@ -1,0 +1,15 @@
+name: Raw Sparse Interaction Contract
+on:
+  push:
+    branches: [perf/interaction-wire]
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p cc-transcript-core --no-default-features --lib -- raw_ --nocapture
+      - run: cargo test -p cc-transcript-core --no-default-features --lib -- native_interaction_ --nocapture
