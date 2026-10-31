@@ -111,6 +111,9 @@ jobs:
       - name: Test owned transcript catalog operation counts on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
 
+      - name: Test native hydrate limit reasons and consumed work on Linux
+        run: cargo test -p cc-transcript-core --no-default-features --lib snapshot::tests::hydrate_ -- --nocapture --test-threads=1
+
       - name: Generate native type stubs
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
