@@ -513,6 +513,8 @@ impl NativeStore {
             &context["authority"],
             &classifier,
         )?;
+        #[cfg(test)]
+        self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "request" });
         loop {
         if let Some(retained) = self.touch_retained_facts(
             &key,
@@ -523,6 +525,8 @@ impl NativeStore {
             &classifier,
             need,
         ) {
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "retained-hit" });
             usage[7] += 1;
             return Ok((
                 stamp,
@@ -543,6 +547,8 @@ impl NativeStore {
             &classifier,
             need,
         ) {
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "retained-hit" });
             usage[7] += 1;
             return Ok((
                 stamp,
@@ -608,6 +614,8 @@ impl NativeStore {
             }
             match lookup? {
                 crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-hit" });
                     usage[7] += 1;
                     let facts = Arc::new(facts);
                     let held = match self.cache_prepared_facts(
@@ -634,20 +642,37 @@ impl NativeStore {
                     ));
                 }
                 crate::snapshot_prepared_disk::DiskLookup::Retired => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-retired" });
                     return Err(SnapshotError::new(
                         Status::Incomplete,
                         "prepared facts revision was evicted",
                     ));
                 }
-                crate::snapshot_prepared_disk::DiskLookup::Changed => continue,
+                crate::snapshot_prepared_disk::DiskLookup::Changed => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-changed" });
+                    continue;
+                }
                 crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-index-only" });
                     drop(compact);
                     drop(reservation);
                 }
-                crate::snapshot_prepared_disk::DiskLookup::Miss => {}
+                crate::snapshot_prepared_disk::DiskLookup::Miss => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-miss" });
+                    
+                }
             }
+        } else {
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-absent" });
         }
         drop(claim);
+        #[cfg(test)]
+        self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "acquire" });
         let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
         let before_bytes = usage[1];
         let before_events = usage[3];
@@ -788,15 +813,23 @@ impl NativeStore {
             let growth = state.recent_codex_growth(&stamp.identity);
             if recent_codex && self.admit_memory(&mut state, context, growth).is_ok() {
                 state.insert_recent_codex(stamp.identity, now_ms());
-                while state.recent_codex_raw_bytes > 128 * 1024 * 1024 {
+                while state.recent_codex_raw_bytes > self.recent_codex_raw_bound() {
                     let oldest = state
                         .recent_codex
                         .iter()
                         .min_by_key(|(_, touched)| *touched)
                         .map(|(identity, _)| *identity)
                         .expect("raw codex cache exceeds bound");
+                    #[cfg(test)]
+                    let before = (state.recent_codex_raw_bytes, state.latest.contains_key(&oldest), state.source_spines.contains_key(&oldest.file()));
                     state.remove_recent_codex(&oldest);
                     state.remove_latest(&oldest);
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::RawVictim {
+                        identity: oldest, before_bytes: before.0, after_bytes: state.recent_codex_raw_bytes,
+                        latest_before: before.1, spine_before: before.2,
+                        latest_after: state.latest.contains_key(&oldest), spine_after: state.source_spines.contains_key(&oldest.file()),
+                    });
                 }
             } else if snapshot.provider == Provider::Codex {
                 state.remove_recent_codex(&stamp.identity);

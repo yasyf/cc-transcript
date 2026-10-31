@@ -3430,6 +3430,10 @@ pub struct NativeStore {
     #[cfg(test)]
     pub(crate) fact_builds: AtomicUsize,
     #[cfg(test)]
+    recent_codex_raw_limit: AtomicUsize,
+    #[cfg(test)]
+    hydration_observations: Mutex<Option<Vec<HydrationObservation>>>,
+    #[cfg(test)]
     pub(crate) description_builds: AtomicUsize,
     #[cfg(test)]
     pub(crate) fact_lookups: AtomicUsize,
@@ -3931,6 +3935,10 @@ impl NativeStore {
             warm_copies: AtomicUsize::new(0),
             #[cfg(test)]
             fact_builds: AtomicUsize::new(0),
+            #[cfg(test)]
+            recent_codex_raw_limit: AtomicUsize::new(128 * 1024 * 1024),
+            #[cfg(test)]
+            hydration_observations: Mutex::new(None),
             #[cfg(test)]
             description_builds: AtomicUsize::new(0),
             #[cfg(test)]
@@ -9079,6 +9087,11 @@ impl NativeStore {
                 .read_exact(&mut load.origin_fence[start..])
                 .map_err(io_error)?;
             usage[1] += count as u64;
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Read {
+                stamp: slot.stamp,
+                bytes: count as u64,
+            });
             if load.origin_fence.len() == fence_size {
                 load.origin_complete = true;
                 load.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
@@ -9108,6 +9121,11 @@ impl NativeStore {
                     .read_exact(&mut load.prefix_fence[start..])
                     .map_err(io_error)?;
                 usage[1] += count as u64;
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 if load.prefix_fence.len() < prior_fence.len() {
                     return Ok(());
                 }
@@ -9217,6 +9235,11 @@ impl NativeStore {
                 self.before_source_read();
                 load.file.read_exact(&mut block).map_err(io_error)?;
                 usage[1] += count;
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 load.window_scanned += count;
                 memchr::memrchr(b'\n', &block).map(|newline| unscanned - count + newline as u64 + 1)
             };
@@ -9284,6 +9307,11 @@ impl NativeStore {
                     .map_err(io_error)?;
                 load.offset += count as u64;
                 usage[1] += count as u64;
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 if !Self::matches_prefix(
                     SourceStamp::of(&load.file.metadata().map_err(io_error)?),
                     slot.stamp,
@@ -9521,6 +9549,11 @@ impl NativeStore {
                 .read_exact(&mut load.seal_fence[start..])
                 .map_err(io_error)?;
             usage[1] += count as u64;
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Read {
+                stamp: slot.stamp,
+                bytes: count as u64,
+            });
             if load.seal_fence.len() < fence_size {
                 return Ok(());
             }
@@ -12082,6 +12115,7 @@ include!("snapshot_symlink_proof.rs");
 include!("snapshot_catalog_owner.rs");
 include!("snapshot_sidechain_absence.rs");
 include!("snapshot_prepared_service.rs");
+include!("snapshot_hydration_observations.rs");
 include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
@@ -12155,6 +12189,7 @@ mod tests {
     include!("snapshot_raw_projection_tests.rs");
     include!("snapshot_raw_tail_tests.rs");
     include!("snapshot_direct_tail_tests.rs");
+    include!("snapshot_query_hydration_tests.rs");
     include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");
