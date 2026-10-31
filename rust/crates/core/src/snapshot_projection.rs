@@ -281,7 +281,11 @@ impl<'a, 'w> Work<'a, 'w> {
         self.materialize(index)
     }
 
-    fn inspect_named_turn(&mut self, index: usize, spec: &str) -> Result<HashSet<String>, SnapshotError> {
+    fn inspect_named_turn(
+        &mut self,
+        index: usize,
+        spec: &str,
+    ) -> Result<HashSet<String>, SnapshotError> {
         let snapshot = self.snapshot;
         let bounds = snapshot
             .activity
@@ -322,18 +326,22 @@ impl<'a, 'w> Work<'a, 'w> {
     fn named_call_turn(&mut self, index: usize, spec: &str) -> Result<Turn<'a>, SnapshotError> {
         let names = self.inspect_named_turn(index, spec)?;
         let snapshot = self.snapshot;
-        let bytes = snapshot.activity.projected_call_bytes(index, |call| {
-            matches_names(call.name(), &names)
-        }).expect("existing turn");
+        let bytes = snapshot
+            .activity
+            .projected_call_bytes(index, |call| matches_names(call.name(), &names))
+            .expect("existing turn");
         if bytes > self.limits.max_read_bytes.saturating_sub(self.bytes) {
             return Err(SnapshotError::new(Status::Incomplete, "read_limit"));
         }
         self.bytes += bytes;
-        Ok(snapshot.activity.project_call_turn_with(
-            index,
-            |position| snapshot.entry(position),
-            |call| matches_names(call.name(), &names),
-        ).expect("existing turn"))
+        Ok(snapshot
+            .activity
+            .project_call_turn_with(
+                index,
+                |position| snapshot.entry(position),
+                |call| matches_names(call.name(), &names),
+            )
+            .expect("existing turn"))
     }
 
     fn materialize(&mut self, index: usize) -> Result<Turn<'a>, SnapshotError> {
@@ -2447,37 +2455,66 @@ mod tests {
     fn named_projection_does_not_clone_unrelated_call_payloads() {
         for count in [32, 4096] {
             let mut events = vec![user("u", "answer")];
-            events.extend((0..count).map(|i| tool(
-                &format!("event-{i}"),
-                &format!("call-{i}"),
-                "Bash",
-                json!({"command":"x".repeat(512)}),
-            )));
-            events.push(tool("question", "question-id", "AskUserQuestion", json!({"questions":[]})));
+            events.extend((0..count).map(|i| {
+                tool(
+                    &format!("event-{i}"),
+                    &format!("call-{i}"),
+                    "Bash",
+                    json!({"command":"x".repeat(512)}),
+                )
+            }));
+            events.push(tool(
+                "question",
+                "question-id",
+                "AskUserQuestion",
+                json!({"questions":[]}),
+            ));
             events.push(tool_result("answer", "question-id", "done".into()));
             let snap = snapshot(&events);
-            let query = request(json!({"kind":"tool_calls","order":"forward","name":"AskUserQuestion"}), json!([]));
+            let query = request(
+                json!({"kind":"tool_calls","order":"forward","name":"AskUserQuestion"}),
+                json!([]),
+            );
             let cap = WorkLimits {
-                max_read_bytes: count * (std::mem::size_of::<Entry>() + std::mem::size_of::<&Entry>()) + 64 * 1024,
+                max_read_bytes: count
+                    * (std::mem::size_of::<Entry>() + std::mem::size_of::<&Entry>())
+                    + 64 * 1024,
                 max_events: count + 16,
                 ..limits()
             };
             let lift = LiftedSession {
                 session_id: &snap.session_id,
-                turns: (0..snap.activity.turn_count()).map(|turn| {
-                    snap.activity.project_turn_with(turn, |position| snap.entry(position)).unwrap()
-                }).collect(),
+                turns: (0..snap.activity.turn_count())
+                    .map(|turn| {
+                        snap.activity
+                            .project_turn_with(turn, |position| snap.entry(position))
+                            .unwrap()
+                    })
+                    .collect(),
             };
             let legacy = Session::from_lift(&lift);
-            let expected = legacy.tool_calls().with_errors().named("AskUserQuestion").items()
-                .into_iter().map(|use_| snapshot_codec::encode(
-                    &ToolUseWire::new(use_, &snap.session_id), limits().max_output_bytes,
-                ).unwrap()).collect::<Vec<_>>();
+            let expected = legacy
+                .tool_calls()
+                .with_errors()
+                .named("AskUserQuestion")
+                .items()
+                .into_iter()
+                .map(|use_| {
+                    snapshot_codec::encode(
+                        &ToolUseWire::new(use_, &snap.session_id),
+                        limits().max_output_bytes,
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
             let actual = project(&snap, &query, &cap, &Cancellation::default(), 0).unwrap();
             assert!(actual.complete, "{count}: {:?}", actual.reason);
             assert_eq!(actual.data["records_json"], json!(expected));
             assert_eq!(actual.data["records_json"].as_array().unwrap().len(), 1);
-            eprintln!("named_projection count={count} read_bytes={} events={} output_records=1", actual.read_bytes, actual.events);
+            eprintln!(
+                "named_projection count={count} read_bytes={} events={} output_records=1",
+                actual.read_bytes, actual.events
+            );
         }
     }
 
