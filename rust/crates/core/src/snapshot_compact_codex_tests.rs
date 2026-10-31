@@ -9,6 +9,33 @@ fn compact_error_query(store: &NativeStore, graph: &Value, owner: &Value) -> (Va
     hydration_run_query(store, &request, owner)
 }
 
+fn compact_assert_index_inputs(actual: &Value, expected: &Value) {
+    let schema: BTreeSet<&str> = ["calls", "commands", "edited_files", "skills"]
+        .into_iter()
+        .collect();
+    let actual_object = actual.as_object().expect("actual Index inputs object");
+    let expected_object = expected.as_object().expect("expected Index inputs object");
+    assert_eq!(actual_object.len(), schema.len());
+    assert_eq!(expected_object.len(), schema.len());
+    let actual_keys: BTreeSet<&str> = actual_object.iter().map(|(key, _)| key).collect();
+    let expected_keys: BTreeSet<&str> = expected_object.iter().map(|(key, _)| key).collect();
+    assert_eq!(actual_keys, schema);
+    assert_eq!(expected_keys, schema);
+    for column in ["calls", "commands", "edited_files", "skills"] {
+        assert!(actual[column].as_array().is_some(), "actual column {column}");
+        assert!(expected[column].as_array().is_some(), "expected column {column}");
+        assert_eq!(
+            sonic_rs::to_string(&actual[column]).unwrap(),
+            sonic_rs::to_string(&expected[column]).unwrap(),
+            "column {column}",
+        );
+    }
+    assert_eq!(
+        crate::ids::canonical_json(actual).unwrap(),
+        crate::ids::canonical_json(expected).unwrap(),
+    );
+}
+
 fn compact_full_oracle(path: &Path) -> crate::snapshot_prepared::PreparedFacts {
     let bytes = std::fs::read(path).unwrap();
     let parsed = parse_codex_bytes(&bytes);
@@ -67,7 +94,7 @@ fn prepared_cache_compact_codex_late_duplicate_results_match_complete_projection
             assert_eq!(sonic_rs::to_string(&actual.inputs[column]).unwrap(),
                 sonic_rs::to_string(&complete.inputs[column]).unwrap(), "column {column}");
         }
-        assert_eq!(sonic_rs::to_string(&actual.inputs).unwrap(), sonic_rs::to_string(&complete.inputs).unwrap());
+        compact_assert_index_inputs(&actual.inputs, &complete.inputs);
         assert_eq!(actual.has_error, complete.has_error);
         assert_eq!(actual.has_error, expected);
         assert!(!actual.is_full());
@@ -378,7 +405,7 @@ fn prepared_cache_compact_codex_cold_failed_call_is_restored_by_successful_resul
         assert_eq!(sonic_rs::to_string(&actual.inputs[column]).unwrap(),
             sonic_rs::to_string(&complete.inputs[column]).unwrap(), "column {column}");
     }
-    assert_eq!(sonic_rs::to_string(&actual.inputs).unwrap(), sonic_rs::to_string(&complete.inputs).unwrap());
+    compact_assert_index_inputs(&actual.inputs, &complete.inputs);
     assert_eq!(actual.has_error, complete.has_error);
     assert!(!actual.has_error);
     assert_eq!(actual.inputs["calls"].as_array().unwrap().len(), 1);
@@ -409,13 +436,13 @@ fn prepared_cache_compact_codex_reducer_tables_grow_with_all_call_metadata_charg
     let graph = hydration_graph(&store, &root, &paths, &owner);
     hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
     let old_stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
-    let (old_calls, old_results, count) = {
+    let (old_calls, old_results, count, old_result_count) = {
         let state = store.lock_state();
         let reducer = &state.cached_prepared_facts(&old_stamp.identity).append.as_ref().unwrap().reducer;
-        assert_eq!(reducer.calls.len(), 3);
-        assert_eq!(reducer.results.len(), 3);
-        (reducer.calls.capacity(), reducer.results.capacity(), reducer.calls.len())
+        (reducer.calls.capacity(), reducer.results.capacity(), reducer.calls.len(), reducer.results.len())
     };
+    assert_eq!(count, 3);
+    assert_eq!(old_result_count, 3);
     let extra = old_calls.max(old_results) - count + 1;
     let mut suffix = String::new();
     for at in 0..extra {
@@ -426,27 +453,48 @@ fn prepared_cache_compact_codex_reducer_tables_grow_with_all_call_metadata_charg
     std::fs::OpenOptions::new().append(true).open(&paths[0]).unwrap().write_all(suffix.as_bytes()).unwrap();
     let stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
     let previous = store.previous_compact_codex(stamp, &owner, &json!({"id":"native","version":"1"})).unwrap().unwrap();
-    let old_inputs = sonic_rs::to_string(&previous.append.reducer.inputs()).unwrap();
+    let old_inputs = previous.append.reducer.inputs();
     let fresh = hydration_graph(&store, &root, &paths, &owner);
     let (answer, usage) = hydration_query(&store, &fresh, "definitely-absent", &owner);
     hydration_false(&answer);
-    let state = store.lock_state();
-    let cached = state.cached_prepared_facts(&stamp.identity);
-    let reducer = &cached.append.as_ref().unwrap().reducer;
-    assert!(reducer.calls.capacity() > old_calls);
-    assert!(reducer.results.capacity() > old_results);
-    assert_eq!(reducer.calls.len(), count + extra);
+    let (selected, bindings) = {
+        let mut state = store.lock_state();
+        let (selected, bindings) = {
+            let mut entries = state.identity_facts(stamp.identity);
+            let selected = entries.next().map(|(_, cached)| {
+                let metadata = cached.append.as_ref().map(|append| (
+                    append.reducer.calls.capacity(),
+                    append.reducer.results.capacity(),
+                    append.reducer.calls.len(),
+                ));
+                (Arc::clone(&cached.facts), cached.stamp, metadata)
+            });
+            let bindings = usize::from(selected.is_some()) + entries.count();
+            (selected, bindings)
+        };
+        let selected = selected.map(|(facts, cached_stamp, metadata)| (
+            store.retain_cached_facts(&mut state, facts), cached_stamp, metadata,
+        ));
+        (selected, bindings)
+    };
+    assert_eq!(bindings, 1);
+    let (held, cached_stamp, metadata) = selected.expect("one cached successor");
+    let (new_calls, new_results, new_count) = metadata.expect("compact successor metadata");
+    assert_eq!(cached_stamp, stamp);
+    assert!(new_calls > old_calls);
+    assert!(new_results > old_results);
+    assert_eq!(new_count, count + extra);
+    let actual = held.facts();
     let complete = compact_full_oracle(&paths[0]);
     for column in ["calls", "commands", "edited_files", "skills"] {
-        assert_eq!(sonic_rs::to_string(&cached.facts.inputs[column]).unwrap(),
+        assert_eq!(sonic_rs::to_string(&actual.inputs[column]).unwrap(),
             sonic_rs::to_string(&complete.inputs[column]).unwrap(), "column {column}");
     }
-    assert_eq!(sonic_rs::to_string(&cached.facts.inputs).unwrap(), sonic_rs::to_string(&complete.inputs).unwrap());
-    assert_eq!(cached.facts.has_error, complete.has_error);
-    assert_eq!(sonic_rs::to_string(&previous.append.reducer.inputs()).unwrap(), old_inputs);
-    eprintln!("compact_reducer_growth old_calls={old_calls} new_calls={} old_results={old_results} new_results={} suffix={} source_bytes={}",
-        reducer.calls.capacity(), reducer.results.capacity(), suffix.len(), usage[1]);
-    drop(state);
+    compact_assert_index_inputs(&actual.inputs, &complete.inputs);
+    assert_eq!(actual.has_error, complete.has_error);
+    compact_assert_index_inputs(&previous.append.reducer.inputs(), &old_inputs);
+    eprintln!("compact_reducer_growth old_calls={old_calls} new_calls={new_calls} old_results={old_results} new_results={new_results} suffix={} source_bytes={}",
+        suffix.len(), usage[1]);
     assert!(usage[1] <= suffix.len() as u64 + 256);
     assert_eq!(usage[15], 0);
     store.assert_conserved();
