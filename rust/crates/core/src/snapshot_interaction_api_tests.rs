@@ -65,8 +65,8 @@ fn interaction_views_request(acquired: &Value) -> Value {
     request.insert("handle", handle(acquired).clone());
     request.insert("excerpt", json!({"forms":["first"],"around":2,"count":20}));
     request.insert("tail_events", json!(2));
-    request.as_object_mut().unwrap().remove("view");
-    request.as_object_mut().unwrap().remove("query");
+    request.as_object_mut().unwrap().remove(&"view");
+    request.as_object_mut().unwrap().remove(&"query");
     request
 }
 
@@ -148,7 +148,7 @@ fn native_interaction_view_classification_keeps_the_acquired_generation_after_ap
     let mut request = interaction_api_request(&tail, Value::new());
     request.insert("operation", json!("classify_view"));
     request.insert("classifier", json!({"id":"selected-view","version":"1"}));
-    request.as_object_mut().unwrap().remove("query");
+    request.as_object_mut().unwrap().remove(&"query");
     let classified = finish(&store, store.request(&request, &owner, &Cancellation::default()), &owner);
     assert_eq!(classified["status"].as_str(), Some("ok"), "{classified:?}");
     assert_eq!(classified["data"]["description"]["classifier"]["id"].as_str(), Some("selected-view"));
@@ -262,7 +262,7 @@ fn native_interaction_bundle_labels_raw_boundaries_native_before_explicit_classi
     let mut classify = interaction_api_request(&tail, Value::new());
     classify.insert("operation", json!("classify_view"));
     classify.insert("classifier", json!({"id":"exclude-user","version":"1"}));
-    classify.as_object_mut().unwrap().remove("query");
+    classify.as_object_mut().unwrap().remove(&"query");
     let result = finish(&store, store.request(&classify, &owner, &Cancellation::default()), &owner);
     assert_eq!(result["status"].as_str(), Some("ok"), "{result:?}");
     assert_eq!(result["data"]["description"]["classifier"]["id"].as_str(), Some("exclude-user"));
@@ -288,7 +288,7 @@ fn native_interaction_classification_rolls_back_late_cancellation() {
     let mut request = interaction_api_request(&acquired, Value::new());
     request.insert("operation", json!("classify_view"));
     request.insert("classifier", json!({"id":"cancel-view","version":"1"}));
-    request.as_object_mut().unwrap().remove("query");
+    request.as_object_mut().unwrap().remove(&"query");
     let result = store.request(&request, &owner, &cancel);
     assert_eq!(result["status"].as_str(), Some("cancelled"), "{result:?}");
     assert!(calls.load(Ordering::Relaxed) > 0);
@@ -333,7 +333,7 @@ fn native_interaction_classification_checks_current_route_before_and_after_callb
         let mut request = interaction_api_request(&acquired, Value::new());
         request.insert("operation", json!("classify_view"));
         request.insert("classifier", json!({"id":"route-view","version":"1"}));
-        request.as_object_mut().unwrap().remove("query");
+        request.as_object_mut().unwrap().remove(&"query");
         let result = store.request(&request, &owner, &Cancellation::default());
         assert_eq!(result["status"].as_str(), Some("permission_denied"), "{result:?}");
         assert_eq!(calls.load(Ordering::Relaxed), usize::from(during));
