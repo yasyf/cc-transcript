@@ -59,7 +59,11 @@ impl Projection {
     fn feed(&mut self, byte: u8) {
         if self.in_string {
             if self.capture_key || self.capture_sha {
-                let limit = if self.capture_key { KEY_BYTES } else { SHA_BYTES };
+                let limit = if self.capture_key {
+                    KEY_BYTES
+                } else {
+                    SHA_BYTES
+                };
                 if self.token.len() == limit {
                     self.capture_key = false;
                     self.capture_sha = false;
@@ -148,7 +152,11 @@ impl<R: Read> Read for Utf8Read<R> {
         }
         let count = self.source.read(output)?;
         if count == 0 {
-            return if self.tail_len == 0 { Ok(0) } else { Err(invalid_utf8()) };
+            return if self.tail_len == 0 {
+                Ok(0)
+            } else {
+                Err(invalid_utf8())
+            };
         }
         let mut start = 0;
         if self.tail_len > 0 {
@@ -195,7 +203,14 @@ struct ProjectedRead<R> {
 impl<R: Read> ProjectedRead<R> {
     fn new(source: R) -> Self {
         Self {
-            source: BufReader::with_capacity(INPUT_BYTES, Utf8Read { source, tail: [0; 4], tail_len: 0 }),
+            source: BufReader::with_capacity(
+                INPUT_BYTES,
+                Utf8Read {
+                    source,
+                    tail: [0; 4],
+                    tail_len: 0,
+                },
+            ),
             projection: Projection::default(),
             replacement: &[],
         }
@@ -213,7 +228,10 @@ impl<R: Read> ProjectedRead<R> {
     fn nonfinite(&mut self, suffix: &[u8]) -> io::Result<()> {
         for expected in suffix {
             if self.original()? != Some(*expected) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid request JSON literal"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid request JSON literal",
+                ));
             }
         }
         self.replacement = b"ull";
@@ -232,7 +250,9 @@ impl<R: Read> Read for ProjectedRead<R> {
             return Ok(1);
         }
         let in_string = self.projection.in_string;
-        let Some(byte) = self.original()? else { return Ok(0) };
+        let Some(byte) = self.original()? else {
+            return Ok(0);
+        };
         if !in_string {
             let suffix = match byte {
                 b'N' => Some(&b"aN"[..]),
@@ -301,10 +321,20 @@ mod tests {
     fn request_projection_preserves_duplicates_extensions_and_utf8_boundaries() {
         let input = br#"{"bypass_rules":false,"\u0062ypass_rules":true,"sha":"wrong","\u0073ha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","nested":{"bypass_rules":false,"value":[NaN,Infinity,-Infinity,"\ud800"]},"text":"\"escaped\""}"#;
         for width in 1..=17 {
-            let actual = project_request_body(ShortReads { input, width }).unwrap().unwrap();
+            let actual = project_request_body(ShortReads { input, width })
+                .unwrap()
+                .unwrap();
             assert!(actual.bypass_rules);
-            assert_eq!(actual.sha.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-            let actual = project_request_body(ShortReads { input: "{\"ignored\":\"é🦀\",\"bypass_rules\":true}".as_bytes(), width }).unwrap().unwrap();
+            assert_eq!(
+                actual.sha.as_deref(),
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            );
+            let actual = project_request_body(ShortReads {
+                input: "{\"ignored\":\"é🦀\",\"bypass_rules\":true}".as_bytes(),
+                width,
+            })
+            .unwrap()
+            .unwrap();
             assert!(actual.bypass_rules);
         }
     }
@@ -323,14 +353,25 @@ mod tests {
                 assert!(project_request_body(ShortReads { input, width }).is_err());
             }
         }
-        for input in ["[]", "true", "NaN", "Infinity", "-Infinity", "null", "\"text\""] {
+        for input in [
+            "[]",
+            "true",
+            "NaN",
+            "Infinity",
+            "-Infinity",
+            "null",
+            "\"text\"",
+        ] {
             assert_eq!(project_request_body(input.as_bytes()).unwrap(), None);
         }
     }
 
     #[test]
     fn request_projection_keeps_oversized_sha_recognized_and_validates_deep_values() {
-        let mut input = format!("{{\"bypass_rules\":true,\"sha\":\"{}\",\"ignored\":", "a".repeat(4096));
+        let mut input = format!(
+            "{{\"bypass_rules\":true,\"sha\":\"{}\",\"ignored\":",
+            "a".repeat(4096)
+        );
         input.push_str(&"[".repeat(8192));
         input.push_str("0");
         input.push_str(&"]".repeat(8192));
@@ -338,9 +379,16 @@ mod tests {
         let actual = project_request_body(input.as_bytes()).unwrap().unwrap();
         assert!(actual.bypass_rules);
         assert_eq!(actual.sha, None);
-        for value in ["1", "\"true\"", "null", "false", "{}", "[]", "NaN", "Infinity"] {
+        for value in [
+            "1", "\"true\"", "null", "false", "{}", "[]", "NaN", "Infinity",
+        ] {
             let input = format!("{{\"bypass_rules\":true,\"bypass_rules\":{value}}}");
-            assert!(!project_request_body(input.as_bytes()).unwrap().unwrap().bypass_rules);
+            assert!(
+                !project_request_body(input.as_bytes())
+                    .unwrap()
+                    .unwrap()
+                    .bypass_rules
+            );
         }
     }
 }

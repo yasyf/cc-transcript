@@ -1049,8 +1049,10 @@ fn noise_spec_json() -> &'static str {
 #[pyfunction]
 fn project_request_body(py: Python<'_>, path: String) -> PyResult<Option<(bool, Option<String>)>> {
     py.detach(|| {
-        Ok(cc_transcript_core::request_body::read_request_body(std::path::Path::new(&path))?
-            .map(|body| (body.bypass_rules, body.sha)))
+        Ok(
+            cc_transcript_core::request_body::read_request_body(std::path::Path::new(&path))?
+                .map(|body| (body.bypass_rules, body.sha)),
+        )
     })
 }
 
