@@ -10393,8 +10393,18 @@ impl NativeStore {
         let mut page = bound;
         page.max_output_bytes = page.max_output_bytes.min(MAX_DATA_BYTES);
         page.max_items = page.max_items.min(self.config.page_items);
-        if str_field(&request, "operation")? == "query" && request["query"]["kind"].as_str() == Some("instruction_turns") {
-            return self.instruction_request(snapshot, request, context, cancel, bound, next, reservation);
+        if str_field(&request, "operation")? == "query"
+            && request["query"]["kind"].as_str() == Some("instruction_turns")
+        {
+            return self.instruction_request(
+                snapshot,
+                request,
+                context,
+                cancel,
+                bound,
+                next,
+                reservation,
+            );
         }
         let projection = if str_field(&request, "operation")? == "classify_view" {
             self.classify_view_projection(snapshot, &request, context, cancel, page, next)?

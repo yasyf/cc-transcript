@@ -595,24 +595,31 @@ impl ActivityIndex {
         &self,
         index: usize,
         range: Range<usize>,
-    ) -> impl DoubleEndedIterator<Item = (&str, usize, Option<(usize, usize)>)> + ExactSizeIterator + '_ {
+    ) -> impl DoubleEndedIterator<Item = (&str, usize, Option<(usize, usize)>)> + ExactSizeIterator + '_
+    {
         let calls = self.turns.get(index).map_or(&[][..], |turn| {
-                let start = turn.calls.partition_point(|call| instruction_call_before(call, range.start));
-                let stop = turn.calls.partition_point(|call| instruction_call_before(call, range.end));
-                &turn.calls[start..stop]
-            });
+            let start = turn
+                .calls
+                .partition_point(|call| instruction_call_before(call, range.start));
+            let stop = turn
+                .calls
+                .partition_point(|call| instruction_call_before(call, range.end));
+            &turn.calls[start..stop]
+        });
         calls.iter().map(|call| {
-                #[cfg(test)]
-                INSTRUCTION_CALL_WORK.with(|work| {
-                    let (comparisons, visits) = work.get();
-                    work.set((comparisons, visits + 1));
-                });
-                (
-                    call.call.name(),
-                    call.event,
-                    self.results.get(&call.id).map(|position| (position.event, position.ordinal)),
-                )
-            })
+            #[cfg(test)]
+            INSTRUCTION_CALL_WORK.with(|work| {
+                let (comparisons, visits) = work.get();
+                work.set((comparisons, visits + 1));
+            });
+            (
+                call.call.name(),
+                call.event,
+                self.results
+                    .get(&call.id)
+                    .map(|position| (position.event, position.ordinal)),
+            )
+        })
     }
 
     pub fn project_turn_with<'a>(

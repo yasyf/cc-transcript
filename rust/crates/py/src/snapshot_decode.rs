@@ -254,30 +254,43 @@ fn decode_projection_inner<'py>(
             PyList::new(py, payloads)
         }
         "cc-transcript.instruction-turn/1" => {
-            let records = py.detach(|| snapshot_codec::decode_instruction_turns(&records, max_bytes)).map_err(error)?;
-            let payloads = records.into_iter().map(|record| {
-                let payload = PyDict::new(py);
-                payload.set_item("index", record.index)?;
-                payload.set_item("prompt", record.prompt)?;
-                payload.set_item("started_at", record.started_at)?;
-                let queued = record.queued.into_iter().map(|item| {
-                    let value = PyDict::new(py);
-                    value.set_item("text", item.text)?;
-                    value.set_item("ts", item.ts)?;
-                    Ok(value)
-                }).collect::<PyResult<Vec<_>>>()?;
-                payload.set_item("queued", PyList::new(py, queued)?)?;
-                let rejections = record.rejections.into_iter().map(|item| {
-                    let value = PyDict::new(py);
-                    value.set_item("name", item.name)?;
-                    value.set_item("content", item.content)?;
-                    value.set_item("result_ts", item.result_ts)?;
-                    Ok(value)
-                }).collect::<PyResult<Vec<_>>>()?;
-                payload.set_item("rejections", PyList::new(py, rejections)?)?;
-                payload.set_item("assistant_tail", record.assistant_tail)?;
-                Ok(payload)
-            }).collect::<PyResult<Vec<_>>>()?;
+            let records = py
+                .detach(|| snapshot_codec::decode_instruction_turns(&records, max_bytes))
+                .map_err(error)?;
+            let payloads = records
+                .into_iter()
+                .map(|record| {
+                    let payload = PyDict::new(py);
+                    payload.set_item("index", record.index)?;
+                    payload.set_item("prompt", record.prompt)?;
+                    payload.set_item("started_at", record.started_at)?;
+                    let queued = record
+                        .queued
+                        .into_iter()
+                        .map(|item| {
+                            let value = PyDict::new(py);
+                            value.set_item("text", item.text)?;
+                            value.set_item("ts", item.ts)?;
+                            Ok(value)
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                    payload.set_item("queued", PyList::new(py, queued)?)?;
+                    let rejections = record
+                        .rejections
+                        .into_iter()
+                        .map(|item| {
+                            let value = PyDict::new(py);
+                            value.set_item("name", item.name)?;
+                            value.set_item("content", item.content)?;
+                            value.set_item("result_ts", item.result_ts)?;
+                            Ok(value)
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                    payload.set_item("rejections", PyList::new(py, rejections)?)?;
+                    payload.set_item("assistant_tail", record.assistant_tail)?;
+                    Ok(payload)
+                })
+                .collect::<PyResult<Vec<_>>>()?;
             PyList::new(py, payloads)
         }
         "cc-transcript.interaction-key/1" => {
