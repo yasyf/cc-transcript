@@ -72,51 +72,61 @@ impl CodexAppendIndex {
     }
 }
 
-#[derive(Clone)]
 struct CodexIndexReducer {
-    calls: HashSet<String>,
+    calls: Vec<(String, Value)>,
     results: HashMap<String, bool>,
 }
 
 impl CodexIndexReducer {
     fn empty() -> Self {
-        Self { calls: HashSet::new(), results: HashMap::new() }
+        Self { calls: Vec::new(), results: HashMap::new() }
     }
 
-    fn extend<'a>(&mut self, entries: impl Iterator<Item = &'a Entry>) {
-        for entry in entries {
-            match entry {
-                Entry::Assistant(assistant) => {
-                    for block in &assistant.blocks {
-                        if let crate::types::ContentBlock::ToolUse(call) = block {
-                            self.calls.insert(call.id.clone());
-                        }
-                    }
+    fn clone_for_append(&self) -> Self {
+        let mut calls = Vec::with_capacity(self.calls.capacity());
+        for (id, inputs) in &self.calls {
+            calls.push((id.clone(), sonic_rs::to_value(inputs).expect("compact call columns serialize")));
+        }
+        let mut results = HashMap::with_capacity(self.results.capacity());
+        results.extend(self.results.iter().map(|(id, failed)| (id.clone(), *failed)));
+        Self { calls, results }
+    }
+
+    fn extend_results(&mut self, snapshot: &TranscriptSnapshot) {
+        for entry in snapshot.chunks.iter().flat_map(|chunk| chunk.entries.iter()) {
+            if let Entry::User(user) = entry {
+                for result in user.tool_results() {
+                    self.results.insert(result.tool_use_id.clone(), result.is_error);
                 }
-                Entry::User(user) => {
-                    for result in user.tool_results() {
-                        self.results.insert(result.tool_use_id.clone(), result.is_error);
-                    }
-                }
-                _ => {}
             }
         }
     }
 
     fn has_error(&self) -> bool {
-        self.calls.iter().any(|id| self.results.get(id) == Some(&true))
+        self.calls.iter().any(|(id, _)| self.results.get(id) == Some(&true))
+    }
+
+    fn inputs(&self) -> Value {
+        let column = |column| -> Vec<&Value> {
+            self.calls.iter().filter(|(id, _)| self.results.get(id) != Some(&true))
+                .flat_map(|(_, inputs)| inputs[column].as_array().expect("compact call column").iter())
+                .collect()
+        };
+        crate::snapshot_projection::index_columns(
+            column("calls"), column("commands"), column("edited_files"), column("skills"),
+        )
     }
 
     fn accounted_bytes(&self) -> usize {
-        self.calls.capacity() * size_of::<String>()
-            + self.calls.iter().map(String::capacity).sum::<usize>()
+        self.calls.capacity() * size_of::<(String, Value)>()
+            + self.calls.iter().map(|(id, inputs)| id.capacity() + value_bytes(inputs)).sum::<usize>()
             + self.results.capacity() * size_of::<(String, bool)>()
             + self.results.keys().map(String::capacity).sum::<usize>()
     }
 
-    fn extend_bound<'a>(&self, entries: impl Iterator<Item = &'a Entry>) -> usize {
+    fn append_bound(&self, snapshot: &TranscriptSnapshot) -> (usize, usize) {
         let (mut calls, mut results, mut strings) = (0, 0, 0);
-        for entry in entries {
+        for entry in snapshot.chunks.iter().flat_map(|chunk| chunk.entries.iter()) {
             match entry {
                 Entry::Assistant(assistant) => {
                     for block in &assistant.blocks {
@@ -135,9 +145,12 @@ impl CodexIndexReducer {
                 _ => {}
             }
         }
-        self.accounted_bytes() + strings
-            + map_growth(&self.results, results)
-            + set_growth(&self.calls, calls)
+        let fresh_calls = crate::snapshot_projection::compact_index_calls_bound(snapshot);
+        let successor = self.accounted_bytes() + strings
+            + map_growth(&self.results, results) + vec_growth(&self.calls, calls) + fresh_calls;
+        let peak = successor + self.results.capacity() * size_of::<(String, bool)>()
+            + self.calls.capacity() * size_of::<(String, Value)>() + fresh_calls;
+        (successor, peak)
     }
 }
 
@@ -198,9 +211,9 @@ impl NativeStore {
         cancel.check(deadline)?;
         let Some((_, fence)) = snapshot.prefix_fence() else { return Ok(None) };
         let empty = CodexIndexReducer::empty();
+        let (_, reducer_peak) = empty.append_bound(snapshot);
         let bound = arc_bytes::<CompactCodexIndex>() + index.accounted_bytes()
-            + fence.len() + snapshot.session_id.len()
-            + empty.extend_bound(snapshot.chunks.iter().flat_map(|chunk| chunk.entries.iter()));
+            + fence.len() + snapshot.session_id.len() + reducer_peak;
         if bound > self.prepared_fact_budget() {
             return Ok(None);
         }
@@ -209,8 +222,17 @@ impl NativeStore {
             Err(error) if error.status == Status::RetainedLimit => return Ok(None),
             Err(error) => return Err(error),
         }
+        let mut limits = self.scan_limits();
+        limits.max_events = snapshot.event_count;
+        limits.max_read_bytes = self.config.source;
+        limits.deadline_unix_ms = deadline;
+        let registry = self.registry(context)?;
+        let calls = crate::toolcall::with_registry(registry, || {
+            crate::snapshot_projection::compact_index_calls(snapshot, &limits, cancel)
+        })?;
         let mut reducer = empty;
-        reducer.extend(snapshot.chunks.iter().flat_map(|chunk| chunk.entries.iter()));
+        reducer.calls.extend(calls);
+        reducer.extend_results(snapshot);
         let append = Arc::new(CompactCodexIndex {
             stamp: snapshot.stamp, fence: fence.to_vec(), session_id: snapshot.session_id.clone(),
             index: index.as_ref().clone(), reducer,
@@ -352,38 +374,33 @@ impl NativeStore {
         }
         usage[3] += entries.len() as u64;
         remaining.max_events -= entries.len() * 2;
-        let reducer_bound = prior.reducer.extend_bound(entries.iter());
         let index_bound = append_bound.successor;
-        self.extend_projection_reservation(&mut reservation, context,
-            reducer_bound.saturating_add(append_bound.append_peak).saturating_add(arc_bytes::<CompactCodexIndex>())
-                .saturating_add(origin.len()).saturating_add(prior.session_id.len()))?;
-        let mut reducer = prior.reducer.clone();
-        reducer.extend(entries.iter());
-        let index = prior.index.append(&parsed, &suffix);
-        assert!(index.accounted_bytes() <= index_bound, "compact index exceeded admitted bytes");
-        assert!(reducer.accounted_bytes() <= reducer_bound, "compact reducer exceeded admitted bytes");
         let snapshot = crate::toolcall::with_registry(Arc::clone(&registry), || {
             TranscriptSnapshot::from_complete_entries(String::new(), PathBuf::new(), stamp,
                 Provider::Codex, prior.session_id.clone(), entries)
         });
-        let bound = crate::snapshot_projection::facts_bound(&snapshot, FactsNeed::Index);
-        let prefix = previous.facts.facts();
+        let (reducer_bound, reducer_peak) = prior.reducer.append_bound(&snapshot);
         self.extend_projection_reservation(&mut reservation, context,
-            bound.saturating_add(prefix.accounted_bytes()).saturating_mul(2))?;
+            reducer_peak.saturating_add(append_bound.append_peak).saturating_add(arc_bytes::<CompactCodexIndex>())
+                .saturating_add(origin.len()).saturating_add(prior.session_id.len()))?;
+        let mut reducer = prior.reducer.clone_for_append();
+        reducer.extend_results(&snapshot);
+        let index = prior.index.append(&parsed, &suffix);
+        assert!(index.accounted_bytes() <= index_bound, "compact index exceeded admitted bytes");
         let mut fact_limits = *remaining;
         fact_limits.max_read_bytes = self.config.source;
         fact_limits.max_events = snapshot.event_count;
         #[cfg(test)]
         self.fact_builds.fetch_add(1, Ordering::Relaxed);
-        let (next, _, _) = crate::toolcall::with_registry(registry, || {
-            crate::snapshot_projection::prepare_facts(&snapshot, &json!([]), &fact_limits, cancel, FactsNeed::Index)
+        let calls = crate::toolcall::with_registry(registry, || {
+            crate::snapshot_projection::compact_index_calls(&snapshot, &fact_limits, cancel)
         })?;
-        let mut inputs = json!({});
-        for column in ["calls", "commands", "edited_files", "skills"] {
-            let values: Vec<&Value> = prefix.inputs[column].as_array().expect("prepared Index column")
-                .iter().chain(next.inputs[column].as_array().expect("prepared Index column").iter()).collect();
-            inputs.insert(column, sonic_rs::to_value(&values).map_err(|error| invalid(error.to_string()))?);
-        }
+        reducer.calls.extend(calls);
+        assert!(reducer.accounted_bytes() <= reducer_bound, "compact reducer exceeded admitted bytes");
+        self.extend_projection_reservation(&mut reservation, context,
+            reducer.accounted_bytes().saturating_mul(2)
+                .saturating_add(crate::snapshot_projection::facts_bound(&snapshot, FactsNeed::Index)))?;
+        let inputs = reducer.inputs();
         crate::snapshot_codec::write_json(&mut std::io::sink(), &inputs, 16 * 1024 * 1024)
             .map_err(|_| SnapshotError::new(Status::Incomplete, "prepared predicate facts exceed source bound"))?;
         let mut facts = crate::snapshot_prepared::PreparedFacts {
@@ -443,8 +460,8 @@ impl NativeStore {
         let CodexIndexReducer { calls, results } = reducer;
         arc_mirror::<CompactCodexIndex>() + fence.capacity() + session_id.capacity()
             + Self::audit_codex_index_bytes(index) - arc_mirror::<CodexAppendIndex>()
-            + calls.capacity() * size_of::<String>()
-            + calls.iter().map(String::capacity).sum::<usize>()
+            + calls.capacity() * size_of::<(String, Value)>()
+            + calls.iter().map(|(id, inputs)| id.capacity() + Self::audit_value_bytes(inputs)).sum::<usize>()
             + results.capacity() * size_of::<(String, bool)>()
             + results.keys().map(String::capacity).sum::<usize>()
     }
