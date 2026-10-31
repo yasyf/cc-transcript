@@ -1,4 +1,4 @@
-name: Public112 repaired catalog and admission regressions
+name: Public112 current NAME barrier and catalog regressions
 on:
   push:
     branches: [diag/public112-repair-union-component]
@@ -11,9 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 4bfbe381ee361ea4d31dd7cc958aa0a131f33748
+          ref: b1b3c9ef020fa9774ffda17a3d6dc2c269f249b6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Preserve the exact cross-mode fixture
+        run: sed -n '/^fn public_review_name_barrier_state/,$p' rust/crates/core/src/snapshot_public_review_tests.rs > "$RUNNER_TEMP/name-barrier-fixture.rs"
       - name: Catalog authority, observations, and reuse
         id: catalog
         continue-on-error: true
@@ -24,16 +26,16 @@ jobs:
         run: cargo test -p cc-transcript-core --no-default-features --lib -- location_ --nocapture
       - uses: actions/checkout@v7
         with:
-          ref: e8760d2d68a5a3e11025ca0536dfc952104c96ee
-      - name: Establish original catalog-key and earlier-winner regressions
-        continue-on-error: true
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_ --nocapture
-      - name: Establish original page-parent proof regressions
-        continue-on-error: true
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- location_parent_hint --nocapture
-      - name: Establish original regular-parent canonicalization regression
-        continue-on-error: true
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- location_nonmatching_regular_files_share_parent_canonicalization --nocapture
+          ref: 4bfbe381ee361ea4d31dd7cc958aa0a131f33748
+      - name: Prove unchanged cross-mode fixture fails on conflated NAME state
+        run: |
+          cat "$RUNNER_TEMP/name-barrier-fixture.rs" >> rust/crates/core/src/snapshot_public_review_tests.rs
+          if cargo test -p cc-transcript-core --no-default-features --lib -- snapshot::ledger_tests::public_catalog_review_private_error_names_recover_in_a_foreign_public_prefix_without_replay --exact --nocapture > "$RUNNER_TEMP/name-barrier-negative.log" 2>&1; then
+            cat "$RUNNER_TEMP/name-barrier-negative.log"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/name-barrier-negative.log"
+          grep -F 'current caller must reuse the indexed NAME frontier' "$RUNNER_TEMP/name-barrier-negative.log"
       - name: Require both regression populations
         if: always()
         env:

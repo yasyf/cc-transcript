@@ -621,3 +621,79 @@ fn public_catalog_review_a_cached_root_positive_that_became_a_directory_is_trave
     }
     panic!("changed root positive did not traverse its current directory");
 }
+
+fn public_review_name_barrier_state(store: &NativeStore) -> (u64,usize) {
+    let observed = {
+        let state = store.lock_state();
+        if state.catalogs.len() != 1 { None }
+        else {
+            let cell = state.catalogs.values().next().unwrap().cell.lock().unwrap();
+            match &*cell {
+                CatalogCell::Idle(catalog) => {
+                    let markers = catalog.directories.values().map(|node| node.issues.iter().filter(|index| {
+                        let edge = &node.edges[**index];
+                        edge.binding.canonical.is_none() && edge.binding.stamp.is_none() && edge.issue.is_none()
+                    }).count()).sum();
+                    Some((catalog.physical_append_work,markers))
+                }
+                _ => None,
+            }
+        }
+    };
+    observed.expect("one settled physical catalog")
+}
+
+#[test]
+fn public_catalog_review_private_error_names_recover_in_a_foreign_public_prefix_without_replay() {
+    let source = LedgerSource::new(&line("cross-mode-root"));
+    let later = LedgerSource::new("");
+    source.file("ordinary.txt", "");
+    let wanted = later.file("wanted.jsonl", &line("cross-mode-wanted"));
+    let roots = vec![wanted.to_string_lossy().into_owned(),source.directory.to_string_lossy().into_owned()];
+    let store = public_review_store(256);
+    let mut owner = context_for("public-review-private-error",false);
+    owner.insert("authority",json!({"kind":"restricted_roots","roots":[source.directory,later.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let (root,_pin) = acquired(&store,&source.path,&owner);
+    let phase = Arc::new(AtomicUsize::new(0));
+    let current_phase = Arc::clone(&phase);
+    *store.canonical_error_hook.lock().unwrap() = Some(Arc::new(move |path| {
+        path.file_name().is_some_and(|name| name == "ordinary.txt").then(||
+            std::io::Error::other(format!("cross-mode caller {}",current_phase.load(Ordering::Relaxed))))
+    }));
+    let private = prepare_request(&root,&["missing".to_owned()],&roots,&[]);
+    let denied = store.request(&private,&owner,&Cancellation::default());
+    assert_eq!(denied["status"].as_str(),Some("changed"),"{denied:?}");
+    assert!(denied["reason"].as_str().unwrap().contains("cross-mode caller 0"));
+    let (appends,markers) = public_review_name_barrier_state(&store);
+    assert!(appends > 0);
+    assert_eq!(markers,1);
+    store.assert_conserved();
+
+    phase.store(1,Ordering::Relaxed);
+    let mut foreign = context_for("public-review-public-error",false);
+    foreign.insert("authority",owner["authority"].clone());
+    let mut public = public_review_request(&source,&["wanted"]);
+    public.insert("roots",json!(roots));
+    let current = store.request(&public,&foreign,&Cancellation::default());
+    assert_eq!(current["status"].as_str(),Some("changed"),"{current:?}");
+    assert!(current["reason"].as_str().unwrap().contains("cross-mode caller 1"));
+    assert_eq!(public_review_name_barrier_state(&store),(appends,1),"current caller must reuse the indexed NAME frontier");
+    store.assert_conserved();
+
+    let mut narrow = context_for("public-review-public-narrow",false);
+    narrow.insert("authority",json!({"kind":"restricted_roots","roots":[later.directory],"effective_uid":unsafe { libc::geteuid() }.to_string()}));
+    let refused = store.request(&public,&narrow,&Cancellation::default());
+    assert_eq!(refused["status"].as_str(),Some("permission_denied"),"{refused:?}");
+    assert!(refused["data"].is_null());
+    assert_eq!(public_review_name_barrier_state(&store),(appends,1),"current caller must reuse the indexed NAME frontier");
+    store.assert_conserved();
+
+    *store.canonical_error_hook.lock().unwrap() = None;
+    let (recovered,rows) = public_review_finish(&store,&public,&foreign);
+    assert_eq!(recovered["status"].as_str(),Some("ok"),"{recovered:?}");
+    assert_eq!(rows.len(),1);
+    assert_eq!(rows[0]["status"].as_str(),Some("ok"),"{rows:?}");
+    assert_eq!(Path::new(rows[0]["path"].as_str().unwrap()),wanted);
+    assert_eq!(public_review_name_barrier_state(&store),(appends,0),"recovery must replace the exact NAME without directory replay");
+    store.assert_conserved();
+}

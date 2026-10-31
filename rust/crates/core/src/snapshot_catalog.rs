@@ -184,6 +184,7 @@ impl CatalogBinding {
 
 enum CatalogNameBinding {
     Unobserved,
+    CurrentObservationNeeded,
     Physical(CatalogBinding),
     Conditional(Box<CatalogConditionalNameBinding>),
 }
@@ -197,7 +198,7 @@ struct CatalogConditionalNameBinding {
 impl CatalogNameBinding {
     fn payload_bytes(&self) -> usize {
         match self {
-            Self::Unobserved => 0,
+            Self::Unobserved | Self::CurrentObservationNeeded => 0,
             Self::Physical(binding) => binding.payload_bytes(),
             Self::Conditional(edge) => size_of::<CatalogConditionalNameBinding>()
                 + edge.object.payload.as_ref().map_or(0,OsString::capacity) + edge.binding.payload_bytes(),
@@ -215,7 +216,7 @@ impl std::ops::Deref for CatalogNameBinding {
     fn deref(&self) -> &CatalogBinding {
         static UNOBSERVED: CatalogBinding = CatalogBinding { canonical:None,stamp:None,directory:false,regular:false,issue:None, issue_provenance:CatalogIssueProvenance::Physical };
         match self {
-            Self::Unobserved => &UNOBSERVED,
+            Self::Unobserved | Self::CurrentObservationNeeded => &UNOBSERVED,
             Self::Physical(binding) => binding,
             Self::Conditional(edge) => &edge.binding,
         }
@@ -245,6 +246,10 @@ impl CatalogNameRecord {
         Self { name,binding:CatalogNameBinding::Unobserved,issue:None,issue_canonical:None,issue_provenance:CatalogIssueProvenance::Physical }
     }
 
+    fn needs_current_observation(name: OsString) -> Self {
+        Self { name,binding:CatalogNameBinding::CurrentObservationNeeded,issue:None,issue_canonical:None,issue_provenance:CatalogIssueProvenance::Physical }
+    }
+
     fn proven(name: OsString, proof: CatalogProvenName) -> (Self,bool) {
         match proof {
             CatalogProvenName::Physical { binding,revalidate } => (Self::canonical(name,binding),revalidate),
@@ -259,7 +264,7 @@ impl CatalogNameRecord {
                 let binding = match std::mem::replace(&mut record.binding,CatalogNameBinding::Unobserved) {
                     CatalogNameBinding::Physical(binding) => binding,
                     CatalogNameBinding::Unobserved => CatalogBinding::empty(),
-                    CatalogNameBinding::Conditional(_) => unreachable!(),
+                    CatalogNameBinding::Conditional(_) | CatalogNameBinding::CurrentObservationNeeded => unreachable!(),
                 };
                 record.issue_provenance = CatalogIssueProvenance::Conditional;
                 record.binding = CatalogNameBinding::Conditional(Box::new(CatalogConditionalNameBinding { object,route:edge.route,binding }));
@@ -269,7 +274,7 @@ impl CatalogNameRecord {
     }
 
     fn has_issue(&self) -> bool {
-        matches!(self.binding,CatalogNameBinding::Unobserved)
+        matches!(self.binding,CatalogNameBinding::Unobserved|CatalogNameBinding::CurrentObservationNeeded)
             || self.issue.as_ref().is_some_and(|(status,_)| *status != Status::Missing)
     }
 
@@ -751,12 +756,12 @@ impl SourceCatalog {
             &route.path,&order[..order.len()-1],*order.last().expect("registered NAME order"),None,budget)
     }
 
-    fn current_conditional_name(&self, identity: SourceIdentity, index: usize,
+    fn observe_current_name(&self, identity: SourceIdentity, index: usize,
         cancel: &Cancellation, deadline: u64, proof_reader: &mut Option<(SourceIdentity,OpenDirectory)>,
-        budget: &mut CatalogBudget<'_, '_>) -> Result<Option<CatalogNameRecord>,SnapshotError> {
+        budget: &mut CatalogBudget<'_, '_>) -> Result<CatalogNameObservation,SnapshotError> {
         let node = self.directories.get(&identity).expect("conditional parent");
         let edge = &node.edges[index];
-        let Some(expected_parent) = node.observed.stamp else { return Ok(None); };
+        let Some(expected_parent) = node.observed.stamp else { return Ok(CatalogNameObservation::Unproven); };
         let request = CatalogProofRequest { store:budget.store,context:budget.context,cancel,deadline_unix_ms:deadline };
         let reader = match &node.scan {
             CatalogScan::Open(reader) => &reader.entries,
@@ -764,8 +769,8 @@ impl SourceCatalog {
                 if proof_reader.as_ref().is_none_or(|(current,_)| *current != identity) {
                     match catalog_open_proof_directory(&request,&node.canonical,expected_parent,budget)? {
                         CatalogProofDirectory::Opened(reader) => *proof_reader = Some((identity,reader)),
-                        CatalogProofDirectory::CurrentRefusal(error) => return Err(error),
-                        CatalogProofDirectory::Unproven(_) => return Ok(None),
+                        CatalogProofDirectory::CurrentRefusal(error) => return Ok(CatalogNameObservation::DirectoryIssue(error)),
+                        CatalogProofDirectory::Unproven(_) => return Ok(CatalogNameObservation::Unproven),
                     }
                 }
                 &proof_reader.as_ref().expect("current proof directory").1.entries
@@ -776,11 +781,11 @@ impl SourceCatalog {
             expected_parent,logical_target_hint:None };
         match catalog_classify_name(&request,input,CatalogNameEvidence { inode:0,kind:None },self.scope,node.generation,
             &route.path,&route.order,index,None,budget)? {
-            CatalogNameObservation::Bound(CatalogProvenName::Conditional { object,edge:target }) => {
-                Ok(Some(CatalogNameRecord::proven(edge.name.clone(),CatalogProvenName::Conditional { object,edge:target }).0))
-            }
-            CatalogNameObservation::CurrentIssue(error) | CatalogNameObservation::DirectoryIssue(error) => Err(error),
-            CatalogNameObservation::Bound(CatalogProvenName::Physical { .. }) | CatalogNameObservation::Unproven => Ok(None),
+            CatalogNameObservation::Bound(proof @ CatalogProvenName::Conditional { .. }) => Ok(CatalogNameObservation::Bound(proof)),
+            CatalogNameObservation::Bound(proof @ CatalogProvenName::Physical { .. })
+                if matches!(edge.binding,CatalogNameBinding::CurrentObservationNeeded) => Ok(CatalogNameObservation::Bound(proof)),
+            CatalogNameObservation::Bound(CatalogProvenName::Physical { .. }) | CatalogNameObservation::Unproven => Ok(CatalogNameObservation::Unproven),
+            current @ (CatalogNameObservation::CurrentIssue(_) | CatalogNameObservation::DirectoryIssue(_)) => Ok(current),
         }
     }
 
@@ -795,9 +800,9 @@ impl SourceCatalog {
             && old.issue == fresh.issue && old.issue_canonical == fresh.issue_canonical
     }
 
-    fn replace_conditional_name(&mut self, identity: SourceIdentity, index: usize, fresh: CatalogNameRecord,
+    fn replace_checked_name(&mut self, identity: SourceIdentity, index: usize, fresh: CatalogNameRecord, revalidate: bool,
         budget: &mut CatalogBudget<'_, '_>) -> Result<(),SnapshotError> {
-        let pending = CatalogPendingEdge { directory:identity,edge:fresh,symlink:true };
+        let pending = CatalogPendingEdge { directory:identity,edge:fresh,symlink:revalidate };
         self.install_edge(&pending,budget)?;
         if pending.edge.binding.directory {
             let stamp = pending.edge.binding.stamp.expect("conditional directory stamp");
@@ -821,6 +826,11 @@ impl SourceCatalog {
         let node = self.directories.get_mut(&identity).expect("conditional parent");
         let before = node.owned_bytes();
         node.payload_bytes = node.payload_bytes - node.edges[index].payload_bytes() + pending.edge.payload_bytes();
+        match (node.symlinks.binary_search(&index),revalidate) {
+            (Err(at),true) => node.symlinks.insert(at,index),
+            (Ok(at),false) => { node.symlinks.remove(at); },
+            _ => {},
+        }
         let is_directory = pending.edge.binding.directory;
         match (node.directories.binary_search(&index),is_directory) {
             (Err(at),true) => node.directories.insert(at,index),
@@ -851,8 +861,6 @@ impl SourceCatalog {
         self.decision_revision += 1; self.selection_revision += 1; self.candidate_version += 1; self.epoch += 1;
         self.publication = CatalogCachePublication::Uncertified;
         self.routes_dirty = true;
-        self.sync_routes(budget)?;
-        self.retire_unreachable_directories(budget)?;
         Ok(())
     }
 
@@ -1249,8 +1257,10 @@ impl SourceCatalog {
         let node = self.directories.get_mut(&directory).expect("catalog directory");
         let before = node.owned_bytes();
         let edge_index = node.edges.len();
-        if matches!(pending.edge.binding,CatalogNameBinding::Unobserved) {
+        if matches!(pending.edge.binding,CatalogNameBinding::Unobserved|CatalogNameBinding::CurrentObservationNeeded) {
             node.physical_complete = false;
+        }
+        if matches!(pending.edge.binding,CatalogNameBinding::Unobserved) {
             node.first_unproven.get_or_insert(edge_index);
         }
         if pending.symlink { node.symlinks.push(edge_index); }
@@ -1326,22 +1336,17 @@ impl SourceCatalog {
         if self.issues_dirty { self.rebuild_issue_bound(); }
         if self.complete { return Ok(()); }
         let mut examined = 0;
-        let mut query_issue = None;
-        let finish = |issue: Option<CatalogQueryIssue>| match issue {
-            Some((_,status,reason,_)) => Err(SnapshotError { status,reason }),
-            None => Ok(()),
-        };
         loop {
             cancel.check(deadline)?;
             if self.next_is_root() { self.observe_root(store,budget.context,budget)?; continue; }
             let Some(identity) = self.pending.last().copied() else {
                 self.decision_revision += 1; self.epoch += 1; self.complete = true;
-                return finish(query_issue);
+                return Ok(());
             };
             let node = self.directories.get(&identity).expect("registered frontier");
             let generation = node.generation;
             if examined == max_entries && node.pending_name.is_none() {
-                return finish(query_issue);
+                return Ok(());
             }
             let request = CatalogProofRequest { store,context:budget.context,cancel,deadline_unix_ms:deadline };
             if matches!(node.scan,CatalogScan::Queued) {
@@ -1354,17 +1359,17 @@ impl SourceCatalog {
                         node.scan = CatalogScan::Open(reader);
                         self.update_generation_charge(identity,generation,before);
                     }
-                    Ok(CatalogProofDirectory::CurrentRefusal(_)) => { self.mark_unresolved_directory(identity,budget)?; return finish(query_issue); }
+                    Ok(CatalogProofDirectory::CurrentRefusal(_)) => { self.mark_unresolved_directory(identity,budget)?; return Ok(()); }
                     Ok(CatalogProofDirectory::Unproven(_)) => return Err(self.reject_directory_observation(identity,budget)?),
                     Err(error) if matches!(error.status,Status::Missing|Status::Changed|Status::PermissionDenied) => {
-                        self.mark_unresolved_directory(identity,budget)?; return finish(query_issue);
+                        self.mark_unresolved_directory(identity,budget)?; return Ok(());
                     }
                     Err(error) => return Err(error),
                 }
             }
             let node = self.directories.get(&identity).unwrap();
             let fresh = CatalogBinding::inspect_entry(store,&node.canonical,budget.context,true)?;
-            if fresh.issue.is_some() { self.mark_unresolved_directory(identity,budget)?; return finish(query_issue); }
+            if fresh.issue.is_some() { self.mark_unresolved_directory(identity,budget)?; return Ok(()); }
             if !node.observed.unchanged(&fresh) || node.stream_identity.is_some_and(|opened| opened != identity) {
                 return Err(self.reject_directory_observation(identity,budget)?);
             }
@@ -1383,12 +1388,11 @@ impl SourceCatalog {
                     let observation = self.observe_name(identity,&reader.entries,&name,evidence,&order,cancel,deadline,budget)?;
                     let (edge,symlink) = match observation {
                         CatalogNameObservation::Bound(proof) => CatalogNameRecord::proven(name,proof),
-                        CatalogNameObservation::CurrentIssue(error) => {
-                            self.remember_query_issue(&mut query_issue,identity,offset,error,budget)?;
+                        CatalogNameObservation::CurrentIssue(_) => {
                             let conditional = !matches!(evidence.kind,Some(libc::DT_REG)|Some(libc::DT_DIR));
-                            (CatalogNameRecord::unobserved(name),conditional)
+                            (CatalogNameRecord::needs_current_observation(name),conditional)
                         }
-                        CatalogNameObservation::DirectoryIssue(_) => { self.mark_unresolved_directory(identity,budget)?; return finish(query_issue); }
+                        CatalogNameObservation::DirectoryIssue(_) => { self.mark_unresolved_directory(identity,budget)?; return Ok(()); }
                         CatalogNameObservation::Unproven => return Err(self.reject_directory_observation(identity,budget)?),
                     };
                     #[cfg(test)]
@@ -1544,6 +1548,7 @@ impl SourceCatalog {
         self.sync_routes(budget)?;
         let mut changed = Vec::new();
         let mut unresolved = Vec::new();
+        let mut current_names = Vec::new();
         let mut query_issue = None;
         for (identity,node) in self.directories.iter() {
             cancel.check(deadline)?;
@@ -1576,7 +1581,8 @@ impl SourceCatalog {
                     Err(error) => return Err(error),
                 }
             }
-            if !dirty && !unavailable && reachable && (!node.symlinks.is_empty()
+            if !dirty && !unavailable && reachable && (node.symlinks.iter().any(|index|
+                    !matches!(node.edges[*index].binding,CatalogNameBinding::CurrentObservationNeeded))
                 || node.issues.iter().any(|index| matches!(node.edges[*index].binding,CatalogNameBinding::Unobserved))) {
                 let mut temporary = None;
                 let mut retained = 0;
@@ -1598,7 +1604,9 @@ impl SourceCatalog {
                     }
                 };
                 if let Some(reader) = reader {
-                    let retry_names = node.symlinks.iter().chain(node.issues.iter().filter(|index|
+                    let retry_names = node.symlinks.iter().filter(|index|
+                        !matches!(node.edges[**index].binding,CatalogNameBinding::CurrentObservationNeeded))
+                        .chain(node.issues.iter().filter(|index|
                         matches!(node.edges[**index].binding,CatalogNameBinding::Unobserved)
                             && node.symlinks.binary_search(index).is_err()));
                     for index in retry_names {
@@ -1624,6 +1632,12 @@ impl SourceCatalog {
                 }
                 drop(temporary); budget.scratch_bytes += retained;
             }
+            if !dirty && !unavailable && reachable {
+                for index in node.issues.iter().filter(|index| matches!(node.edges[**index].binding,CatalogNameBinding::CurrentObservationNeeded)) {
+                    budget.reserve(vec_growth(&current_names,1))?;
+                    current_names.push((*identity,node.generation,*index));
+                }
+            }
             if unavailable {
                 if !matches!(node.scan,CatalogScan::Unresolved) { budget.reserve(vec_growth(&unresolved,1))?; unresolved.push(*identity); }
             } else if dirty {
@@ -1632,6 +1646,31 @@ impl SourceCatalog {
         }
         for identity in unresolved { self.mark_unresolved_directory(identity,budget)?; }
         for (identity,fresh) in changed { self.invalidate_directory(identity,fresh,budget)?; }
+        self.sync_routes(budget)?;
+        self.retire_unreachable_directories(budget)?;
+        let mut proof_reader = None;
+        for (identity,generation,index) in current_names {
+            if !self.directories.get(&identity).is_some_and(|node| node.generation == generation)
+                || !self.route_index.contains_key(&identity) { continue; }
+            match self.observe_current_name(identity,index,cancel,deadline,&mut proof_reader,budget)? {
+                CatalogNameObservation::Bound(proof) => {
+                    let name = self.generation(identity,generation).edges[index].name.clone();
+                    let (fresh,revalidate) = CatalogNameRecord::proven(name,proof);
+                    self.replace_checked_name(identity,index,fresh,revalidate,budget)?;
+                }
+                CatalogNameObservation::CurrentIssue(error) => {
+                    self.remember_query_issue(&mut query_issue,identity,index,error,budget)?;
+                }
+                CatalogNameObservation::DirectoryIssue(error) => {
+                    self.remember_query_issue(&mut query_issue,identity,0,error,budget)?;
+                }
+                CatalogNameObservation::Unproven => {
+                    let observed = &self.generation(identity,generation).observed;
+                    budget.reserve(observed.payload_bytes())?;
+                    self.invalidate_directory(identity,observed.clone(),budget)?;
+                }
+            }
+        }
         self.sync_routes(budget)?;
         self.retire_unreachable_directories(budget)?;
         Ok(query_issue)
@@ -1720,8 +1759,14 @@ impl SourceCatalog {
                 CatalogCheckKind::ReadIssue(_) => unreachable!(),
             };
             if let CatalogCheckKind::Edge(identity,index) = check.kind {
-                if matches!(self.directories.get(&identity).expect("conditional check parent").edges[index].binding,CatalogNameBinding::Conditional(_)) {
-                    let Some(fresh) = self.current_conditional_name(identity,index,cancel,deadline,&mut proof_reader,budget)? else {
+                if matches!(self.directories.get(&identity).expect("conditional check parent").edges[index].binding,
+                    CatalogNameBinding::Conditional(_)|CatalogNameBinding::CurrentObservationNeeded) {
+                    let proof = match self.observe_current_name(identity,index,cancel,deadline,&mut proof_reader,budget)? {
+                        CatalogNameObservation::Bound(proof) => Some(proof),
+                        CatalogNameObservation::CurrentIssue(error) | CatalogNameObservation::DirectoryIssue(error) => return Err(error),
+                        CatalogNameObservation::Unproven => None,
+                    };
+                    let Some(proof) = proof else {
                         let observed = &self.directories.get(&identity).expect("unproven conditional parent").observed;
                         budget.reserve(observed.payload_bytes())?;
                         self.invalidate_directory(identity,observed.clone(),budget)?;
@@ -1735,13 +1780,17 @@ impl SourceCatalog {
                         }
                         return Ok(None);
                     };
+                    let name = self.directories.get(&identity).expect("checked name parent").edges[index].name.clone();
+                    let (fresh,revalidate) = CatalogNameRecord::proven(name,proof);
                     if let Some((status,reason)) = &fresh.issue {
                         if *status != Status::Missing { return Err(SnapshotError::new(*status,reason)); }
                     }
                     if Self::conditional_name_unchanged(&self.directories.get(&identity).expect("conditional parent").edges[index],&fresh) { continue; }
                     let bridge = fresh.binding.directory && (!query.used_name_stream || query.cache_bridge);
                     let bridge_binding = if bridge { budget.reserve((*fresh.binding).payload_bytes())?; Some((*fresh.binding).clone()) } else { None };
-                    self.replace_conditional_name(identity,index,fresh,budget)?;
+                    self.replace_checked_name(identity,index,fresh,revalidate,budget)?;
+                    self.sync_routes(budget)?;
+                    self.retire_unreachable_directories(budget)?;
                     query.choices_ready = false;
                     if let Some(binding) = bridge_binding {
                         let order = query.validated_after.as_ref().expect("conditional prefix position");
