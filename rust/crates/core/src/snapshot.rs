@@ -875,10 +875,19 @@ struct CachedPreparedFacts {
     authority: Value,
     classifier: Value,
     facts: Arc<crate::snapshot_prepared::PreparedFacts>,
+    append: Option<Arc<CompactCodexIndex>>,
     last_used: u64,
 }
 
 impl CachedPreparedFacts {
+    fn accounted_bytes(&self) -> usize {
+        self.facts.accounted_bytes()
+            + self
+                .append
+                .as_ref()
+                .map_or(0, |append| append.accounted_bytes())
+    }
+
     fn serves(
         &self,
         stamp: SourceStamp,
@@ -2173,6 +2182,7 @@ pub(crate) struct StoreState {
     recent_codex_expiry: ExpiryIndex<SourceIdentity>,
     prepared_loads_expiry: ExpiryIndex<SourceIdentity>,
     prepared_facts_lru: BTreeSet<(u64, PreparedDiskKey)>,
+    prepared_fact_sources: BTreeSet<PreparedDiskKey>,
     counters: [u64; 20],
     transient_bytes: usize,
     prepared_disk_index_bytes: usize,
@@ -2183,6 +2193,8 @@ pub(crate) struct StoreState {
     audits: Arc<AtomicUsize>,
     #[cfg(test)]
     retained_owners: Vec<Weak<crate::snapshot_prepared::PreparedFacts>>,
+    #[cfg(test)]
+    retained_append_owners: Vec<Weak<CompactCodexIndex>>,
 }
 
 const TOUCH_TTL_MS: u64 = 30 * 60_000;
@@ -2247,6 +2259,7 @@ impl StoreState {
             recent_codex_expiry: ExpiryIndex::new(work.clone()),
             prepared_loads_expiry: ExpiryIndex::new(work.clone()),
             prepared_facts_lru: BTreeSet::new(),
+            prepared_fact_sources: BTreeSet::new(),
             counters: [0; 20],
             transient_bytes: 0,
             prepared_disk_index_bytes: 0,
@@ -2257,6 +2270,8 @@ impl StoreState {
             audits: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
             retained_owners: Vec::new(),
+            #[cfg(test)]
+            retained_append_owners: Vec::new(),
         }
     }
 
@@ -2989,24 +3004,36 @@ impl StoreState {
     fn prepared_facts_growth(&self, key: &PreparedDiskKey) -> usize {
         self.prepared_facts.growth_for(key)
             + usize::from(!self.prepared_facts.contains_key(key))
-                * size_of::<(u64, PreparedDiskKey)>()
+                * (size_of::<(u64, PreparedDiskKey)>() + size_of::<PreparedDiskKey>())
     }
 
     fn insert_prepared_facts(&mut self, key: PreparedDiskKey, cached: CachedPreparedFacts) {
         self.prepared_facts.reserve_for(&key);
         self.ledger.shared.reserve([facts_anchor(&cached.facts)]);
         self.ledger.shared.acquire(facts_anchor(&cached.facts));
+        if let Some(append) = &cached.append {
+            self.ledger.shared.reserve([append_anchor(append)]);
+            self.ledger.shared.acquire(append_anchor(append));
+        }
         let last_used = cached.last_used;
         if let Some(displaced) = self.prepared_facts.insert(key, cached) {
             self.ledger.shared.release(facts_key(&displaced.facts));
+            if let Some(append) = &displaced.append {
+                self.ledger.shared.release(Arc::as_ptr(append) as usize);
+            }
             self.prepared_facts_lru.remove(&(displaced.last_used, key));
         }
         self.prepared_facts_lru.insert((last_used, key));
+        self.prepared_fact_sources.insert(key);
     }
 
     fn remove_prepared_facts(&mut self, key: &PreparedDiskKey) -> Option<CachedPreparedFacts> {
         let cached = self.prepared_facts.remove(key)?;
         self.ledger.shared.release(facts_key(&cached.facts));
+        if let Some(append) = &cached.append {
+            self.ledger.shared.release(Arc::as_ptr(append) as usize);
+        }
+        self.prepared_fact_sources.remove(key);
         self.prepared_facts_lru.remove(&(cached.last_used, *key));
         Some(cached)
     }
@@ -3016,10 +3043,10 @@ impl StoreState {
         identity: SourceIdentity,
     ) -> impl Iterator<Item = (&PreparedDiskKey, &CachedPreparedFacts)> {
         let work = self.ledger.shared.work();
-        self.prepared_facts
-            .iter()
+        self.prepared_fact_sources
+            .range(PreparedDiskKey::identity_range(identity))
             .inspect(move |_| work.tick(1))
-            .filter(move |(key, _)| key.identity() == identity)
+            .map(move |key| (key, &self.prepared_facts[key]))
     }
 
     fn retire_identity_facts(
@@ -3027,22 +3054,18 @@ impl StoreState {
         identity: SourceIdentity,
         keep: impl Fn(&CachedPreparedFacts) -> bool,
     ) -> usize {
-        let Self {
-            prepared_facts,
-            prepared_facts_lru,
-            ledger,
-            ..
-        } = self;
-        let mut retired = 0usize;
-        prepared_facts.retain(|key, cached| {
-            if key.identity() != identity || keep(cached) {
-                return true;
+        let (mut start, end) = PreparedDiskKey::identity_range(identity);
+        let mut retired = 0;
+        loop {
+            let next = self.prepared_fact_sources.range((start, end)).next().copied();
+            let Some(key) = next else { break };
+            start = std::ops::Bound::Excluded(key);
+            self.ledger.shared.work().tick(1);
+            if !keep(&self.prepared_facts[&key]) {
+                self.remove_prepared_facts(&key).expect("indexed prepared facts");
+                retired += 1;
             }
-            ledger.shared.release(facts_key(&cached.facts));
-            prepared_facts_lru.remove(&(cached.last_used, *key));
-            retired += 1;
-            false
-        });
+        }
         retired
     }
 
@@ -3091,7 +3114,7 @@ impl StoreState {
                 .prepared_facts
                 .get(&key)
                 .filter(|cached| cached.evictable())
-                .map_or(0, |cached| cached.facts.accounted_bytes());
+                .map_or(0, |cached| cached.accounted_bytes());
         for (_, victim) in &self.prepared_facts_lru {
             if accounted <= budget.saturating_sub(used) {
                 return true;
@@ -3107,7 +3130,7 @@ impl StoreState {
             if spared(cached) {
                 return false;
             }
-            used -= cached.facts.accounted_bytes();
+            used -= cached.accounted_bytes();
         }
         accounted <= budget.saturating_sub(used)
     }
@@ -3429,6 +3452,10 @@ pub struct NativeStore {
     pub(crate) warm_copies: AtomicUsize,
     #[cfg(test)]
     pub(crate) fact_builds: AtomicUsize,
+    #[cfg(test)]
+    recent_codex_raw_limit: AtomicUsize,
+    #[cfg(test)]
+    hydration_observations: Mutex<Option<Vec<HydrationObservation>>>,
     #[cfg(test)]
     pub(crate) description_builds: AtomicUsize,
     #[cfg(test)]
@@ -3931,6 +3958,10 @@ impl NativeStore {
             warm_copies: AtomicUsize::new(0),
             #[cfg(test)]
             fact_builds: AtomicUsize::new(0),
+            #[cfg(test)]
+            recent_codex_raw_limit: AtomicUsize::new(128 * 1024 * 1024),
+            #[cfg(test)]
+            hydration_observations: Mutex::new(None),
             #[cfg(test)]
             description_builds: AtomicUsize::new(0),
             #[cfg(test)]
@@ -6051,6 +6082,7 @@ impl NativeStore {
             authority,
             classifier,
             facts: _,
+            append: _,
             last_used: _,
         } = cached;
         registry_generation.capacity()
@@ -6308,6 +6340,7 @@ impl NativeStore {
             + state.recent_codex_expiry.heap_bytes()
             + state.prepared_loads_expiry.heap_bytes()
             + state.deliveries_expiry.index_bytes()
+            + state.prepared_fact_sources.len() * size_of::<PreparedDiskKey>()
             + state.prepared_facts_lru.len() * size_of::<(u64, PreparedDiskKey)>()
             + state.prepared_disk_index_bytes
     }
@@ -6387,7 +6420,9 @@ impl NativeStore {
             state.prepared_facts.len(),
             "prepared facts lru index diverges from the cache"
         );
+        assert_eq!(state.prepared_fact_sources.len(), state.prepared_facts.len());
         for (key, cached) in state.prepared_facts.iter() {
+            assert!(state.prepared_fact_sources.contains(key));
             assert!(
                 state.prepared_facts_lru.contains(&(cached.last_used, *key)),
                 "prepared facts lru index misses a cached entry"
@@ -9079,6 +9114,11 @@ impl NativeStore {
                 .read_exact(&mut load.origin_fence[start..])
                 .map_err(io_error)?;
             usage[1] += count as u64;
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Read {
+                stamp: slot.stamp,
+                bytes: count as u64,
+            });
             if load.origin_fence.len() == fence_size {
                 load.origin_complete = true;
                 load.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
@@ -9108,6 +9148,11 @@ impl NativeStore {
                     .read_exact(&mut load.prefix_fence[start..])
                     .map_err(io_error)?;
                 usage[1] += count as u64;
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 if load.prefix_fence.len() < prior_fence.len() {
                     return Ok(());
                 }
@@ -9217,6 +9262,11 @@ impl NativeStore {
                 self.before_source_read();
                 load.file.read_exact(&mut block).map_err(io_error)?;
                 usage[1] += count;
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 load.window_scanned += count;
                 memchr::memrchr(b'\n', &block).map(|newline| unscanned - count + newline as u64 + 1)
             };
@@ -9284,6 +9334,11 @@ impl NativeStore {
                     .map_err(io_error)?;
                 load.offset += count as u64;
                 usage[1] += count as u64;
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Read {
+                    stamp: slot.stamp,
+                    bytes: count as u64,
+                });
                 if !Self::matches_prefix(
                     SourceStamp::of(&load.file.metadata().map_err(io_error)?),
                     slot.stamp,
@@ -9521,6 +9576,11 @@ impl NativeStore {
                 .read_exact(&mut load.seal_fence[start..])
                 .map_err(io_error)?;
             usage[1] += count as u64;
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Read {
+                stamp: slot.stamp,
+                bytes: count as u64,
+            });
             if load.seal_fence.len() < fence_size {
                 return Ok(());
             }
@@ -12082,9 +12142,11 @@ include!("snapshot_symlink_proof.rs");
 include!("snapshot_catalog_owner.rs");
 include!("snapshot_sidechain_absence.rs");
 include!("snapshot_prepared_service.rs");
+include!("snapshot_hydration_observations.rs");
 include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
+include!("snapshot_compact_codex.rs");
 include!("snapshot_spine.rs");
 include!("snapshot_raw_scope.rs");
 include!("snapshot_direct_tail.rs");
@@ -12155,6 +12217,8 @@ mod tests {
     include!("snapshot_raw_projection_tests.rs");
     include!("snapshot_raw_tail_tests.rs");
     include!("snapshot_direct_tail_tests.rs");
+    include!("snapshot_query_hydration_tests.rs");
+    include!("snapshot_compact_codex_tests.rs");
     include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");

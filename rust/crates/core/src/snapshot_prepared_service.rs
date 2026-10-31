@@ -158,6 +158,18 @@ impl NativeStore {
         for owner in &state.retained_owners {
             add(&owner.upgrade().expect("retained facts are live"));
         }
+        drop(add);
+        let mut add_append = |append: &Arc<CompactCodexIndex>| {
+            if seen.insert(Arc::as_ptr(append) as usize) {
+                bytes += Self::audit_compact_codex_bytes(append);
+            }
+        };
+        for cached in state.prepared_facts.values() {
+            if let Some(append) = &cached.append { add_append(append); }
+        }
+        for owner in &state.retained_append_owners {
+            add_append(&owner.upgrade().expect("retained compact provenance is live"));
+        }
         bytes
     }
 
@@ -215,6 +227,7 @@ impl NativeStore {
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
         need: FactsNeed,
+        mut append: Option<Arc<CompactCodexIndex>>,
     ) -> Result<RetainedFacts<'_>, SnapshotError> {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
@@ -239,8 +252,11 @@ impl NativeStore {
             return Ok(self.retain_cached_facts(&mut state, cached));
         }
         state.retire_identity_facts(stamp.identity, |cached| cached.stamp == stamp);
-        let accounted = facts.accounted_bytes();
         let budget = self.prepared_fact_budget();
+        if append.as_ref().is_some_and(|append| facts.accounted_bytes().saturating_add(append.accounted_bytes()) > budget) {
+            append = None;
+        }
+        let accounted = facts.accounted_bytes() + append.as_ref().map_or(0, |append| append.accounted_bytes());
         if accounted > budget {
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
@@ -265,9 +281,12 @@ impl NativeStore {
             authority: authority.clone(),
             classifier: classifier.clone(),
             facts: Arc::clone(&facts),
+            append,
             last_used: now_ms(),
         };
-        let additional = state.admission(&key, &cached, [facts_anchor(&cached.facts)])
+        let anchors = std::iter::once(facts_anchor(&cached.facts))
+            .chain(cached.append.as_ref().map(append_anchor));
+        let additional = state.admission(&key, &cached, anchors)
             + state.prepared_facts_growth(&key);
         let covered = additional.min(reservation.bytes);
         self.admit_memory(&mut state, context, additional - covered)?;
@@ -378,6 +397,7 @@ impl NativeStore {
                             context,
                             &mut reservation,
                             need,
+                            None,
                         ) {
                             Ok(retained) => Ok((retained, reservation)),
                             Err(error) if error.status == Status::RetainedLimit => Ok((
@@ -454,6 +474,7 @@ impl NativeStore {
                 context,
                 &mut reservation,
                 need,
+                None,
             ) {
                 Ok(retained) => Ok((retained, reservation)),
                 Err(error) if error.status == Status::RetainedLimit => Ok((
@@ -513,6 +534,8 @@ impl NativeStore {
             &context["authority"],
             &classifier,
         )?;
+        #[cfg(test)]
+        self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "request" });
         loop {
         if let Some(retained) = self.touch_retained_facts(
             &key,
@@ -523,6 +546,8 @@ impl NativeStore {
             &classifier,
             need,
         ) {
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "retained-hit" });
             usage[7] += 1;
             return Ok((
                 stamp,
@@ -543,6 +568,8 @@ impl NativeStore {
             &classifier,
             need,
         ) {
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "retained-hit" });
             usage[7] += 1;
             return Ok((
                 stamp,
@@ -608,6 +635,8 @@ impl NativeStore {
             }
             match lookup? {
                 crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-hit" });
                     usage[7] += 1;
                     let facts = Arc::new(facts);
                     let held = match self.cache_prepared_facts(
@@ -617,6 +646,7 @@ impl NativeStore {
                         context,
                         &mut reservation,
                         need,
+                        None,
                     ) {
                         Ok(retained) => HeldFacts::Retained(retained),
                         Err(error) if error.status == Status::RetainedLimit => {
@@ -634,20 +664,42 @@ impl NativeStore {
                     ));
                 }
                 crate::snapshot_prepared_disk::DiskLookup::Retired => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-retired" });
                     return Err(SnapshotError::new(
                         Status::Incomplete,
                         "prepared facts revision was evicted",
                     ));
                 }
-                crate::snapshot_prepared_disk::DiskLookup::Changed => continue,
+                crate::snapshot_prepared_disk::DiskLookup::Changed => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-changed" });
+                    continue;
+                }
                 crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-index-only" });
                     drop(compact);
                     drop(reservation);
                 }
-                crate::snapshot_prepared_disk::DiskLookup::Miss => {}
+                crate::snapshot_prepared_disk::DiskLookup::Miss => {
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-miss" });
+                    
+                }
+            }
+        } else {
+            #[cfg(test)]
+            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-absent" });
+        }
+        if need == FactsNeed::Index {
+            if let Some(ready) = self.append_compact_codex(canonical, stamp, context, &classifier, remaining, cancel, usage)? {
+                return Ok((stamp, ready));
             }
         }
         drop(claim);
+        #[cfg(test)]
+        self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "acquire" });
         let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
         let before_bytes = usage[1];
         let before_events = usage[3];
@@ -778,6 +830,12 @@ impl NativeStore {
                     (reservation, facts)
                 })
             });
+        let prepared = prepared.and_then(|(mut reservation, facts)| {
+            let append = if need == FactsNeed::Index {
+                self.capture_compact_codex(&snapshot, context, cancel, remaining.deadline_unix_ms, &mut reservation)?
+            } else { None };
+            Ok((reservation, facts, append))
+        });
         {
             let mut state = self.lock_state();
             state.leases.remove(str_field(handle, "lease_id")?);
@@ -788,22 +846,30 @@ impl NativeStore {
             let growth = state.recent_codex_growth(&stamp.identity);
             if recent_codex && self.admit_memory(&mut state, context, growth).is_ok() {
                 state.insert_recent_codex(stamp.identity, now_ms());
-                while state.recent_codex_raw_bytes > 128 * 1024 * 1024 {
+                while state.recent_codex_raw_bytes > self.recent_codex_raw_bound() {
                     let oldest = state
                         .recent_codex
                         .iter()
                         .min_by_key(|(_, touched)| *touched)
                         .map(|(identity, _)| *identity)
                         .expect("raw codex cache exceeds bound");
+                    #[cfg(test)]
+                    let before = (state.recent_codex_raw_bytes, state.latest.contains_key(&oldest), state.source_spines.contains_key(&oldest.file()));
                     state.remove_recent_codex(&oldest);
                     state.remove_latest(&oldest);
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::RawVictim {
+                        identity: oldest, before_bytes: before.0, after_bytes: state.recent_codex_raw_bytes,
+                        latest_before: before.1, spine_before: before.2,
+                        latest_after: state.latest.contains_key(&oldest), spine_after: state.source_spines.contains_key(&oldest.file()),
+                    });
                 }
             } else if snapshot.provider == Provider::Codex {
                 state.remove_recent_codex(&stamp.identity);
                 state.remove_latest(&stamp.identity);
             }
         }
-        let (mut reservation, facts) = prepared?;
+        let (mut reservation, facts, append) = prepared?;
         let facts = Arc::new(facts);
         #[cfg(test)]
         {
@@ -849,6 +915,7 @@ impl NativeStore {
             context,
             &mut reservation,
             need,
+            append,
         ) {
             Ok(retained) => HeldFacts::Retained(retained),
             Err(error) if error.status == Status::RetainedLimit => {
