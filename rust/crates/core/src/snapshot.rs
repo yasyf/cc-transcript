@@ -21922,9 +21922,16 @@ mod tests {
                 build_bytes > graph_bytes,
                 "the build's buffers are not admitted beyond its graph"
             );
+            let anchors: Vec<_> = {
+                let state = store.lock_state();
+                let graph_id = measured["data"]["handle"]["graph_id"].as_str().unwrap();
+                let graph = state.prepared_graphs[graph_id].lock().unwrap();
+                graph.anchors().collect()
+            };
             release_graph(&store, &measured, &owner);
             assert_eq!(store.retained_accounted_bytes(), idle);
-            let room = cap - idle - build_bytes - REPLY_RESERVATION;
+            let table_growth = store.lock_state().ledger.shared.growth(anchors);
+            let room = cap - idle - build_bytes - table_growth - REPLY_RESERVATION;
             let crowded = store.reserve_projection(&owner, room + 1).unwrap();
             let refused = store.request(&prepare, &owner, &Cancellation::default());
             assert_refused(&store, &refused);
@@ -21945,7 +21952,7 @@ mod tests {
             store.assert_conserved();
             release_graph(&store, &exact, &owner);
             drop(fitted);
-            assert_eq!(store.retained_accounted_bytes(), idle);
+            assert_eq!(store.retained_accounted_bytes(), idle + table_growth);
         }
     }
 
