@@ -8761,6 +8761,7 @@ fn location_open_directory(cursor: &LocateCursor, root: &Path) -> (usize, usize,
     let CatalogScan::Open(reader) = &node.scan else {
         panic!("shared location directory is not open");
     };
+    assert_eq!(catalog.retry_issues.capacity(), 0);
     assert_eq!(
         reader.retained_bytes(),
         NativeStore::audit_open_directory_bytes(reader)
@@ -8770,8 +8771,7 @@ fn location_open_directory(cursor: &LocateCursor, root: &Path) -> (usize, usize,
         catalog.next_root,
         arc_mirror::<OpenedDirectory>()
             + canonical.as_os_str().len()
-            + FILESYSTEM_PATH_BYTES
-            + vec_growth(&catalog.retry_issues, 1),
+            + FILESYSTEM_PATH_BYTES,
     )
 }
 
@@ -12914,7 +12914,7 @@ fn denied_location_directory_admission_opens_nothing_and_retries() {
     }
     let directory = arc_mirror::<OpenedDirectory>()
         + std::fs::canonicalize(&source.directory).unwrap().as_os_str().len()
-        + FILESYSTEM_PATH_BYTES + vec_growth(&Vec::<SourceIdentity>::new(), 1);
+        + FILESYSTEM_PATH_BYTES;
     for background in [false, true] {
         let build = || location_park_fixture(&source, background);
         let opened = reached(location_open_handle_count, |fixture| {
@@ -12957,6 +12957,11 @@ fn denied_location_directory_admission_opens_nothing_and_retries() {
             let slot = cursor.catalog.as_ref().expect("retry catalog pin");
             assert_eq!(Arc::as_ptr(slot) as usize, retained_owner);
             assert!(Arc::strong_count(slot) >= 2);
+            let cell = slot.cell.lock().unwrap();
+            let CatalogCell::Idle(catalog) = &*cell else {
+                panic!("retried location catalog is not idle");
+            };
+            assert_eq!(catalog.retry_issues.capacity(), 0);
         }
         fixture.store.assert_conserved();
     }
