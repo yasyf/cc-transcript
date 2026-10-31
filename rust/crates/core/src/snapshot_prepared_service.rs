@@ -891,9 +891,10 @@ impl NativeStore {
         context: &Value,
         cancel: &Cancellation,
         deadline: u64,
+        absences: Option<&SidechainAbsences<'_>>,
     ) -> Result<bool, SnapshotError> {
         Ok(self.validate_source_stamps(members, context, cancel, deadline)?
-            && self.validate_sidechain_dirs(sidechain_dirs, context, cancel, deadline)?)
+            && self.validate_sidechain_dirs(sidechain_dirs, context, cancel, deadline, absences)?)
     }
 
     fn validate_source_stamps(
@@ -928,13 +929,17 @@ impl NativeStore {
         context: &Value,
         cancel: &Cancellation,
         deadline: u64,
+        absences: Option<&SidechainAbsences<'_>>,
     ) -> Result<bool, SnapshotError> {
         let mut dirs = ResolvedDirs::new(self, context);
-        for (path, stamp) in sidechain_dirs {
+        for (index, (path, stamp)) in sidechain_dirs.iter().enumerate() {
+            cancel.check(deadline)?;
+            if absences.is_some_and(|proof| proof.contains(index)) { continue; }
+            #[cfg(test)]
+            self.sidechain_path_probes.fetch_add(1, Ordering::Relaxed);
             #[cfg(test)]
             self.membership_metadata_checks
                 .fetch_add(1, Ordering::Relaxed);
-            cancel.check(deadline)?;
             let (canonical, metadata) = match dirs.resolve(path) {
                 Ok(resolved) => resolved,
                 Err(error) if error.status == Status::Missing => {
@@ -1653,6 +1658,9 @@ impl NativeStore {
         let cached = self.lock_state().warm_memberships.get(key).cloned();
         if let Some(cached) = cached {
             let namespace_valid = self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)?;
+            let absences = if namespace_valid && revalidate {
+                self.sidechain_absences(cached.catalog, &cached.sidechain_dirs, context, cancel, remaining.deadline_unix_ms)?
+            } else { None };
             if namespace_valid && (!revalidate
                 || self.validate_warm_membership(
                     &cached.members,
@@ -1660,6 +1668,7 @@ impl NativeStore {
                     context,
                     cancel,
                     remaining.deadline_unix_ms,
+                    absences.as_ref(),
                 )?)
             {
                 if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)? {
@@ -1667,6 +1676,7 @@ impl NativeStore {
                 }
                 return Ok((cached, None));
             }
+            drop(absences);
             self.lock_state().remove_warm_membership(key);
             if namespace_valid {
                 if let Some((membership, reservation)) =
@@ -1703,6 +1713,7 @@ impl NativeStore {
                 context,
                 cancel,
                 remaining.deadline_unix_ms,
+                None,
             )?
         {
             return Ok(None);
@@ -2228,6 +2239,7 @@ impl NativeStore {
                 context,
                 cancel,
                 remaining.deadline_unix_ms,
+                None,
             )? {
                 self.lock_state().remove_warm_membership(&key);
                 return Err(SnapshotError::new(
@@ -2542,6 +2554,7 @@ impl NativeStore {
                 context,
                 cancel,
                 cursor.remaining.deadline_unix_ms,
+                None,
             )?
             {
                 return Err(SnapshotError::new(

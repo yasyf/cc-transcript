@@ -3412,6 +3412,10 @@ pub struct NativeStore {
     #[cfg(test)]
     membership_metadata_checks: AtomicUsize,
     #[cfg(test)]
+    sidechain_path_probes: AtomicUsize,
+    #[cfg(test)]
+    sidechain_batch_name_checks: AtomicUsize,
+    #[cfg(test)]
     pub(crate) source_resolutions: AtomicUsize,
     #[cfg(test)]
     pub(crate) retained_work: Arc<AtomicUsize>,
@@ -3909,6 +3913,10 @@ impl NativeStore {
             resolve_hook: Mutex::new(None),
             #[cfg(test)]
             membership_metadata_checks: AtomicUsize::new(0),
+            #[cfg(test)]
+            sidechain_path_probes: AtomicUsize::new(0),
+            #[cfg(test)]
+            sidechain_batch_name_checks: AtomicUsize::new(0),
             #[cfg(test)]
             source_resolutions: AtomicUsize::new(0),
             #[cfg(test)]
@@ -12010,6 +12018,7 @@ impl NativeStore {
 include!("snapshot_catalog.rs");
 include!("snapshot_symlink_proof.rs");
 include!("snapshot_catalog_owner.rs");
+include!("snapshot_sidechain_absence.rs");
 include!("snapshot_prepared_service.rs");
 include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
@@ -12086,6 +12095,7 @@ mod tests {
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");
     include!("snapshot_catalog_tests.rs");
+    include!("snapshot_sidechain_absence_tests.rs");
     include!("snapshot_common_borrowed_parent_tests.rs");
 
     fn context(claimant: &str) -> Value {
@@ -16669,7 +16679,7 @@ mod tests {
                         .validate_source_stamps(&[], &owner, &cancel, deadline)
                         .map_err(|error| error.status),
                     store
-                        .validate_sidechain_dirs(&[], &owner, &cancel, deadline)
+                        .validate_sidechain_dirs(&[], &owner, &cancel, deadline, None)
                         .map_err(|error| error.status),
                 ),
                 (Err(status), Err(status))
