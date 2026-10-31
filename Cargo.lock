@@ -230,6 +230,7 @@ dependencies = [
  "rusqlite",
  "ryu-js",
  "serde",
+ "serde_json",
  "sha2",
  "sonic-rs",
 ]

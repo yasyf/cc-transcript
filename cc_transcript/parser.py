@@ -152,3 +152,13 @@ def parse_print_result(raw: bytes) -> PrintResult:
         snapshot, and the conversational messages.
     """
     return _native.parse_print_result(raw)
+
+
+def project_request_body(path: str | Path) -> dict[str, object] | None:
+    """Read the merge bypass fields without materializing the request body.
+
+    The native reader validates the entire JSON document and retains only its
+    last top-level bypass flag and full Git object ID candidate.
+    """
+    result = _native.project_request_body(str(path))
+    return None if result is None else {"bypass_rules": result[0], "sha": result[1]}

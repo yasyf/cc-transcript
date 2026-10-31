@@ -159,6 +159,7 @@ __all__ = [
     "notifications_from_events",
     "parse_bytes",
     "parse_print_result",
+    "project_request_body",
     "query_session",
     "register_mcp_tool",
     "render_compact_lines",
@@ -2082,7 +2083,7 @@ class Transcript:
     The parsed events of a single transcript file, backed by the native parse
     output; ``events`` materializes lazy views on access.
 
-    One parse owns one ``Arc<Vec<Entry>>`` shared by every view, so retaining any
+    One parse owns one ``Arc<ChunkRows>`` shared by every view, so retaining any
     view keeps the whole parse's entries alive; the live
     :class:`~watch.WatchEvent` stream is exempt (one-entry Arc each).
 
@@ -2538,6 +2539,8 @@ def notifications_from_events(events: list[models.TranscriptEvent]) -> dict[str,
 def parse_bytes(raw: bytes, spec_json: typing.Optional[builtins.str] = None) -> Transcript: ...
 
 def parse_print_result(raw: bytes) -> PrintResult: ...
+
+def project_request_body(path: builtins.str) -> typing.Optional[tuple[builtins.bool, typing.Optional[builtins.str]]]: ...
 
 def query_session(path: builtins.str, max_events: builtins.int) -> dict[str, typing.Any]: ...
 

@@ -1045,12 +1045,24 @@ fn noise_spec_json() -> &'static str {
     cc_transcript_core::filter::NOISE_SPEC_JSON
 }
 
+#[pyo3_stub_gen::derive::gen_stub_pyfunction]
+#[pyfunction]
+fn project_request_body(py: Python<'_>, path: String) -> PyResult<Option<(bool, Option<String>)>> {
+    py.detach(|| {
+        Ok(
+            cc_transcript_core::request_body::read_request_body(std::path::Path::new(&path))?
+                .map(|body| (body.bypass_rules, body.sha)),
+        )
+    })
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::snapshot_decode::add_functions(m)?;
     crate::snapshots::add_functions(m)?;
     m.add_function(wrap_pyfunction!(stream_parse, m)?)?;
     m.add_function(wrap_pyfunction!(parse_bytes_py, m)?)?;
+    m.add_function(wrap_pyfunction!(project_request_body, m)?)?;
     m.add_function(wrap_pyfunction!(parse_print_result, m)?)?;
     m.add_function(wrap_pyfunction!(cost_of_json, m)?)?;
     m.add_function(wrap_pyfunction!(notifications_from_events, m)?)?;

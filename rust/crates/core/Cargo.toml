@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 libc = "0.2"
 # arbitrary_precision keeps each number's raw text so json_to_py (the py crate's
 # event.rs) can mirror Python json semantics for numbers sonic-rs stores lossily
