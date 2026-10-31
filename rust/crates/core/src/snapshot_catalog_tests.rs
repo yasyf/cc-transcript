@@ -1016,8 +1016,8 @@ fn registered_catalog_cancelled_name_proof_retains_the_consumed_entry_without_re
             let slot = state.catalogs.values().next().expect("native catalog owner");
             let cell = slot.cell.lock().unwrap();
             let CatalogCell::Idle(catalog) = &*cell else { panic!("cancelled catalog is settled"); };
-            assert!(catalog.pending_name.is_some(), "a consumed NAME must survive private cancellation");
-            if unknown { assert_eq!(catalog.pending_name.as_ref().unwrap().entry.kind, libc::DT_UNKNOWN); }
+            let pending = catalog.directories.values().find_map(|node| node.pending_name.as_ref()).expect("a consumed NAME must survive private cancellation");
+            if unknown { assert_eq!(pending.entry.kind, libc::DT_UNKNOWN); }
             assert_eq!(catalog.charge(), catalog.audit_charge());
         }
         store.assert_conserved();
@@ -1170,5 +1170,77 @@ fn registered_catalog_pending_name_survives_earlier_frontier_reordering() {
             drop(reservation);
             store.assert_conserved();
         }
+    }
+}
+
+#[test]
+fn registered_catalog_retained_directory_edge_preserves_earlier_frontier_winner() {
+    for unknown in [false, true] {
+        let source = Source::new("");
+        let early = source.directory.join("early");
+        let late = source.directory.join("late");
+        let child = late.join("child");
+        std::fs::create_dir(&early).unwrap();
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(child.join("wanted.jsonl"), "").unwrap();
+        let store = store();
+        store.directory_force_unknown.store(unknown, Ordering::Relaxed);
+        let owner = context("catalog-retained-directory-edge");
+        let mut reservation = store.reserve_projection(&owner, 4096).unwrap();
+        let mut budget = CatalogBudget { store: &store, context: &owner, reservation: &mut reservation, attempt: 1, scratch_bytes: 0 };
+        let roots = [json!(late), json!(early)];
+        let scope = {
+            let (key, reservation) = store.catalog_key(&roots, &owner).unwrap();
+            let scope = key.as_bytes().try_into().unwrap();
+            drop(key);
+            drop(reservation);
+            scope
+        };
+        let mut catalog = SourceCatalog::new(&store, scope, &roots, &owner, &mut budget).unwrap();
+        let early_id = SourceStamp::of(&std::fs::metadata(&early).unwrap()).identity;
+        let late_id = SourceStamp::of(&std::fs::metadata(&late).unwrap()).identity;
+        let cancel = Cancellation::default();
+        let callback_cancel = cancel.clone();
+        *store.location_metadata_hook.lock().unwrap() = Some(("entry", Arc::new(move || callback_cancel.cancel())));
+        let mut usage = [0;20];
+        let error = catalog.advance(&store, &cancel, now_ms()+30_000, usize::MAX, &mut usage, &mut budget).unwrap_err();
+        *store.location_metadata_hook.lock().unwrap() = None;
+        assert_eq!(error.status, Status::Cancelled);
+        assert_eq!(usage[17], 1);
+        let edge = catalog.pending_edge.as_ref().expect("later directory edge survives private cancellation");
+        assert_eq!(edge.directory, late_id);
+        assert!(edge.edge.directory().is_some());
+        assert_eq!(catalog.pending.last(), Some(&late_id));
+        let charge = catalog.charge();
+        assert_eq!(charge, catalog.audit_charge());
+        let used = store.retained_accounted_bytes();
+        let filler = store.reserve_projection(&owner, store.config.retained-used).unwrap();
+        let error = catalog.advance(&store, &Cancellation::default(), now_ms()+30_000, 0, &mut usage, &mut budget).unwrap_err();
+        assert_eq!(error.status, Status::RetainedLimit);
+        assert_eq!(catalog.pending_edge.as_ref().unwrap().directory, late_id);
+        assert_eq!(catalog.charge(), charge);
+        assert_eq!(catalog.charge(), catalog.audit_charge());
+        drop(filler);
+        std::fs::write(early.join("wanted.jsonl"), "").unwrap();
+        std::fs::File::open(&early).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+        catalog.refresh(&store, &Cancellation::default(), now_ms()+30_000, &mut budget).unwrap();
+        assert_eq!(catalog.pending.last(), Some(&early_id));
+        assert_eq!(catalog.pending_edge.as_ref().unwrap().directory, late_id);
+        catalog.advance(&store, &Cancellation::default(), now_ms()+30_000, 1, &mut usage, &mut budget).unwrap();
+        assert_eq!(usage[17], 2);
+        let plan = catalog.read_plan(&Cancellation::default(), now_ms()+30_000, None, &mut budget).unwrap();
+        let paths = catalog.try_locate(&store, &[json!("wanted")], &owner, &Cancellation::default(), now_ms()+30_000, &plan, &mut budget).unwrap().expect("one next NAME is the earlier directory candidate");
+        eprintln!("catalog_retained_edge unknown={unknown} wanted={:?} early={early:?} frontier={:?}", paths.get("wanted"), catalog.pending.last());
+        assert_eq!(paths.get("wanted"), Some(&early.join("wanted.jsonl")));
+        assert_eq!(catalog.pending.last(), Some(&early_id));
+        assert_eq!(catalog.charge(), catalog.audit_charge());
+        catalog.advance(&store, &Cancellation::default(), now_ms()+30_000, usize::MAX, &mut usage, &mut budget).unwrap();
+        assert!(catalog.complete);
+        assert_eq!(usage[17], 3);
+        assert_eq!(catalog.charge(), catalog.audit_charge());
+        drop(catalog);
+        drop(budget);
+        drop(reservation);
+        store.assert_conserved();
     }
 }

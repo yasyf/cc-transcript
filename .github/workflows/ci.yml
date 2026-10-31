@@ -1,4 +1,4 @@
-name: Catalog pending NAME baseline
+name: Catalog pending NAME corrected proof
 
 on:
   pull_request:
@@ -23,5 +23,5 @@ jobs:
         run: |
           rustc --version --verbose
           cargo --version
-      - name: Reproduce retained NAME frontier reordering on unchanged production
-        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_pending_name_survives_earlier_frontier_reordering --nocapture
+      - name: Grade corrected retained NAME and registered catalog invariants
+        run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_ --nocapture
