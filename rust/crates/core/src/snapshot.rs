@@ -10988,13 +10988,13 @@ impl NativeStore {
             .fetch_add(1, Ordering::Relaxed);
         let canonical = match std::fs::canonicalize(path) {
             Ok(path) => path,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => return Ok(None),
             Err(error) => return Err(io_error(error)),
         };
         self.authority(context, Some(&canonical))?;
         let metadata = match std::fs::metadata(&canonical) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => return Ok(None),
             Err(error) => return Err(io_error(error)),
         };
         Ok(metadata.is_file().then(|| SourceStamp::of(&metadata)))
