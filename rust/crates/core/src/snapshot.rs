@@ -1038,6 +1038,15 @@ fn sources_anchor(sources: &Arc<[PreparedSourceRef]>) -> Anchor {
     Anchor::warm(slice_key(sources), source_ref_bytes(sources))
 }
 
+fn graph_header_anchor(header: &Arc<PreparedGraphHeader>) -> Anchor {
+    Anchor::warm(
+        Arc::as_ptr(header) as usize,
+        arc_bytes::<PreparedGraphHeader>()
+            + value_bytes(&header.handle)
+            + value_bytes(&header.classifier),
+    )
+}
+
 fn positions_anchor(positions: &Arc<[(SourceIdentity, usize)]>) -> Anchor {
     Anchor::warm(
         slice_key(positions),
@@ -1063,14 +1072,6 @@ fn source_ref_bytes(sources: &Arc<[PreparedSourceRef]>) -> usize {
 fn sidechain_dir_bytes(sidechain_dirs: &Arc<[(PathBuf, Option<SourceStamp>)]>) -> usize {
     arc_slice_bytes::<(PathBuf, Option<SourceStamp>)>(sidechain_dirs.len())
         + sidechain_dirs
-            .iter()
-            .map(|(path, _)| path.capacity())
-            .sum::<usize>()
-}
-
-fn stamp_bytes(stamps: &Vec<(PathBuf, SourceStamp)>) -> usize {
-    stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-        + stamps
             .iter()
             .map(|(path, _)| path.capacity())
             .sum::<usize>()
@@ -1172,18 +1173,21 @@ struct PreparedQueryCursor {
     expires: u64,
 }
 
+struct PreparedGraphHeader {
+    handle: Value,
+    classifier: Value,
+}
+
 struct PreparedGraph {
     claimant: String,
     registry_generation: String,
     admission: String,
     authority: Value,
     root: Arc<TranscriptSnapshot>,
-    root_handle: Value,
-    classifier: Value,
+    header: Arc<PreparedGraphHeader>,
     root_facts: Arc<crate::snapshot_prepared::PreparedFacts>,
     root_slices: Table<String, Arc<crate::snapshot_prepared::PreparedFacts>>,
     revision: String,
-    stamps: Vec<(PathBuf, SourceStamp)>,
     validated: bool,
     sources: Arc<[PreparedSourceRef]>,
     sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
@@ -2014,9 +2018,6 @@ impl Charge<String> for PreparedGraph {
             + self.admission.capacity()
             + self.revision.capacity()
             + value_bytes(&self.authority)
-            + value_bytes(&self.root_handle)
-            + value_bytes(&self.classifier)
-            + stamp_bytes(&self.stamps)
             + self.root_slices.reserved_bytes()
             + self.root_slices.keys().map(String::capacity).sum::<usize>()
     }
@@ -2037,6 +2038,7 @@ impl PreparedGraph {
         std::iter::once(facts_anchor(&self.root_facts))
             .chain(self.root_slices.values().map(facts_anchor))
             .chain([
+                graph_header_anchor(&self.header),
                 sources_anchor(&self.sources),
                 sidechain_dirs_anchor(&self.sidechain_dirs),
             ])
@@ -2207,6 +2209,8 @@ pub(crate) struct StoreState {
     #[cfg(test)]
     retained_owners: Vec<Weak<crate::snapshot_prepared::PreparedFacts>>,
     #[cfg(test)]
+    retained_graph_input_owners: Vec<(Weak<[PreparedSourceRef]>, Weak<PreparedGraphHeader>)>,
+    #[cfg(test)]
     retained_append_owners: Vec<Weak<CompactCodexIndex>>,
 }
 
@@ -2284,6 +2288,8 @@ impl StoreState {
             audits: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
             retained_owners: Vec::new(),
+            #[cfg(test)]
+            retained_graph_input_owners: Vec::new(),
             #[cfg(test)]
             retained_append_owners: Vec::new(),
         }
@@ -3195,6 +3201,27 @@ impl StoreState {
         }
     }
 
+    fn retained_graph_inputs<'a>(
+        &mut self,
+        store: &'a NativeStore,
+        sources: Arc<[PreparedSourceRef]>,
+        header: Arc<PreparedGraphHeader>,
+    ) -> RetainedGraphInputs<'a> {
+        let identities = [slice_key(&sources), Arc::as_ptr(&header) as usize];
+        for identity in identities {
+            self.ledger.shared.retain(identity);
+        }
+        #[cfg(test)]
+        self.retained_graph_input_owners
+            .push((Arc::downgrade(&sources), Arc::downgrade(&header)));
+        RetainedGraphInputs {
+            store,
+            sources: Some(sources),
+            header: Some(header),
+            identities,
+        }
+    }
+
     fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
         self.prepared_graphs.reserve_for(&graph_id);
         let prepared = graph.lock().expect("prepared graph");
@@ -3434,6 +3461,8 @@ pub struct NativeStore {
     #[cfg(test)]
     read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    graph_validation_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
+    #[cfg(test)]
     decode_hook: Mutex<Option<Arc<dyn Fn(&'static str) + Send + Sync>>>,
     #[cfg(test)]
     pin_hook: Mutex<Option<Arc<dyn Fn(&Value) -> Result<(), SnapshotError> + Send + Sync>>>,
@@ -3551,6 +3580,64 @@ impl Drop for FactReadClaim<'_> {
 struct RetainedFacts<'a> {
     store: &'a NativeStore,
     facts: Option<Arc<crate::snapshot_prepared::PreparedFacts>>,
+}
+
+struct RetainedGraphInputs<'a> {
+    store: &'a NativeStore,
+    sources: Option<Arc<[PreparedSourceRef]>>,
+    header: Option<Arc<PreparedGraphHeader>>,
+    identities: [usize; 2],
+}
+
+impl RetainedGraphInputs<'_> {
+    fn sources(&self) -> &Arc<[PreparedSourceRef]> {
+        self.sources
+            .as_ref()
+            .expect("retained graph sources are live")
+    }
+
+    fn header(&self) -> &Arc<PreparedGraphHeader> {
+        self.header.as_ref().expect("retained graph header is live")
+    }
+}
+
+impl Drop for RetainedGraphInputs<'_> {
+    fn drop(&mut self) {
+        let mut state = self.store.lock_state();
+        let sources = self
+            .sources
+            .take()
+            .expect("retained graph sources are live");
+        let header = self.header.take().expect("retained graph header is live");
+        for identity in self.identities {
+            state.ledger.shared.release(identity);
+        }
+        #[cfg(test)]
+        {
+            let registered = state
+                .retained_graph_input_owners
+                .iter()
+                .position(|(source, field)| {
+                    std::ptr::addr_eq(source.as_ptr(), Arc::as_ptr(&sources))
+                        && field.as_ptr() == Arc::as_ptr(&header)
+                })
+                .expect("retained graph inputs are registered");
+            state.retained_graph_input_owners.swap_remove(registered);
+        }
+        drop(header);
+        drop(sources);
+    }
+}
+
+struct PreparedRootValidation {
+    stamp: SourceStamp,
+    deadline: u64,
+}
+
+struct PreparedGraphValidation<'a> {
+    inputs: RetainedGraphInputs<'a>,
+    root: PreparedRootValidation,
+    validate_members: bool,
 }
 
 impl RetainedFacts<'_> {
@@ -3939,6 +4026,8 @@ impl NativeStore {
             policies: Mutex::new(HashMap::new()),
             #[cfg(test)]
             read_hook: Mutex::new(None),
+            #[cfg(test)]
+            graph_validation_hook: Mutex::new(None),
             #[cfg(test)]
             decode_hook: Mutex::new(None),
             #[cfg(test)]
@@ -14925,7 +15014,12 @@ mod tests {
             .lock()
             .unwrap();
         assert!(prepared.sources.is_empty());
-        assert_eq!(prepared.stamps.len(), 1);
+        assert_eq!(
+            std::iter::once(prepared.root.canonical_path.as_path())
+                .chain(prepared.sources.iter().map(|source| source.path.as_path()))
+                .count(),
+            1
+        );
         assert_eq!(state.counters[1], before);
     }
 

@@ -1144,10 +1144,16 @@ fn observers_leave_every_invalidation_of_the_primary_intact() {
     std::fs::write(subagents.join("agent-new.jsonl"), user("new")).unwrap();
     parity("membership", &family.graph, &family.owner, "changed");
     let graph_id = family.graph["graph_id"].as_str().unwrap();
-    family.store.state.lock().unwrap().prepared_graphs[graph_id]
-        .lock()
-        .unwrap()
-        .classifier = json!({"id":"merged","version":"1"});
+    {
+        let state = family.store.state.lock().unwrap();
+        let mut graph = state.prepared_graphs[graph_id].lock().unwrap();
+        let before = graph_header_anchor(&graph.header);
+        Arc::get_mut(&mut graph.header)
+            .expect("unborrowed prepared graph header")
+            .classifier = json!({"id":"merged","version":"1"});
+        let after = graph_header_anchor(&graph.header);
+        assert_eq!((after.id, after.bytes), (before.id, before.bytes));
+    }
     parity("classifier", &family.graph, &family.owner, "changed");
 }
 
