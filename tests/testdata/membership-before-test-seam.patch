@@ -1,0 +1,162 @@
+diff --git i/rust/crates/core/src/snapshot.rs w/rust/crates/core/src/snapshot.rs
+index 5c084b6..388b3b5 100644
+--- i/rust/crates/core/src/snapshot.rs
++++ w/rust/crates/core/src/snapshot.rs
+@@ -3442,6 +3442,9 @@ pub struct NativeStore {
+     #[cfg(test)]
+     resolve_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
+     #[cfg(test)]
++    membership_hook:
++        Mutex<Option<Arc<dyn Fn(&'static str, usize) -> Result<(), SnapshotError> + Send + Sync>>>,
++    #[cfg(test)]
+     membership_metadata_checks: AtomicUsize,
+     #[cfg(test)]
+     sidechain_path_probes: AtomicUsize,
+@@ -3948,6 +3951,8 @@ impl NativeStore {
+             #[cfg(test)]
+             resolve_hook: Mutex::new(None),
+             #[cfg(test)]
++            membership_hook: Mutex::new(None),
++            #[cfg(test)]
+             membership_metadata_checks: AtomicUsize::new(0),
+             #[cfg(test)]
+             sidechain_path_probes: AtomicUsize::new(0),
+@@ -12231,6 +12236,7 @@ mod tests {
+     include!("snapshot_interactions_tests.rs");
+     include!("snapshot_interaction_api_tests.rs");
+     include!("snapshot_catalog_tests.rs");
++    include!("snapshot_membership_progress_before_tests.rs");
+     include!("snapshot_sidechain_absence_tests.rs");
+     include!("snapshot_common_borrowed_parent_tests.rs");
+ 
+diff --git i/rust/crates/core/src/snapshot_catalog_owner.rs w/rust/crates/core/src/snapshot_catalog_owner.rs
+index be3c4bb..4c30459 100644
+--- i/rust/crates/core/src/snapshot_catalog_owner.rs
++++ w/rust/crates/core/src/snapshot_catalog_owner.rs
+@@ -308,6 +308,8 @@ impl NativeStore {
+                             self.remember_locations(located.iter(), context);
+                             budget.reserve(map_growth(&paths, located.len()))?;
+                             paths.extend(located);
++                            #[cfg(test)]
++                            self.membership_checkpoint("locate", paths.len())?;
+                             break;
+                         }
+                     }
+diff --git i/rust/crates/core/src/snapshot_prepared_service.rs w/rust/crates/core/src/snapshot_prepared_service.rs
+index 7de0fb3..9ea77b9 100644
+--- i/rust/crates/core/src/snapshot_prepared_service.rs
++++ w/rust/crates/core/src/snapshot_prepared_service.rs
+@@ -1867,6 +1867,23 @@ impl NativeStore {
+         revision
+     }
+ 
++    #[cfg(test)]
++    fn membership_checkpoint(
++        &self,
++        stage: &'static str,
++        ordinal: usize,
++    ) -> Result<(), SnapshotError> {
++        let hook = self
++            .membership_hook
++            .lock()
++            .expect("membership test hook")
++            .clone();
++        if let Some(hook) = hook {
++            hook(stage, ordinal)?;
++        }
++        Ok(())
++    }
++
+     fn build_warm_membership(
+         &self,
+         key: &str,
+@@ -1932,6 +1949,8 @@ impl NativeStore {
+                     stamp,
+                 });
+                 assert_eq!(members.capacity(), predicted);
++                #[cfg(test)]
++                self.membership_checkpoint("source", members.len())?;
+             }
+         }
+         let mut sidechain_dirs = Vec::new();
+--- /dev/null
++++ b/rust/crates/core/src/snapshot_membership_progress_before_tests.rs
+@@ -0,0 +1,78 @@
++fn membership_control_fixture(count: usize) -> (Source, NativeStore, Value, Value) {
++    let source = Source::new(&format!("{}\n", user("root")));
++    let ids: Vec<_> = (0..count).map(|index| format!("member-{index:04}")).collect();
++    for id in &ids {
++        std::fs::write(source.directory.join(format!("{id}.jsonl")), format!("{}\n", user(id))).unwrap();
++    }
++    let store = NativeStore::new(&json!({
++        "max_read_bytes_per_step":8192,"max_events_per_step":128,"max_entry_bytes":8192,
++        "max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,
++        "max_leases":16,"reserved_hook_leases":1,
++    })).unwrap();
++    let owner = context("membership-progress");
++    let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
++    let mut request = catalog_missing_request(&source, &root, &ids);
++    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
++    request.insert("active_since_unix_ms", json!(1));
++    request["limits"].insert("max_sources", json!(8192));
++    (source, store, owner, request)
++}
++
++fn membership_control_force_deadline(
++    store: &NativeStore,
++    stage: &'static str,
++    stop: usize,
++) -> Arc<Mutex<Vec<usize>>> {
++    let observed = Arc::new(Mutex::new(Vec::new()));
++    let output = Arc::clone(&observed);
++    let stopped = AtomicBool::new(false);
++    *store.membership_hook.lock().unwrap() = Some(Arc::new(move |current, ordinal| {
++        if current == stage {
++            output.lock().unwrap().push(ordinal);
++            if ordinal == stop && !stopped.swap(true, Ordering::Relaxed) {
++                return Err(SnapshotError::new(Status::Deadline, "membership test deadline"));
++            }
++        }
++        Ok(())
++    }));
++    observed
++}
++
++#[test]
++fn cache_membership_materialization_resumes_after_a_deadline_with_a_moving_cutoff() {
++    let (_source, store, owner, mut request) = membership_control_fixture(32);
++    let observed = membership_control_force_deadline(&store, "source", 9);
++    let first_scope = NativeStore::warm_membership_key(&request, &owner).unwrap();
++    let (first, _) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
++    assert_eq!(first["status"].as_str(), Some("deadline"), "{first:?}");
++    assert_eq!(*observed.lock().unwrap(), (1..=9).collect::<Vec<_>>());
++    store.assert_conserved();
++    request.insert("id", json!("membership-next-window"));
++    request.insert("active_since_unix_ms", json!(2));
++    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
++    assert_ne!(first_scope, NativeStore::warm_membership_key(&request, &owner).unwrap());
++    let (complete, _) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
++    assert_eq!(complete["status"].as_str(), Some("ok"), "{complete:?}");
++    assert_eq!(*observed.lock().unwrap(), (1..=32).collect::<Vec<_>>(), "MEMBERSHIP_MATERIALIZATION_PREFIX_REPEATED");
++    *store.membership_hook.lock().unwrap() = None;
++    store.assert_conserved();
++}
++
++#[test]
++fn cache_membership_locate_resumes_completed_chunks_after_a_deadline() {
++    let (_source, store, owner, mut request) = membership_control_fixture(2049);
++    let observed = membership_control_force_deadline(&store, "locate", 1024);
++    let (first, _) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
++    assert_eq!(first["status"].as_str(), Some("deadline"), "{first:?}");
++    assert_eq!(*observed.lock().unwrap(), [1024]);
++    store.assert_conserved();
++    request.insert("id", json!("membership-locate-next-window"));
++    request.insert("active_since_unix_ms", json!(2));
++    request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
++    let (complete, _) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
++    assert_eq!(complete["status"].as_str(), Some("ok"), "{complete:?}");
++    assert_eq!(*observed.lock().unwrap(), [1024, 2048, 2049], "MEMBERSHIP_LOCATE_PREFIX_REPEATED");
++    *store.membership_hook.lock().unwrap() = None;
++    store.assert_conserved();
++}
++

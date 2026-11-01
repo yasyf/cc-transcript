@@ -1,0 +1,94 @@
+name: Membership deadline boundary control
+
+on:
+  push:
+    branches: [diagnostic/membership-deadline-boundary-control]
+
+permissions:
+  contents: read
+
+jobs:
+  paired-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record immutable sources and toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/membership8032-proof"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/membership8032-proof/definition.txt"
+          rustc --version --verbose > "$RUNNER_TEMP/membership8032-proof/toolchain.txt"
+          echo 'db4ee2d9d5df126c1d7e49a46e57a5915b32a445ab8b62f7c6c4a00f446eb933  tests/testdata/membership-before-test-seam.patch' | sha256sum --check
+      - name: Prove original boundary failures
+        id: before
+        continue-on-error: true
+        run: |
+          before="$RUNNER_TEMP/membership8032-before"
+          git fetch --no-tags --depth=1 origin 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          git worktree add --detach "$before" 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          test "$(git -C "$before" rev-parse HEAD)" = 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          test "$(git -C "$before" rev-parse HEAD^{tree})" = 35dd626ccbfbb1be914c9bce7b514bafb4524fbb
+          git -C "$before" diff --exit-code
+          git -C "$before" rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/membership8032-proof/before-source.txt"
+          git -C "$before" apply --check "$GITHUB_WORKSPACE/tests/testdata/membership-before-test-seam.patch"
+          git -C "$before" apply "$GITHUB_WORKSPACE/tests/testdata/membership-before-test-seam.patch"
+          cd "$before"
+          set +e
+          cargo test --locked -p cc-transcript-core --no-default-features --lib cache_membership_ -- --nocapture --test-threads=1 > "$RUNNER_TEMP/membership8032-proof/before.log" 2>&1
+          code=$?
+          set -e
+          echo "$code" > "$RUNNER_TEMP/membership8032-proof/before-exit.txt"
+          test "$code" -ne 0
+          grep -F 'running 2 tests' "$RUNNER_TEMP/membership8032-proof/before.log"
+          grep -F 'test result: FAILED. 0 passed; 2 failed;' "$RUNNER_TEMP/membership8032-proof/before.log"
+          grep -Fx '    snapshot::tests::cache_membership_materialization_resumes_after_a_deadline_with_a_moving_cutoff' "$RUNNER_TEMP/membership8032-proof/before.log"
+          grep -Fx '    snapshot::tests::cache_membership_locate_resumes_completed_chunks_after_a_deadline' "$RUNNER_TEMP/membership8032-proof/before.log"
+          grep -F 'MEMBERSHIP_MATERIALIZATION_PREFIX_REPEATED' "$RUNNER_TEMP/membership8032-proof/before.log"
+          grep -F 'MEMBERSHIP_LOCATE_PREFIX_REPEATED' "$RUNNER_TEMP/membership8032-proof/before.log"
+          git apply --reverse "$GITHUB_WORKSPACE/tests/testdata/membership-before-test-seam.patch"
+          test -z "$(git status --porcelain)"
+      - uses: actions/checkout@v7
+        if: ${{ !cancelled() }}
+        with:
+          ref: 5e8c4dbdeb8c101616d32ef1e78b5f3f21548989
+          path: fixed
+          persist-credentials: false
+      - name: Prove fixed boundary and ownership controls
+        id: fixed
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        working-directory: fixed
+        run: |
+          test "$(git rev-parse HEAD)" = 5e8c4dbdeb8c101616d32ef1e78b5f3f21548989
+          test "$(git rev-parse HEAD^{tree})" = b9683706a761cd55fc9be885b0b2fe9e38b1f14e
+          echo '0f71a214abe4727a669bdac1019ab2d6bdc91448b6330b044eb60f93ff51b61c  rust/crates/core/src/snapshot_membership_progress_controls.rs' | sha256sum --check
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/membership8032-proof/fixed-source.txt"
+          set +e
+          cargo test --locked -p cc-transcript-core --no-default-features --lib cache_membership_ -- --nocapture --test-threads=1 > "$RUNNER_TEMP/membership8032-proof/fixed.log" 2>&1
+          code=$?
+          set -e
+          echo "$code" > "$RUNNER_TEMP/membership8032-proof/fixed-exit.txt"
+          test "$code" -eq 0
+          grep -F 'running 11 tests' "$RUNNER_TEMP/membership8032-proof/fixed.log"
+          grep -F 'test result: ok. 11 passed; 0 failed;' "$RUNNER_TEMP/membership8032-proof/fixed.log"
+          test -z "$(git status --porcelain)"
+      - name: Require both actual grades
+        if: ${{ !cancelled() }}
+        env:
+          BEFORE_OUTCOME: ${{ steps.before.outcome }}
+          FIXED_OUTCOME: ${{ steps.fixed.outcome }}
+        run: |
+          test "$BEFORE_OUTCOME" = success
+          test "$FIXED_OUTCOME" = success
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: membership8032-boundary-${{ github.sha }}
+          path: ${{ runner.temp }}/membership8032-proof
+          if-no-files-found: error
