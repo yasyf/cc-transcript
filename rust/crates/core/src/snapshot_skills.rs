@@ -155,7 +155,7 @@ impl NativeStore {
         let registry_generation = str_field(context, "registry_generation")?;
         let admission = str_field(context, "admission")?;
         let (current_codex, previous) = {
-            let state = self.lock_state();
+            let mut state = self.lock_state();
             let current = state
                 .latest_source(&stamp.identity)
                 .is_some_and(|snapshot| {
