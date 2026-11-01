@@ -8360,7 +8360,15 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
     let (store, owner) = (&warmed.store, &warmed.owner);
     store.assert_conserved();
     let first_id = warmed.graph["graph_id"].as_str().unwrap().to_owned();
-    let (membership_key, membership_charge, membership_header, positions, shared, first_header, first_charge) = {
+    let (
+        membership_key,
+        membership_charge,
+        membership_header,
+        positions,
+        shared,
+        first_header,
+        first_charge,
+    ) = {
         let state = store.lock_state();
         let (key, slot) = state
             .warm_memberships
