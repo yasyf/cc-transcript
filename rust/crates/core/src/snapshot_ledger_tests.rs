@@ -13672,8 +13672,8 @@ fn cache_published_warm_membership_draws_its_record_from_the_build_reservation()
         );
         assert_eq!(
             released,
-            vec![exact - retained],
-            "the publication did not draw its record from the build's reservation"
+            vec![0, exact - retained],
+            "the catalog reservation transfer and unused build credit release differ"
         );
         assert_eq!(audited(&fitted.store)[TOTAL], cap - exact + retained);
     }
