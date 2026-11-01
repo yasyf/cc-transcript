@@ -1722,6 +1722,7 @@ impl NativeStore {
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
+        let inputs = graph.input_anchors();
         let mut state = self.lock_state();
         Self::prune(&mut state);
         if state.prepared_graphs.len() >= self.lease_cap(context)? {
@@ -1730,16 +1731,16 @@ impl NativeStore {
                 "prepared graph admission exhausted",
             ));
         }
-        let record =
-            charged_bytes(&graph_id, &graph) + state.ledger.shared.unowned_bytes(graph.anchors());
+        let record = charged_bytes(&graph_id, &graph)
+            + state.ledger.shared.unowned_bytes(graph.anchors_with(inputs));
         let covered = record.min(reservation.bytes);
         let fresh = record - covered
-            + state.ledger.shared.growth(graph.anchors())
+            + state.ledger.shared.growth(graph.anchors_with(inputs))
             + state.prepared_graphs.growth_for(&graph_id);
         self.admit_memory(&mut state, context, fresh)?;
         state.transient_bytes -= covered;
         reservation.bytes -= covered;
-        state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)));
+        state.insert_prepared_graph(graph_id.clone(), Arc::new(Mutex::new(graph)), inputs);
         Ok((
             json!({"kind":"prepared_graph","handle":{"graph_id":graph_id,"owner_epoch":self.owner_epoch,"revision":revision,"complete":true}}),
             None,

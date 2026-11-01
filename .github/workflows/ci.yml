@@ -105,6 +105,29 @@ jobs:
           cargo test -p cc-transcript-core --no-default-features --lib -- pressure_ --nocapture
           cargo test -p cc-transcript-core --no-default-features --lib -- cache_ --nocapture
 
+      - name: Test prepared graph anchor ownership and cost controls
+        id: graph_anchor_positive
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/graph-anchor-evidence"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib prepared_graph_anchor_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/graph-anchor-evidence/positive.log"
+
+      - name: Verify exact old-production graph anchor controls
+        run: python3 scripts/check_graph_anchor_old.py
+
+      - name: Upload graph anchor ownership and raw cost controls
+        if: always() && steps.graph_anchor_positive.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: graph-anchor-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/graph-anchor-evidence/positive.log
+            ${{ runner.temp }}/graph-anchor-evidence/old-negative.log
+            ${{ runner.temp }}/graph-anchor-evidence/old-source.json
+          if-no-files-found: error
+
       - name: Test typed Skills framing and capability controls
         id: typed_skills_positive
         env:
