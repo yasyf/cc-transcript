@@ -2,7 +2,7 @@ fn skill_claude(name: &str) -> String {
     format!(
         "{}\n",
         json!({"type":"assistant","uuid":"skill-entry","sessionId":"skill-session","timestamp":"2026-01-02T03:04:07Z",
-        "message":{"role":"assistant","content":[{"type":"tool_use","id":"skill-call","name":"Skill","input":{"skill":name}}]}})
+        "message":{"role":"assistant","model":"test","content":[{"type":"tool_use","id":"skill-call","name":"Skill","input":{"skill":name}}]}})
     )
 }
 
