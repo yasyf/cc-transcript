@@ -2034,13 +2034,33 @@ impl Charge<String> for Arc<Mutex<PreparedGraph>> {
 }
 
 impl PreparedGraph {
-    fn anchors(&self) -> impl Iterator<Item = Anchor> + '_ {
+    fn input_anchors(&self) -> [Anchor; 3] {
+        #[cfg(test)]
+        tests::record_prepared_graph_input_anchors(self.sources.len(), self.sidechain_dirs.len());
+        [
+            graph_header_anchor(&self.header),
+            sources_anchor(&self.sources),
+            sidechain_dirs_anchor(&self.sidechain_dirs),
+        ]
+    }
+
+    fn anchors_with(&self, inputs: [Anchor; 3]) -> impl Iterator<Item = Anchor> + '_ {
         std::iter::once(facts_anchor(&self.root_facts))
             .chain(self.root_slices.values().map(facts_anchor))
+            .chain(inputs)
+    }
+
+    fn anchors(&self) -> impl Iterator<Item = Anchor> + '_ {
+        self.anchors_with(self.input_anchors())
+    }
+
+    fn anchor_ids(&self) -> impl Iterator<Item = usize> + '_ {
+        std::iter::once(facts_key(&self.root_facts))
+            .chain(self.root_slices.values().map(facts_key))
             .chain([
-                graph_header_anchor(&self.header),
-                sources_anchor(&self.sources),
-                sidechain_dirs_anchor(&self.sidechain_dirs),
+                Arc::as_ptr(&self.header) as usize,
+                slice_key(&self.sources),
+                slice_key(&self.sidechain_dirs),
             ])
     }
 }
@@ -3226,11 +3246,16 @@ impl StoreState {
         }
     }
 
-    fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
+    fn insert_prepared_graph(
+        &mut self,
+        graph_id: String,
+        graph: Arc<Mutex<PreparedGraph>>,
+        inputs: [Anchor; 3],
+    ) {
         self.prepared_graphs.reserve_for(&graph_id);
         let prepared = graph.lock().expect("prepared graph");
-        self.ledger.shared.reserve(prepared.anchors());
-        for anchor in prepared.anchors() {
+        self.ledger.shared.reserve(prepared.anchors_with(inputs));
+        for anchor in prepared.anchors_with(inputs) {
             self.ledger.shared.acquire(anchor);
         }
         drop(prepared);
@@ -3240,8 +3265,8 @@ impl StoreState {
     }
 
     fn release_prepared_graph(&mut self, graph: &Mutex<PreparedGraph>) {
-        for anchor in graph.lock().expect("prepared graph").anchors() {
-            self.ledger.shared.release(anchor.id);
+        for identity in graph.lock().expect("prepared graph").anchor_ids() {
+            self.ledger.shared.release(identity);
         }
     }
 
@@ -12376,6 +12401,7 @@ mod tests {
     include!("snapshot_membership_progress_controls.rs");
     include!("snapshot_sidechain_absence_tests.rs");
     include!("snapshot_common_borrowed_parent_tests.rs");
+    include!("snapshot_graph_anchor_tests.rs");
 
     fn context(claimant: &str) -> Value {
         json!({"claimant":claimant,"admission":"hook","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":crate::toolcall::ToolRegistrySnapshot::from_specs(HashMap::new()).fingerprint()})
