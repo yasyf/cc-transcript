@@ -1097,17 +1097,20 @@ impl NativeStore {
                 }
                 remaining.max_discovery_entries -= 1;
                 usage[17] += 1;
-                let entry = pending.take().expect("pending sidechain entry");
+                let entry = pending.as_ref().expect("pending sidechain entry");
                 let path = entry.path();
                 if path
                     .extension()
                     .is_some_and(|extension| extension == "jsonl")
                     && !entry.name.to_string_lossy().starts_with("._")
                 {
+                    #[cfg(test)]
+                    self.membership_checkpoint("sidechain_admission", children.len() + 1)?;
                     budget.reserve(vec_growth(children, 1))?;
                     budget.retain_scratch(path.capacity());
                     children.push(path);
                 }
+                drop(pending.take());
                 #[cfg(test)]
                 self.membership_checkpoint("sidechain_entry", children.len())?;
             }

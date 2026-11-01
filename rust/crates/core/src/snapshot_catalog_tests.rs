@@ -932,8 +932,8 @@ fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_
                 std::fs::remove_file(&alias).unwrap();
                 std::os::unix::fs::symlink(&right, &alias).unwrap();
             }
-        }),
-    ));
+        }
+    })));
     let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
     let outcome = store.membership_work(
