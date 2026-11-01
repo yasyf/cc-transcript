@@ -1,0 +1,91 @@
+name: Finite append fence source controls
+
+on:
+  push:
+    branches: [diagnostic/finite-append-fence]
+
+permissions:
+  contents: read
+
+jobs:
+  explicit-byte-controls:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+        with:
+          ref: 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          path: before
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: 4245d5a3bb8fedbabeffc576afe17593933deb84
+          path: current
+          persist-credentials: false
+      - name: Bind immutable sources and test-only controls
+        run: |
+          mkdir -p "$RUNNER_TEMP/finite-fence-proof"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/finite-fence-proof/definition.txt"
+          rustc --version --verbose > "$RUNNER_TEMP/finite-fence-proof/toolchain.txt"
+          echo 'b8a45f282ad9304faade4bf76c202a029d80f6a16ea084bcea524a7b8ffdbabc  .ci/finite_append_fence_control.rs' | sha256sum --check
+          test "$(git -C before rev-parse HEAD)" = 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          test "$(git -C before rev-parse HEAD^{tree})" = 35dd626ccbfbb1be914c9bce7b514bafb4524fbb
+          test "$(git -C current rev-parse HEAD)" = 4245d5a3bb8fedbabeffc576afe17593933deb84
+          test "$(git -C current rev-parse HEAD^{tree})" = 2385656de7923347745da2ee28913617f6e5c6eb
+          for variant in before current; do
+            git -C "$variant" rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/finite-fence-proof/$variant-source.txt"
+            sha256sum "$variant/rust/crates/core/src/snapshot.rs" "$variant/rust/crates/core/src/snapshot_cache.rs" "$variant/Cargo.lock" > "$RUNNER_TEMP/finite-fence-proof/$variant-inputs.txt"
+            cp .ci/finite_append_fence_control.rs "$variant/rust/crates/core/src/snapshot_finite_append_fence_diagnostic.rs"
+            printf '\ninclude!("snapshot_finite_append_fence_diagnostic.rs");\n' >> "$variant/rust/crates/core/src/snapshot_ledger_tests.rs"
+          done
+      - name: Original source byte-stable controls
+        id: before
+        continue-on-error: true
+        working-directory: before
+        run: |
+          set +e
+          cargo test --locked -p cc-transcript-core --no-default-features --lib finite_append_fence_ -- --nocapture --test-threads=1 > "$RUNNER_TEMP/finite-fence-proof/before.log" 2>&1
+          code=$?
+          set -e
+          echo "$code" > "$RUNNER_TEMP/finite-fence-proof/before-exit.txt"
+          test "$code" -ne 0
+          grep -F 'running 2 tests' "$RUNNER_TEMP/finite-fence-proof/before.log"
+          grep -F 'test result: FAILED. 1 passed; 1 failed;' "$RUNNER_TEMP/finite-fence-proof/before.log"
+          grep -F 'COMMON_TAIL_REWRITE_REUSED_PRIOR_UUID' "$RUNNER_TEMP/finite-fence-proof/before.log"
+          grep -F 'FINITE_APPEND_FENCE_OBSERVATION' "$RUNNER_TEMP/finite-fence-proof/before.log"
+      - name: Current source byte-stable controls
+        id: current
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        working-directory: current
+        run: |
+          set +e
+          cargo test --locked -p cc-transcript-core --no-default-features --lib finite_append_fence_ -- --nocapture --test-threads=1 > "$RUNNER_TEMP/finite-fence-proof/current.log" 2>&1
+          code=$?
+          set -e
+          echo "$code" > "$RUNNER_TEMP/finite-fence-proof/current-exit.txt"
+          test "$code" -ne 0
+          grep -F 'running 2 tests' "$RUNNER_TEMP/finite-fence-proof/current.log"
+          grep -F 'test result: FAILED. 1 passed; 1 failed;' "$RUNNER_TEMP/finite-fence-proof/current.log"
+          grep -F 'COMMON_TAIL_REWRITE_REUSED_PRIOR_UUID' "$RUNNER_TEMP/finite-fence-proof/current.log"
+          grep -F 'FINITE_APPEND_FENCE_OBSERVATION' "$RUNNER_TEMP/finite-fence-proof/current.log"
+      - name: Require both diagnostic witnesses
+        if: ${{ !cancelled() }}
+        env:
+          BEFORE_OUTCOME: ${{ steps.before.outcome }}
+          CURRENT_OUTCOME: ${{ steps.current.outcome }}
+        run: |
+          test "$BEFORE_OUTCOME" = success
+          test "$CURRENT_OUTCOME" = success
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: finite-append-fence-${{ github.sha }}
+          path: ${{ runner.temp }}/finite-fence-proof
+          if-no-files-found: error
