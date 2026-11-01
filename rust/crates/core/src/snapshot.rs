@@ -2178,7 +2178,7 @@ pub(crate) struct StoreState {
     prepared_queries: Ledgered<String, PreparedQueryCursor>,
     expired_prepared_queries: Ledgered<String, (String, u64)>,
     prepared_facts: Ledgered<PreparedDiskKey, CachedPreparedFacts>,
-    warm_memberships: Ledgered<String, WarmMembership>,
+    warm_memberships: Ledgered<String, Arc<MembershipSlot>>,
     deliveries: Ledgered<Arc<str>, Delivery>,
     deliveries_expiry: DeadlineIndex<Arc<str>>,
     labels: Ledgered<String, LabelSlot>,
@@ -2208,6 +2208,8 @@ pub(crate) struct StoreState {
     audits: Arc<AtomicUsize>,
     #[cfg(test)]
     retained_owners: Vec<Weak<crate::snapshot_prepared::PreparedFacts>>,
+    #[cfg(test)]
+    retained_membership_owners: Vec<Weak<WarmMembership>>,
     #[cfg(test)]
     retained_graph_input_owners: Vec<(Weak<[PreparedSourceRef]>, Weak<PreparedGraphHeader>)>,
     #[cfg(test)]
@@ -2288,6 +2290,8 @@ impl StoreState {
             audits: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
             retained_owners: Vec::new(),
+            #[cfg(test)]
+            retained_membership_owners: Vec::new(),
             #[cfg(test)]
             retained_graph_input_owners: Vec::new(),
             #[cfg(test)]
@@ -3315,40 +3319,66 @@ impl StoreState {
             + self.waiters.consume_pledge(cursor)
     }
 
+    #[cfg(test)]
     fn insert_warm_membership(&mut self, key: String, membership: WarmMembership) {
+        self.insert_membership_slot(key, Arc::new(membership));
+    }
+
+    fn insert_membership_slot(&mut self, key: String, membership: Arc<WarmMembership>) {
         self.warm_memberships.reserve_for(&key);
-        self.ledger.shared.reserve(membership.anchors());
-        for anchor in membership.anchors() {
+        self.ledger.shared.reserve(membership_anchors(&membership));
+        for anchor in membership_anchors(&membership) {
             self.ledger.shared.acquire(anchor);
         }
-        if let Some(displaced) = self.warm_memberships.insert(key, membership) {
-            self.release_warm_membership(&displaced);
-        }
-    }
-
-    fn release_warm_membership(&mut self, membership: &WarmMembership) {
-        for anchor in membership.anchors() {
-            self.ledger.shared.release(anchor.id);
-        }
-    }
-
-    fn remove_warm_membership(&mut self, key: &str) -> Option<WarmMembership> {
-        let membership = self.warm_memberships.remove(key)?;
-        self.release_warm_membership(&membership);
-        Some(membership)
-    }
-
-    fn retain_warm_memberships(&mut self, mut keep: impl FnMut(&String, &WarmMembership) -> bool) {
-        let mut released = Vec::new();
-        self.warm_memberships.retain(|key, membership| {
-            let kept = keep(key, membership);
-            if !kept {
-                released.extend(membership.anchors());
-            }
-            kept
+        let expires = membership.expires;
+        let slot = Arc::new(MembershipSlot {
+            cell: Mutex::new(MembershipCell::Positive(membership)),
+            accounted: AtomicUsize::new(0),
+            pending: AtomicBool::new(false),
+            expires: AtomicU64::new(expires),
         });
-        for anchor in released {
-            self.ledger.shared.release(anchor.id);
+        if let Some(displaced) = self.warm_memberships.insert(key, slot) {
+            self.release_membership_slot(&displaced);
+        }
+    }
+
+    fn release_membership_slot(&mut self, slot: &MembershipSlot) {
+        let cell = slot.cell.lock().expect("registered membership");
+        match &*cell {
+            MembershipCell::Collected(membership) | MembershipCell::Positive(membership) => {
+                for identity in membership_identities(membership) {
+                    self.ledger.shared.release(identity);
+                }
+            }
+            MembershipCell::Empty | MembershipCell::Pending(_) => {}
+            MembershipCell::Busy => panic!("busy membership remains registered"),
+        }
+    }
+
+    fn remove_warm_membership(&mut self, key: &str) -> Option<Arc<MembershipSlot>> {
+        let slot = self.warm_memberships.get(key)?;
+        if Arc::strong_count(slot) > 1 {
+            return None;
+        }
+        let slot = self
+            .warm_memberships
+            .remove(key)
+            .expect("registered membership");
+        self.release_membership_slot(&slot);
+        Some(slot)
+    }
+
+    fn retain_warm_memberships(&mut self, now: u64) {
+        let expired: Vec<_> = self
+            .warm_memberships
+            .iter()
+            .filter(|(_, slot)| {
+                slot.expires.load(Ordering::Acquire) <= now && Arc::strong_count(slot) == 1
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired {
+            self.remove_warm_membership(&key);
         }
     }
 
@@ -3484,6 +3514,9 @@ pub struct NativeStore {
     release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
     #[cfg(test)]
     resolve_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
+    #[cfg(test)]
+    membership_hook:
+        Mutex<Option<Arc<dyn Fn(&'static str, usize) -> Result<(), SnapshotError> + Send + Sync>>>,
     #[cfg(test)]
     membership_metadata_checks: AtomicUsize,
     #[cfg(test)]
@@ -4050,6 +4083,8 @@ impl NativeStore {
             release_hook: Mutex::new(None),
             #[cfg(test)]
             resolve_hook: Mutex::new(None),
+            #[cfg(test)]
+            membership_hook: Mutex::new(None),
             #[cfg(test)]
             membership_metadata_checks: AtomicUsize::new(0),
             #[cfg(test)]
@@ -5385,7 +5420,7 @@ impl NativeStore {
         for identity in state.expired_prepared_loads(now) {
             state.prepared_loads.remove(&identity);
         }
-        state.retain_warm_memberships(|_, membership| membership.expires > now);
+        state.retain_warm_memberships(now);
         state.retain_loads(|id, slot| {
             (active.contains(id) && slot.deadline.load(Ordering::Acquire) > now)
                 || Arc::strong_count(slot) > 1
@@ -6200,17 +6235,14 @@ impl NativeStore {
     }
 
     #[cfg(test)]
-    fn audit_warm_membership_bytes(key: &String, membership: &WarmMembership) -> usize {
-        let WarmMembership {
-            catalog: _,
-            members: _,
-            positions: _,
-            sidechain_dirs: _,
-            revision,
-            complete: _,
-            expires: _,
-        } = membership;
-        key.capacity() + size_of::<WarmMembership>() + revision.capacity()
+    fn audit_warm_membership_bytes(key: &String, slot: &Arc<MembershipSlot>) -> usize {
+        let cell = slot.cell.lock().expect("registered membership");
+        let heap = match &*cell {
+            MembershipCell::Empty | MembershipCell::Collected(_) | MembershipCell::Positive(_) => 0,
+            MembershipCell::Pending(build) => Self::audit_membership_build_bytes(build),
+            MembershipCell::Busy => panic!("membership ownership audit requires a settled request"),
+        };
+        key.capacity() + arc_mirror::<MembershipSlot>() + MUTEX_STORAGE_MIRROR + heap
     }
 
     #[cfg(test)]
@@ -12252,6 +12284,8 @@ impl NativeStore {
 include!("snapshot_catalog.rs");
 include!("snapshot_symlink_proof.rs");
 include!("snapshot_catalog_owner.rs");
+
+include!("snapshot_membership_progress.rs");
 include!("snapshot_sidechain_absence.rs");
 include!("snapshot_prepared_service.rs");
 include!("snapshot_skills.rs");
@@ -12338,6 +12372,8 @@ mod tests {
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");
     include!("snapshot_catalog_tests.rs");
+    include!("snapshot_membership_progress_tests.rs");
+    include!("snapshot_membership_progress_controls.rs");
     include!("snapshot_sidechain_absence_tests.rs");
     include!("snapshot_common_borrowed_parent_tests.rs");
 
@@ -17287,17 +17323,21 @@ mod tests {
     #[test]
     fn registered_warming_charges_its_member_positions_once_and_reuses_them_on_every_page() {
         let (source, store, owner, fresh) = registered_warming(20);
-        let key = NativeStore::warm_membership_key(&fresh, &owner).unwrap();
+        let key = NativeStore::membership_collection_key(&fresh, &owner).unwrap();
         let positions = || {
             let state = store.lock_state();
             assert_eq!(state.warm_memberships.len(), 1);
-            let membership = &state.warm_memberships[&key];
+            let membership = state
+                .positive_membership(&key)
+                .expect("positive membership");
             assert!(membership.members.iter().all(|member| membership
                 .active_member(member.stamp.identity, None)
                 .is_some_and(|found| std::ptr::eq(found, member))));
             assert_eq!(
                 state.ledger.shared.warm(),
-                source_ref_bytes(&membership.members)
+                arc_mirror::<WarmMembership>()
+                    + membership.revision.capacity()
+                    + source_ref_bytes(&membership.members)
                     + arc_slice_mirror::<(SourceIdentity, usize)>(membership.members.len())
                     + sidechain_dir_bytes(&membership.sidechain_dirs)
             );
@@ -20204,6 +20244,7 @@ mod tests {
             .lock_state()
             .warm_memberships
             .values()
+            .filter_map(|slot| slot.positive())
             .next()
             .unwrap()
             .clone();
@@ -20230,7 +20271,10 @@ mod tests {
                 resolved.lock().unwrap().push((
                     path.to_path_buf(),
                     state.transient_bytes,
-                    state.warm_memberships.is_empty(),
+                    state
+                        .warm_memberships
+                        .values()
+                        .all(|slot| slot.pending.load(Ordering::Acquire)),
                 ));
             }
         }));
@@ -20240,12 +20284,12 @@ mod tests {
         *store.resolve_hook.lock().unwrap() = None;
         assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
         let resolutions = resolved.lock().unwrap();
-        let uncached: Vec<_> = resolutions
+        let refreshing: Vec<_> = resolutions
             .iter()
-            .filter(|(.., uncached)| *uncached)
+            .filter(|(.., refreshing)| *refreshing)
             .collect();
         assert_eq!(
-            uncached.iter().map(|(path, ..)| path).collect::<Vec<_>>(),
+            refreshing.iter().map(|(path, ..)| path).collect::<Vec<_>>(),
             warmed
                 .members
                 .iter()
@@ -20254,7 +20298,7 @@ mod tests {
         );
         assert!(!resolutions[0].2);
         assert!(
-            uncached.last().unwrap().1 - resolutions[0].1 >= live + copied,
+            refreshing.last().unwrap().1 - resolutions[0].1 >= live + copied,
             "the refresh holds copied member paths its reservation never charged"
         );
         assert!(Arc::ptr_eq(
@@ -20262,6 +20306,7 @@ mod tests {
                 .lock_state()
                 .warm_memberships
                 .values()
+                .filter_map(|slot| slot.positive())
                 .next()
                 .unwrap()
                 .positions,

@@ -78,9 +78,18 @@ struct CatalogInput<'a> {
     roots: &'a [Value],
 }
 
-enum CatalogMode<'a> { Index(&'a mut CatalogProbe), Locate, Check(CatalogCertificate) }
+enum CatalogMode<'a> {
+    Index(&'a mut CatalogProbe),
+    Locate(&'a mut MembershipLocate),
+    Check(CatalogCertificate),
+}
 
-enum CatalogWorkResult { Indexed, Paths(HashMap<String, PathBuf>, CatalogCertificate), Checked(bool), Pending }
+enum CatalogWorkResult {
+    Indexed,
+    Paths(HashMap<String, PathBuf>, CatalogCertificate),
+    Checked(bool),
+    Pending,
+}
 
 enum CatalogResolution<'a> {
     Indexed,
@@ -91,6 +100,10 @@ enum CatalogResolution<'a> {
         certificate: Option<CatalogCertificate>,
     },
     Pending(Arc<CatalogSlot>),
+    Stopped {
+        error: SnapshotError,
+        reservation: ProjectionReservation<'a>,
+    },
 }
 
 struct RegisteredBuild {
@@ -203,8 +216,19 @@ impl NativeStore {
             return Err(invalid("invalid root count"));
         }
         let chunk_size = 1024.min(remaining.max_items);
-        if chunk_size == 0 { return Err(invalid("location request exceeds session item bound")); }
-        if matches!(mode, CatalogMode::Locate) { self.validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?; }
+        if chunk_size == 0 {
+            return Err(invalid("location request exceeds session item bound"));
+        }
+        let retains_paths = matches!(mode, CatalogMode::Locate(_));
+        if let CatalogMode::Locate(progress) = &mode {
+            if progress.chunk_size != chunk_size {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "registered selection geometry changed",
+                ));
+            }
+            self.validate_catalog_chunk(&ids[..ids.len().min(chunk_size)])?;
+        }
         let (key, mut reservation) = self.catalog_key(roots, context)?;
         let slot = {
             let mut state = self.lock_state();
@@ -273,16 +297,34 @@ impl NativeStore {
                     return Ok(CatalogWorkResult::Pending);
                 }
                 CatalogMode::Check(expected) => {
-                    let issue = catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
-                    return Ok(CatalogWorkResult::Checked(issue.is_none() && expected.key() == key && expected.matches(catalog)));
+                    let issue =
+                        catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+                    return Ok(CatalogWorkResult::Checked(
+                        issue.is_none() && expected.key() == key && expected.matches(catalog),
+                    ));
                 }
-                CatalogMode::Locate => {}
+                CatalogMode::Locate(_) => {}
             }
-            let mut paths = HashMap::new();
+            let progress = match &mut mode {
+                CatalogMode::Locate(progress) => &mut **progress,
+                _ => unreachable!("catalog selection mode"),
+            };
+            if progress.revision.is_some() {
+                catalog.refresh(self, cancel, remaining.deadline_unix_ms, &mut budget)?;
+            }
+            if progress
+                .revision
+                .is_some_and(|certificate| !certificate.matches(catalog))
+            {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "registered catalog changed between selection steps",
+                ));
+            }
             let mut plan = None;
-            let mut plan_epoch = 0;
-            let mut selected_revision = None;
-            for chunk in ids.chunks(chunk_size) {
+            let mut plan_epoch = catalog.epoch;
+            let mut selected_revision = progress.revision.map(|_| catalog.selection_revision);
+            for chunk in ids[progress.next..].chunks(chunk_size) {
                 self.validate_catalog_chunk(chunk)?;
                 budget.reserve(CatalogProbe::allocation_bound(chunk, chunk.len()))?;
                 let mut probe = CatalogProbe::new(chunk, chunk.len());
@@ -306,8 +348,19 @@ impl NativeStore {
                             }
                             selected_revision = Some(catalog.selection_revision);
                             self.remember_locations(located.iter(), context);
-                            budget.reserve(map_growth(&paths, located.len()))?;
-                            paths.extend(located);
+                            budget.reserve(map_growth(&progress.paths, located.len()))?;
+                            progress.paths.extend(located);
+                            progress.next += chunk.len();
+                            progress.revision = Some(CatalogCertificate {
+                                scope: key
+                                    .as_bytes()
+                                    .try_into()
+                                    .expect("catalog scope digest size"),
+                                incarnation: catalog.incarnation,
+                                revision: catalog.decision_revision,
+                            });
+                            #[cfg(test)]
+                            self.membership_checkpoint("locate", progress.next)?;
                             break;
                         }
                     }
@@ -328,11 +381,17 @@ impl NativeStore {
                 return Err(SnapshotError::new(Status::Changed, "registered catalog changed during lookup"));
             }
             cancel.check(remaining.deadline_unix_ms)?;
-            Ok(CatalogWorkResult::Paths(paths, CatalogCertificate {
-                scope: key.as_bytes().try_into().expect("catalog scope digest size"),
-                incarnation: catalog.incarnation,
-                revision: catalog.decision_revision,
-            }))
+            Ok(CatalogWorkResult::Paths(
+                std::mem::take(&mut progress.paths),
+                CatalogCertificate {
+                    scope: key
+                        .as_bytes()
+                        .try_into()
+                        .expect("catalog scope digest size"),
+                    incarnation: catalog.incarnation,
+                    revision: catalog.decision_revision,
+                },
+            ))
         })();
         {
             let mut state = self.lock_state();
@@ -350,11 +409,17 @@ impl NativeStore {
             };
         }
         self.fact_read_released.notify_all();
-        match outcome? {
-            CatalogWorkResult::Paths(paths, certificate) => Ok(CatalogResolution::Ready { paths, reservation, certificate: Some(certificate) }),
-            CatalogWorkResult::Checked(valid) => Ok(CatalogResolution::Checked(valid)),
-            CatalogWorkResult::Indexed => Ok(CatalogResolution::Indexed),
-            CatalogWorkResult::Pending => Ok(CatalogResolution::Pending(slot)),
+        match outcome {
+            Err(error) if retains_paths => Ok(CatalogResolution::Stopped { error, reservation }),
+            Err(error) => Err(error),
+            Ok(CatalogWorkResult::Paths(paths, certificate)) => Ok(CatalogResolution::Ready {
+                paths,
+                reservation,
+                certificate: Some(certificate),
+            }),
+            Ok(CatalogWorkResult::Checked(valid)) => Ok(CatalogResolution::Checked(valid)),
+            Ok(CatalogWorkResult::Indexed) => Ok(CatalogResolution::Indexed),
+            Ok(CatalogWorkResult::Pending) => Ok(CatalogResolution::Pending(slot)),
         }
     }
 }
@@ -422,11 +487,20 @@ impl NativeStore {
                 drop(scope);
                 self.prepare_graph_ready(request, context, cancel, usage, remaining)
             }
-            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) => unreachable!("catalog indexing does not materialize paths"),
+            CatalogResolution::Ready { .. }
+            | CatalogResolution::Checked(_)
+            | CatalogResolution::Stopped { .. } => {
+                unreachable!("catalog indexing does not materialize paths")
+            }
             CatalogResolution::Pending(slot) => {
-                self.extend_projection_reservation(&mut reservation, context,
-                    size_of::<RegisteredBuild>() + value_bytes(request) + value_bytes(context)
-                        + str_field(context, "claimant")?.len())?;
+                self.extend_projection_reservation(
+                    &mut reservation,
+                    context,
+                    size_of::<RegisteredBuild>()
+                        + value_bytes(request)
+                        + value_bytes(context)
+                        + str_field(context, "claimant")?.len(),
+                )?;
                 let mut build = RegisteredBuild {
                     claimant: str_field(context, "claimant")?.to_owned(),
                     request: request.clone(), context: context.clone(),
@@ -451,18 +525,41 @@ impl NativeStore {
         if scope.snapshot.stamp != build.root.stamp
             || !classifier_eq(&build.request["view"]["classifier"], &scope.classifier)?
         {
-            return Err(SnapshotError::new(Status::Changed, "prepared graph root generation changed"));
+            return Err(SnapshotError::new(
+                Status::Changed,
+                "prepared graph root generation changed",
+            ));
         }
-        match self.catalog_access(CatalogInput {
-            ids: build.request["thread_ids"].as_array().expect("validated registered ids"),
-            roots: build.request["roots"].as_array().expect("validated registered roots"),
-        }, &build.context, cancel, &mut build.remaining, usage, CatalogMode::Index(&mut build.probe))?
-        {
-            CatalogResolution::Indexed => {
-                self.prepare_graph_ready(&build.request, &build.context, cancel, usage, build.remaining)
+        match self.catalog_access(
+            CatalogInput {
+                ids: build.request["thread_ids"]
+                    .as_array()
+                    .expect("validated registered ids"),
+                roots: build.request["roots"]
+                    .as_array()
+                    .expect("validated registered roots"),
+            },
+            &build.context,
+            cancel,
+            &mut build.remaining,
+            usage,
+            CatalogMode::Index(&mut build.probe),
+        )? {
+            CatalogResolution::Indexed => self.prepare_graph_ready(
+                &build.request,
+                &build.context,
+                cancel,
+                usage,
+                build.remaining,
+            ),
+            CatalogResolution::Ready { .. }
+            | CatalogResolution::Checked(_)
+            | CatalogResolution::Stopped { .. } => {
+                unreachable!("catalog indexing does not materialize paths")
             }
-            CatalogResolution::Ready { .. } | CatalogResolution::Checked(_) => unreachable!("catalog indexing does not materialize paths"),
-            CatalogResolution::Pending(slot) => self.retain_registered_build(token, build, slot, reservation),
+            CatalogResolution::Pending(slot) => {
+                self.retain_registered_build(token, build, slot, reservation)
+            }
         }
     }
 

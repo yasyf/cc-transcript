@@ -1,9 +1,21 @@
 fn sidechain_close_catalog(store: &NativeStore, request: &Value, owner: &Value) -> CatalogCertificate {
     let missing = json!(["sidechain-coverage-not-a-registered-source"]);
     let mut remaining = limits(request).unwrap();
-    match store.catalog_access(CatalogInput {
-        ids: missing.as_array().unwrap(), roots: request["roots"].as_array().unwrap(),
-    }, owner, &Cancellation::default(), &mut remaining, &mut [0; 20], CatalogMode::Locate).unwrap() {
+    let mut locate = MembershipBuild::new(1024.min(remaining.max_items)).locate;
+    match store
+        .catalog_access(
+            CatalogInput {
+                ids: missing.as_array().unwrap(),
+                roots: request["roots"].as_array().unwrap(),
+            },
+            owner,
+            &Cancellation::default(),
+            &mut remaining,
+            &mut [0; 20],
+            CatalogMode::Locate(&mut locate),
+        )
+        .unwrap()
+    {
         CatalogResolution::Ready { certificate, .. } => certificate.unwrap(),
         _ => panic!("closed catalog lookup"),
     }
@@ -25,7 +37,10 @@ fn sidechain_batch_fixture(count: usize) -> (Source, NativeStore, Value, Value, 
     request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
     request["limits"].insert("max_sources", json!(8192));
     sidechain_close_catalog(&store, &request, &owner);
-    let membership = catalog_cached_membership(&store, &request, &owner, true);
+    let membership = {
+        let retained = catalog_cached_membership(&store, &request, &owner, true);
+        (*retained).clone()
+    };
     (source, store, owner, request, membership)
 }
 
@@ -147,10 +162,17 @@ fn registered_catalog_sidechain_batch_creation_during_file_validation_fails_the_
             }
         }
     }));
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
-    let result = store.registered_membership(&key, &request, &owner, &Cancellation::default(),
-        &mut [0; 20], &mut remaining, true);
+    let result = store.membership_work(
+        &key,
+        &request,
+        &owner,
+        &Cancellation::default(),
+        &mut [0; 20],
+        &mut remaining,
+        true,
+    );
     assert!(created.load(Ordering::Relaxed));
     assert!(matches!(result, Err(error) if error.status == Status::Changed));
     store.assert_conserved();

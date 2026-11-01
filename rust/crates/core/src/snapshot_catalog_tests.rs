@@ -288,12 +288,27 @@ fn registered_catalog_key_admits_escaped_capacity_before_encoding() {
             let filler = store.reserve_projection(&owner, cap - baseline - headroom).unwrap();
             let before = store.retained_accounted_bytes();
             let mut limits = WorkLimits {
-                max_read_bytes: 8192, max_source_read_bytes: 8192, max_events: 128,
-                max_items: 1024, max_output_bytes: 8192, max_discovery_entries: 128,
-                max_sources: 128, deadline_unix_ms: now_ms() + 30_000,
+                max_read_bytes: 8192,
+                max_source_read_bytes: 8192,
+                max_events: 128,
+                max_items: 1024,
+                max_output_bytes: 8192,
+                max_discovery_entries: 128,
+                max_sources: 128,
+                deadline_unix_ms: now_ms() + 30_000,
             };
-            let outcome = store.catalog_access(CatalogInput { ids: request["thread_ids"].as_array().unwrap(), roots: request["roots"].as_array().unwrap() }, &owner, &Cancellation::default(),
-                &mut limits, &mut [0;20], CatalogMode::Locate);
+            let mut locate = MembershipBuild::new(1024.min(limits.max_items)).locate;
+            let outcome = store.catalog_access(
+                CatalogInput {
+                    ids: request["thread_ids"].as_array().unwrap(),
+                    roots: request["roots"].as_array().unwrap(),
+                },
+                &owner,
+                &Cancellation::default(),
+                &mut limits,
+                &mut [0; 20],
+                CatalogMode::Locate(&mut locate),
+            );
             assert!(matches!(outcome, Err(error) if error.status == Status::RetainedLimit));
             assert_eq!(encoded.load(Ordering::Relaxed), expected_encodes);
             assert_eq!(store.retained_accounted_bytes(), before);
@@ -348,10 +363,14 @@ fn registered_catalog_materializes_a_4587_source_roster_and_observes_one_append(
     assert_eq!(cancelled["status"].as_str(), Some("cancelled"), "{cancelled:?}");
     assert_eq!(interrupted_entries, 1);
     store.assert_conserved();
-    let (_, cold_entries) = catalog_finish_positive(&store, &request, &owner, 4588 - interrupted_entries);
+    let (_, cold_entries) =
+        catalog_finish_positive(&store, &request, &owner, 4588 - interrupted_entries);
     assert_eq!(interrupted_entries + cold_entries, 4588);
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
-    let membership = store.lock_state().warm_memberships.get(&key).cloned().expect("published complete membership");
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
+    let membership = store
+        .lock_state()
+        .positive_membership(&key)
+        .expect("published complete membership");
     assert!(membership.complete);
     assert_eq!(membership.members.len(), 4587);
     let (_, warm_entries) = catalog_finish_positive(&store, &request, &owner, 0);
@@ -362,9 +381,20 @@ fn registered_catalog_materializes_a_4587_source_roster_and_observes_one_append(
     std::fs::OpenOptions::new().append(true).open(&changed_path).unwrap()
         .write_all(format!("{}\n", tool_use_line("Grep")).as_bytes()).unwrap();
     let (_, changed_entries) = catalog_finish_positive(&store, &request, &owner, 0);
-    assert_eq!(changed_entries, 0, "regular-file append must not re-enumerate an unchanged directory");
-    let fresh = store.lock_state().warm_memberships.get(&key).cloned().expect("fresh complete membership");
-    let new_stamp = fresh.members.iter().find(|member| member.path == canonical).unwrap().stamp;
+    assert_eq!(
+        changed_entries, 0,
+        "regular-file append must not re-enumerate an unchanged directory"
+    );
+    let fresh = store
+        .lock_state()
+        .positive_membership(&key)
+        .expect("fresh complete membership");
+    let new_stamp = fresh
+        .members
+        .iter()
+        .find(|member| member.path == canonical)
+        .unwrap()
+        .stamp;
     assert_eq!(fresh.members.len(), 4587);
     assert_eq!(old_stamp.identity, new_stamp.identity);
     assert!(new_stamp.size > old_stamp.size);
@@ -574,10 +604,17 @@ fn registered_catalog_membership_rejects_a_directory_source() {
     let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
     let mut request = catalog_missing_request(&source, &root, &[]);
     request.insert("direct_paths", json!(["/"]));
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
-    let result = store.build_warm_membership(&key, &request, &owner, &Cancellation::default(),
-        &mut [0;20], &mut remaining);
+    let result = store.membership_work(
+        &key,
+        &request,
+        &owner,
+        &Cancellation::default(),
+        &mut [0; 20],
+        &mut remaining,
+        true,
+    );
     assert!(matches!(result, Err(error) if error.reason == "registered source must be a file"));
     store.assert_conserved();
 }
@@ -612,23 +649,41 @@ fn registered_catalog_membership_rejects_a_parent_retargeted_during_its_pin() {
             }
         }
     }));
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
-    let result = store.build_warm_membership(&key, &request, &owner, &Cancellation::default(),
-        &mut [0;20], &mut remaining);
+    let result = store.membership_work(
+        &key,
+        &request,
+        &owner,
+        &Cancellation::default(),
+        &mut [0; 20],
+        &mut remaining,
+        true,
+    );
     assert!(retargeted.load(Ordering::Relaxed));
     assert!(matches!(result, Err(error) if error.status == Status::Changed));
     store.assert_conserved();
 }
 
-fn catalog_cached_membership(store: &NativeStore, request: &Value, owner: &Value, revalidate: bool) -> WarmMembership {
-    let key = NativeStore::warm_membership_key(request, owner).unwrap();
+fn catalog_cached_membership<'a>(
+    store: &'a NativeStore,
+    request: &Value,
+    owner: &Value,
+    revalidate: bool,
+) -> RetainedMembership<'a> {
+    let key = NativeStore::membership_collection_key(request, owner).unwrap();
     let mut remaining = limits(request).unwrap();
-    let (membership, mut reservation) = store.registered_membership(&key, request, owner,
-        &Cancellation::default(), &mut [0; 20], &mut remaining, revalidate).unwrap();
-    store.publish_warm_membership(&key, &membership, owner, reservation.as_mut()).unwrap();
-    drop(reservation);
-    membership
+    store
+        .membership_work(
+            &key,
+            request,
+            owner,
+            &Cancellation::default(),
+            &mut [0; 20],
+            &mut remaining,
+            revalidate,
+        )
+        .unwrap()
 }
 
 #[test]
@@ -672,12 +727,19 @@ fn registered_catalog_negative_lookup_observes_a_nested_source_creation() {
     let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
     let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
     request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
-    let first = store.registered_membership(&key, &request, &owner,
-        &Cancellation::default(), &mut [0; 20], &mut remaining, true);
+    let first = store.membership_work(
+        &key,
+        &request,
+        &owner,
+        &Cancellation::default(),
+        &mut [0; 20],
+        &mut remaining,
+        true,
+    );
     assert!(matches!(first, Err(error) if error.status == Status::Incomplete));
-    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    assert!(store.lock_state().positive_membership(&key).is_none());
     let path = nested.join("wanted.jsonl");
     std::fs::write(&path, format!("{}\n", user("new"))).unwrap();
     let fresh = catalog_cached_membership(&store, &request, &owner, true);
@@ -701,15 +763,26 @@ fn registered_catalog_membership_certificate_survives_reads_and_same_file_append
     assert!(initial.catalog.is_some());
     assert_eq!(initial.catalog, unchanged.catalog);
     assert!(Arc::ptr_eq(&initial.members, &unchanged.members));
-    std::fs::OpenOptions::new().append(true).open(&path).unwrap()
-        .write_all(format!("{}\n", user("second")).as_bytes()).unwrap();
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(format!("{}\n", user("second")).as_bytes())
+        .unwrap();
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
     let mut usage = [0; 20];
-    let (fresh, mut reservation) = store.registered_membership(&key, &request, &owner,
-        &Cancellation::default(), &mut usage, &mut remaining, true).unwrap();
-    store.publish_warm_membership(&key, &fresh, &owner, reservation.as_mut()).unwrap();
-    drop(reservation);
+    let fresh = store
+        .membership_work(
+            &key,
+            &request,
+            &owner,
+            &Cancellation::default(),
+            &mut usage,
+            &mut remaining,
+            true,
+        )
+        .unwrap();
     assert_eq!(usage[17], 0);
     assert_eq!(initial.catalog, fresh.catalog);
     assert_ne!(initial.revision, fresh.revision);
@@ -755,14 +828,32 @@ fn registered_catalog_membership_cannot_publish_after_its_catalog_is_removed() {
     let root = finish(&store, store.request(&acquire(&source.path), &owner, &Cancellation::default()), &owner);
     let mut request = catalog_missing_request(&source, &root, &["wanted".to_owned()]);
     request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
-    let (membership, mut reservation) = store.build_warm_membership(&key, &request, &owner,
-        &Cancellation::default(), &mut [0; 20], &mut remaining).unwrap();
-    drop(store.lock_state().remove_catalog(membership.catalog.unwrap().key()).unwrap());
-    let result = store.publish_warm_membership(&key, &membership, &owner, Some(&mut reservation));
+    let membership = store
+        .membership_work(
+            &key,
+            &request,
+            &owner,
+            &Cancellation::default(),
+            &mut [0; 20],
+            &mut remaining,
+            true,
+        )
+        .unwrap();
+    let mut reservation = ProjectionReservation {
+        store: &store,
+        bytes: 0,
+    };
+    drop(
+        store
+            .lock_state()
+            .remove_catalog(membership.catalog.unwrap().key())
+            .unwrap(),
+    );
+    let result = store.publish_warm_membership(&key, membership.arc(), &owner, &mut reservation);
     assert!(matches!(result, Err(error) if error.status == Status::Changed));
-    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    assert!(store.lock_state().positive_membership(&key).is_none());
     drop(reservation);
     store.assert_conserved();
 }
@@ -843,14 +934,21 @@ fn registered_catalog_certificate_rejects_an_earlier_root_retarget_during_later_
             }
         }
     })));
-    let key = NativeStore::warm_membership_key(&request, &owner).unwrap();
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
     let mut remaining = limits(&request).unwrap();
-    let outcome = store.build_warm_membership(&key, &request, &owner,
-        &Cancellation::default(), &mut [0; 20], &mut remaining);
+    let outcome = store.membership_work(
+        &key,
+        &request,
+        &owner,
+        &Cancellation::default(),
+        &mut [0; 20],
+        &mut remaining,
+        true,
+    );
     *store.location_metadata_hook.lock().unwrap() = None;
     assert!(retargeted.load(Ordering::Relaxed));
     assert!(matches!(outcome, Err(error) if error.status == Status::Changed));
-    assert!(!store.lock_state().warm_memberships.contains_key(&key));
+    assert!(store.lock_state().positive_membership(&key).is_none());
     store.assert_conserved();
 }
 

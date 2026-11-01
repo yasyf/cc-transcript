@@ -2539,10 +2539,12 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
     let shared_sources = state
         .warm_memberships
         .values()
+        .filter_map(|slot| slot.positive())
         .any(|membership| Arc::ptr_eq(&membership.members, &graph.sources));
     let shared_dirs = state
         .warm_memberships
         .values()
+        .filter_map(|slot| slot.positive())
         .any(|membership| Arc::ptr_eq(&membership.sidechain_dirs, &graph.sidechain_dirs));
     let sources = if shared_sources {
         0
@@ -8363,25 +8365,36 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
     let (store, owner) = (&warmed.store, &warmed.owner);
     store.assert_conserved();
     let first_id = warmed.graph["graph_id"].as_str().unwrap().to_owned();
-    let (membership_key, membership_charge, positions, shared, first_header, first_charge) = {
+    let (
+        membership_key,
+        membership_charge,
+        membership_header,
+        positions,
+        shared,
+        first_header,
+        first_charge,
+    ) = {
         let state = store.lock_state();
-        let (key, membership) = state
+        let (key, slot) = state
             .warm_memberships
             .iter()
             .next()
             .expect("warmed membership");
+        let membership = slot.positive().expect("positive membership");
+        let membership_header = arc_mirror::<WarmMembership>() + membership.revision.capacity();
         let first = state.prepared_graphs[&first_id].lock().unwrap();
         assert!(Arc::ptr_eq(&first.sources, &membership.members));
         assert!(Arc::ptr_eq(
             &first.sidechain_dirs,
             &membership.sidechain_dirs
         ));
-        let header = arc_mirror::<PreparedGraphHeader>()
+        let first_header = arc_mirror::<PreparedGraphHeader>()
             + value_bytes(&first.header.handle)
             + value_bytes(&first.header.classifier);
         (
             key.clone(),
-            charged_bytes(key, membership),
+            charged_bytes(key, slot) + membership_header,
+            membership_header,
             arc_slice_mirror::<(SourceIdentity, usize)>(membership.members.len()),
             arc_slice_mirror::<PreparedSourceRef>(membership.members.len())
                 + membership
@@ -8397,12 +8410,15 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
                     .iter()
                     .map(|(path, _)| path.capacity())
                     .sum::<usize>(),
-            header,
-            charged_bytes(&first_id, &*first) + header,
+            first_header,
+            charged_bytes(&first_id, &*first) + first_header,
         )
     };
     assert!(shared > 0);
-    assert_eq!(warm_buffer_charge(store), shared + positions + first_header);
+    assert_eq!(
+        warm_buffer_charge(store),
+        shared + positions + membership_header + first_header
+    );
     let one_graph = settled_charges(store);
     let second = settle(
         store,
@@ -8436,14 +8452,14 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
     assert_eq!(two_graphs - one_graph, second_charge);
     assert_eq!(
         warm_buffer_charge(store),
-        shared + positions + first_header + second_header
+        shared + positions + membership_header + first_header + second_header
     );
     store.lock_state().remove_prepared_graph(&first_id);
     store.assert_conserved();
     assert_eq!(settled_charges(store), two_graphs - first_charge);
     assert_eq!(
         warm_buffer_charge(store),
-        shared + positions + second_header
+        shared + positions + membership_header + second_header
     );
     store.lock_state().remove_warm_membership(&membership_key);
     store.assert_conserved();
@@ -8471,12 +8487,13 @@ fn warm_anchor_churn_leaves_tombstones_without_moving_the_shared_charge() {
         let membership = state
             .warm_memberships
             .values()
+            .filter_map(|slot| slot.positive())
             .next()
             .expect("warmed membership");
         WarmMembership {
             members: membership.members.iter().cloned().collect(),
             sidechain_dirs: membership.sidechain_dirs.iter().cloned().collect(),
-            ..membership.clone()
+            ..(*membership).clone()
         }
     };
     let mut next = 1usize;
@@ -8489,7 +8506,7 @@ fn warm_anchor_churn_leaves_tombstones_without_moving_the_shared_charge() {
             if !live.is_empty() {
                 state.ledger.shared.release(live.remove(0));
             }
-            while state.ledger.shared.len() + 2 < state.ledger.shared.reserved() {
+            while state.ledger.shared.len() + 3 < state.ledger.shared.reserved() {
                 state.ledger.shared.acquire(Anchor::facts(next, 0));
                 live.push(next);
                 next += 1;
@@ -10169,6 +10186,7 @@ fn sidechain_directories_are_built_at_exact_capacity() {
     let membership = state
         .warm_memberships
         .values()
+        .filter_map(|slot| slot.positive())
         .next()
         .expect("warmed membership");
     assert_exact_sidechain_directories(
@@ -11842,6 +11860,7 @@ fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocatio
             let membership = state
                 .warm_memberships
                 .values()
+                .filter_map(|slot| slot.positive())
                 .find(|membership| {
                     membership
                         .members
@@ -13360,28 +13379,45 @@ fn membership_fixture(scenario: &Scenario, background: bool) -> Fixture {
 }
 
 fn membership_key(fixture: &Fixture) -> String {
-    NativeStore::warm_membership_key(&fixture.request, &fixture.owner).unwrap()
+    NativeStore::membership_collection_key(&fixture.request, &fixture.owner).unwrap()
 }
 
-fn membership_record_bytes(fixture: &Fixture) -> usize {
-    membership_key(fixture).len()
-        + size_of::<WarmMembership>()
-        + 2 * <Sha256 as Digest>::output_size()
+fn membership_owner_admitted(fixture: &Fixture) -> bool {
+    let mut reservation = fixture.store.reserve_projection(&fixture.owner, 0).unwrap();
+    match fixture
+        .store
+        .membership_slot(&membership_key(fixture), &fixture.owner, &mut reservation)
+    {
+        Ok(_) => true,
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("membership owner admission failed outside admission: {error:?}"),
+    }
+}
+
+fn membership_record_bytes() -> usize {
+    size_of::<MembershipBuild>()
 }
 
 fn built_membership<'a>(
     fixture: &'a Fixture,
     usage: &mut [u64; 20],
-) -> Result<(WarmMembership, ProjectionReservation<'a>), SnapshotError> {
+) -> Result<(Arc<WarmMembership>, ProjectionReservation<'a>), SnapshotError> {
     let mut remaining = work_bounds();
-    fixture.store.build_warm_membership(
-        &membership_key(fixture),
+    let mut reservation = fixture
+        .store
+        .reserve_projection(&fixture.owner, membership_record_bytes())?;
+    fixture.store.warm_records.fetch_add(1, Ordering::Relaxed);
+    let mut build = Box::new(MembershipBuild::new(1024.min(remaining.max_items)));
+    let membership = fixture.store.advance_membership(
+        &mut build,
         &fixture.request,
         &fixture.owner,
         &Cancellation::default(),
         usage,
         &mut remaining,
-    )
+        &mut reservation,
+    )?;
+    Ok((Arc::new(membership), reservation))
 }
 
 fn membership_built(fixture: &Fixture) -> bool {
@@ -13402,7 +13438,7 @@ fn membership_published(fixture: &Fixture) -> bool {
         &membership_key(fixture),
         &membership,
         &fixture.owner,
-        Some(&mut reservation),
+        &mut reservation,
     ) {
         Ok(()) => true,
         Err(error) if error.status == Status::RetainedLimit => false,
@@ -13415,7 +13451,7 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
     let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
         let build = || membership_fixture(&scenario, background);
-        let record = membership_record_bytes(&build());
+        let record = membership_record_bytes();
         let site = reached(
             |store| store.warm_records.load(Ordering::Relaxed),
             |fixture| {
@@ -13425,7 +13461,7 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
         assert_eq!(
             exact_headroom(&build, &site),
             record,
-            "the warm membership's reservation is not its key, record, and revision"
+            "the materialization owner was constructed before its record was admitted"
         );
         for headroom in [0, record - 1] {
             assert_record_refused(
@@ -13472,12 +13508,19 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
         );
         let mut members: Vec<PreparedSourceRef> = Vec::new();
         let mut dirs: Vec<(PathBuf, Option<SourceStamp>)> = Vec::new();
-        let mut growth = record;
+        let mut seen = HashSet::new();
+        let mut growth = record + 3 * FILESYSTEM_PATH_BYTES
+            - membership.sidechain_dirs.last().unwrap().0.capacity()
+            + arc_mirror::<WarmMembership>()
+            + 2 * <Sha256 as Digest>::output_size();
         for member in membership.members.iter() {
             let capacity = members.capacity();
+            let identities = seen.capacity();
+            seen.insert(member.stamp.identity);
             members.push(member.clone());
             growth += (members.capacity() - capacity) * size_of::<PreparedSourceRef>()
-                + member.path.capacity();
+                + member.path.capacity()
+                + (seen.capacity() - identities) * size_of::<SourceIdentity>();
         }
         for dir in membership.sidechain_dirs.iter() {
             let capacity = dirs.capacity();
@@ -13490,7 +13533,7 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
             + arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(membership.sidechain_dirs.len());
         assert_eq!(
             exact, growth,
-            "the membership build is not admitted at its record, each retained path and buffer growth, and its shared slices"
+            "the membership build must preadmit its owner, bounded scratch, dedup, retained paths and shared allocations"
         );
         assert_eq!(ledger(&fitted.store)[TOTAL], cap);
         let released = released_by(&fitted.store, || drop(reservation));
@@ -13501,27 +13544,101 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
 }
 
 #[test]
-fn published_warm_membership_draws_its_record_from_the_build_reservation() {
+fn cache_warm_membership_owner_admission_is_atomic_before_materialization() {
     let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
         let build = || membership_fixture(&scenario, background);
-        let record = membership_record_bytes(&build());
-        let peak = exact_headroom(&build, &membership_built);
-        let exact = exact_headroom(&build, &membership_published);
+        let exact = exact_headroom(&build, &membership_owner_admitted);
         refused_at_site(
-            "warm membership publication",
+            "warm membership owner",
             &build,
-            &membership_published,
+            &membership_owner_admitted,
             0,
             exact,
         );
         let fitted = build();
         let cap = cap_for(&fitted.owner);
+        let table_before = fitted.store.lock_state().warm_memberships.capacity_bytes();
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        assert!(membership_owner_admitted(&fitted));
+        fitted.store.assert_conserved();
+        let trace = traced(&fitted.store);
+        assert_admitted_before_allocating("warm membership owner", &trace);
+        let (slot, stored) = {
+            let state = fitted.store.lock_state();
+            assert_eq!(state.warm_memberships.len(), 1);
+            let (key, slot) = state.warm_memberships.iter().next().unwrap();
+            (
+                Arc::clone(slot),
+                NativeStore::audit_warm_membership_bytes(key, slot)
+                    + state.warm_memberships.capacity_bytes()
+                    - table_before,
+            )
+        };
+        assert!(matches!(&*slot.cell.lock().unwrap(), MembershipCell::Empty));
+        assert_eq!(slot.accounted.load(Ordering::Acquire), 0);
+        assert!(!slot.pending.load(Ordering::Acquire));
+        assert_eq!(exact, stored);
+        assert_eq!(ledger(&fitted.store)[TOTAL], cap);
+        assert_eq!(audited(&fitted.store)[TOTAL], cap);
+    }
+}
+
+#[test]
+fn cache_published_warm_membership_draws_its_record_from_the_build_reservation() {
+    let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let pin_owner = |fixture: &Fixture| {
+            fixture
+                .store
+                .lock_state()
+                .warm_memberships
+                .get(&membership_key(fixture))
+                .cloned()
+                .expect("admitted membership owner")
+        };
+        let assert_empty = |slot: &Arc<MembershipSlot>| {
+            assert!(matches!(&*slot.cell.lock().unwrap(), MembershipCell::Empty));
+            assert_eq!(slot.accounted.load(Ordering::Acquire), 0);
+            assert!(!slot.pending.load(Ordering::Acquire));
+        };
+        let build = || {
+            let fixture = membership_fixture(&scenario, background);
+            assert!(membership_owner_admitted(&fixture));
+            assert_empty(&pin_owner(&fixture));
+            fixture
+        };
+        let built = |fixture: &Fixture| {
+            let _owner = pin_owner(fixture);
+            membership_built(fixture)
+        };
+        let published = |fixture: &Fixture| {
+            let owner = pin_owner(fixture);
+            assert_empty(&owner);
+            let admitted = membership_published(fixture);
+            if !admitted {
+                assert_empty(&owner);
+            }
+            admitted
+        };
+        let record = membership_record_bytes();
+        let peak = exact_headroom(&build, &built);
+        let exact = exact_headroom(&build, &published);
+        refused_at_site("warm membership publication", &build, &published, 0, exact);
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
         let shared_table = fitted.store.lock_state().ledger.shared.table_bytes();
+        let owner_record = {
+            let state = fitted.store.lock_state();
+            let (key, owner) = state.warm_memberships.iter().next().unwrap();
+            NativeStore::audit_warm_membership_bytes(key, owner)
+                + state.warm_memberships.capacity_bytes()
+        };
         let _filler = fill_to(&fitted.store, &fitted.owner, exact);
         traced(&fitted.store);
         let released = released_by(&fitted.store, || {
-            assert!(membership_published(&fitted), "the exact fit was refused");
+            assert!(published(&fitted), "the exact fit was refused");
         });
         let trace = traced(&fitted.store);
         fitted.store.assert_conserved();
@@ -13537,6 +13654,7 @@ fn published_warm_membership_draws_its_record_from_the_build_reservation() {
                 + NativeStore::audit_warm_buffer_bytes(&state)
                 + state.ledger.shared.table_bytes()
                 - shared_table
+                - owner_record
         };
         assert_eq!(
             retained, stored,
@@ -13554,8 +13672,8 @@ fn published_warm_membership_draws_its_record_from_the_build_reservation() {
         );
         assert_eq!(
             released,
-            vec![exact - retained],
-            "the publication did not draw its record from the build's reservation"
+            vec![0, exact - retained],
+            "the catalog reservation transfer and unused build credit release differ"
         );
         assert_eq!(audited(&fitted.store)[TOTAL], cap - exact + retained);
     }
