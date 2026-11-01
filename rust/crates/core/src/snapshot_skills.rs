@@ -141,7 +141,7 @@ impl NativeStore {
         stamp: SourceStamp,
         key: PreparedDiskKey,
         file: File,
-        admission: SkillAdmission,
+        framing_admission: SkillAdmission,
         context: &Value,
         remaining: &WorkLimits,
         cancel: &Cancellation,
@@ -234,7 +234,7 @@ impl NativeStore {
             prefix: Vec::new(),
             seal: Vec::new(),
             previous,
-            _admission: admission,
+            _admission: framing_admission,
         });
         Ok(PreparedSourceOutcome::SkillPending { work, reservation })
     }

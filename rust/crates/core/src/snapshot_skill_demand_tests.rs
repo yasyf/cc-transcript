@@ -64,7 +64,7 @@ fn typed_skills_append_uses_fenced_suffix_without_lowering() {
         &hydration_run_query(&store, &hydration_query_request(&graph, "absent"), &owner).0,
     );
     let suffix = hydration_tool("after", "append");
-    OpenOptions::new()
+    std::fs::OpenOptions::new()
         .append(true)
         .open(&paths[0])
         .unwrap()
@@ -127,7 +127,7 @@ fn typed_skills_provisional_append_carries_the_entire_line_length() {
     hydration_false(
         &hydration_run_query(&store, &hydration_query_request(&graph, "absent"), &owner).0,
     );
-    OpenOptions::new()
+    std::fs::OpenOptions::new()
         .append(true)
         .open(&child)
         .unwrap()
@@ -308,7 +308,7 @@ fn typed_skills_empty_source_can_gain_its_first_codex_provider() {
     hydration_false(
         &hydration_run_query(&store, &hydration_query_request(&graph, "absent"), &owner).0,
     );
-    OpenOptions::new()
+    std::fs::OpenOptions::new()
         .append(true)
         .open(&child)
         .unwrap()
@@ -363,7 +363,7 @@ fn typed_skills_source_mutation_during_framing_is_not_a_complete_negative() {
     let graph = hydration_graph(&store, &root, &paths, &owner);
     let child = paths[0].clone();
     *store.read_hook.lock().unwrap() = Some(Arc::new(move || {
-        std::fs::write(child, skill_claude("target")).unwrap();
+        std::fs::write(&child, skill_claude("target")).unwrap();
     }));
     let (answer, _) =
         hydration_run_query(&store, &hydration_query_request(&graph, "target"), &owner);

@@ -6211,10 +6211,7 @@ fn root_slice_for_need(mut fixture: Fixture, need: FactsNeed, observer: bool) ->
         fixture.request.insert("query", query);
     }
     assert_eq!(
-        FactsNeed::of_query(
-            &fixture.request["query"],
-            fixture.request.get("observers").and_then(Value::as_array),
-        ),
+        FactsNeed::of_query(&fixture.request["query"], fixture.request.get("observers"),),
         need,
     );
     fixture
@@ -6223,10 +6220,7 @@ fn root_slice_for_need(mut fixture: Fixture, need: FactsNeed, observer: bool) ->
 fn root_slice_prediction(fixture: &Fixture) -> usize {
     facts_bound_walk_for(
         &fixture.pins[0],
-        FactsNeed::of_query(
-            &fixture.request["query"],
-            fixture.request.get("observers").and_then(Value::as_array),
-        ),
+        FactsNeed::of_query(&fixture.request["query"], fixture.request.get("observers")),
     )
 }
 
