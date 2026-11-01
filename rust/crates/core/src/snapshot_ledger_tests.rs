@@ -3375,6 +3375,7 @@ fn default_startup_footprint_is_the_pre_sized_tables_and_the_default_registries(
     assert_eq!(
         store.retained_accounted_bytes(),
         size_of::<StoreState>()
+            + arc_mirror::<AtomicUsize>()
             + arc_mirror::<crate::snapshot_ledger::ReleaseQueue>()
             + MUTEX_STORAGE_MIRROR
             + PRE_SIZED_SLOTS

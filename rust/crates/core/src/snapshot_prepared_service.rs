@@ -926,7 +926,7 @@ impl NativeStore {
             }
         }
         drop(snapshot);
-        let result = self.publish_prepared_evidence(stamp, facts, append, reservation, context, need);
+        let result = self.publish_prepared_evidence(stamp, reservation, facts, append, context, need);
         if result.is_ok() {
             self.lock_state().prepared_loads.remove(&stamp.identity);
         }
@@ -936,9 +936,9 @@ impl NativeStore {
     fn publish_prepared_evidence<'a>(
         &'a self,
         stamp: SourceStamp,
+        mut reservation: ProjectionReservation<'a>,
         facts: Arc<crate::snapshot_prepared::PreparedFacts>,
         append: Option<Arc<CompactCodexIndex>>,
-        mut reservation: ProjectionReservation<'a>,
         context: &Value,
         need: FactsNeed,
     ) -> Result<PreparedSourceOutcome<'a>, SnapshotError> {
@@ -960,6 +960,7 @@ impl NativeStore {
             |growth| self.admit_prepared_disk_growth(context, growth),
         )? == crate::snapshot_prepared_disk::Inserted::AlreadyFull
         {
+            drop(append);
             drop(facts);
             drop(reservation);
             return Ok(PreparedSourceOutcome::Superseded);

@@ -1851,7 +1851,10 @@ impl PreparedDiskCache {
         let owned = state
             .entries
             .get(&key.name)
-            .filter(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64 && entry.scope >= need)
+            .filter(|entry| {
+                entry.last_used >= MAX_CLAIMED_OWNERS as u64
+                    && entry.scope >= need.min(FactsNeed::Index)
+            })
             .map(|entry| entry.accounted_for(need));
         if !owned.is_some_and(unread) {
             return Ok(false);
@@ -4484,7 +4487,7 @@ mod tests {
             text,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\
              0123456789abcdef000000000000100000000000000008000000000000000200\
-             00000000000001000000000000000001.facts"
+             00000000000001000000000000000201.facts"
         );
         assert_eq!(text.len(), ENTRY_NAME_BYTES);
         assert!(!generated_entry(&encoded));
@@ -4498,7 +4501,8 @@ mod tests {
                 parsed.accounted,
                 parsed.index_bytes,
                 parsed.index_accounted,
-                parsed.text_state
+                parsed.text_state,
+                parsed.scope
             ),
             (
                 name.key,
@@ -4507,7 +4511,8 @@ mod tests {
                 name.accounted,
                 name.index_bytes,
                 name.index_accounted,
-                name.text_state
+                name.text_state,
+                name.scope
             )
         );
         for (legacy_bytes, hex_len) in LEGACY_ENTRY_NAME_BYTES.iter().zip([144, 112]) {

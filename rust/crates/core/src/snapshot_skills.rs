@@ -214,9 +214,9 @@ impl NativeStore {
             ));
             return self.publish_prepared_evidence(
                 stamp,
+                reservation,
                 facts,
                 None,
-                reservation,
                 context,
                 FactsNeed::Skills,
             );
@@ -567,9 +567,9 @@ impl NativeStore {
                 return self
                     .publish_prepared_evidence(
                         work.stamp,
+                        facts_reservation,
                         facts,
                         None,
-                        facts_reservation,
                         context,
                         FactsNeed::Skills,
                     )

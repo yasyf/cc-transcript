@@ -1,7 +1,7 @@
 fn skill_claude(name: &str) -> String {
     format!(
         "{}\n",
-        json!({"type":"assistant","uuid":"skill-entry","timestamp":"2026-01-02T03:04:07Z",
+        json!({"type":"assistant","uuid":"skill-entry","sessionId":"skill-session","timestamp":"2026-01-02T03:04:07Z",
         "message":{"role":"assistant","content":[{"type":"tool_use","id":"skill-call","name":"Skill","input":{"skill":name}}]}})
     )
 }
@@ -376,18 +376,27 @@ fn typed_skills_source_mutation_during_framing_is_not_a_complete_negative() {
 }
 
 #[test]
-fn typed_skills_gateway_duplicate_type_uses_the_last_value() {
-    let source = Source::new(&format!("{}\n", user("root")));
-    let child = source.directory.join("looks-codex.jsonl");
-    let claude = skill_claude("target");
-    let duplicate = claude.replacen('{', "{\"type\":\"session_meta\",\"payload\":{},", 1);
-    std::fs::write(&child, duplicate).unwrap();
-    let store = hydration_store();
-    let owner = context("typed-skills-duplicate-type");
-    let root = hydration_root(&store, &source, &owner);
-    let graph = hydration_graph(&store, &root, &[child], &owner);
-    let (answer, _) =
-        hydration_run_query(&store, &hydration_query_request(&graph, "target"), &owner);
-    assert_eq!(answer["status"].as_str(), Some("ok"), "{answer:?}");
-    assert_eq!(answer["data"]["value"].as_bool(), Some(true));
+fn typed_skills_gateway_duplicate_keys_follow_native_classification() {
+    for (header, expected) in [
+        (
+            r#"{"type":"session_meta","payload":{},"type":"ignored","payload":null}"#,
+            true,
+        ),
+        (
+            r#"{"type":"ignored","payload":null,"type":"session_meta","payload":{}}"#,
+            false,
+        ),
+    ] {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let child = source.directory.join("looks-codex.jsonl");
+        std::fs::write(&child, format!("{header}\n{}", skill_claude("target"))).unwrap();
+        let store = hydration_store();
+        let owner = context("typed-skills-duplicate-type");
+        let root = hydration_root(&store, &source, &owner);
+        let graph = hydration_graph(&store, &root, &[child], &owner);
+        let (answer, _) =
+            hydration_run_query(&store, &hydration_query_request(&graph, "target"), &owner);
+        assert_eq!(answer["status"].as_str(), Some("ok"), "{answer:?}");
+        assert_eq!(answer["data"]["value"].as_bool(), Some(expected));
+    }
 }
