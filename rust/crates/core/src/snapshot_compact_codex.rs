@@ -403,10 +403,9 @@ impl NativeStore {
         let inputs = reducer.inputs();
         crate::snapshot_codec::write_json(&mut std::io::sink(), &inputs, 16 * 1024 * 1024)
             .map_err(|_| SnapshotError::new(Status::Incomplete, "prepared predicate facts exceed source bound"))?;
-        let mut facts = crate::snapshot_prepared::PreparedFacts {
-            inputs, has_error: reducer.has_error(), overrides: crate::snapshot_prepared::OverrideFacts::Unloaded, accounted: 0,
-        };
-        facts.refresh_accounted();
+        let facts = crate::snapshot_prepared::PreparedFacts::index(
+            inputs, reducer.has_error(), crate::snapshot_prepared::OverrideFacts::Unloaded,
+        );
         let append = Arc::new(CompactCodexIndex { stamp, fence: origin, session_id: prior.session_id.clone(), index, reducer });
         let facts = Arc::new(facts);
         cancel.check(remaining.deadline_unix_ms)?;

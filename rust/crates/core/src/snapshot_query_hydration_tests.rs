@@ -68,8 +68,10 @@ fn hydration_run_query(store: &NativeStore, request: &Value, owner: &Value) -> (
     (response, std::array::from_fn(|index| after[index] - before[index]))
 }
 
-fn hydration_query(store: &NativeStore, graph: &Value, skill: &str, owner: &Value) -> (Value, [u64; 20]) {
-    hydration_run_query(store, &hydration_query_request(graph, skill), owner)
+fn hydration_index_query(store: &NativeStore, graph: &Value, skill: &str, owner: &Value) -> (Value, [u64; 20]) {
+    let mut request = hydration_query_request(graph, skill);
+    request.insert("observers", json!([{"kind":"has_tool","pattern":"hydration-index-observer-absent"}]));
+    hydration_run_query(store, &request, owner)
 }
 
 fn hydration_tool_query(store: &NativeStore, graph: &Value, pattern: &str, owner: &Value) -> (Value, [u64; 20]) {
@@ -121,7 +123,7 @@ fn prepared_cache_hydration_63_cold_and_unchanged_queries_are_complete() {
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
     hydration_observations(&store);
-    let (cold, cold_usage) = hydration_query(&store, &graph, "definitely-absent", &owner);
+    let (cold, cold_usage) = hydration_index_query(&store, &graph, "definitely-absent", &owner);
     hydration_false(&cold);
     let cold_observed = hydration_observations(&store);
     assert_eq!(hydration_fact_visits(&cold_observed, &owner), identities);
@@ -136,7 +138,7 @@ fn prepared_cache_hydration_63_cold_and_unchanged_queries_are_complete() {
     for fresh in [false, true] {
         let repeated = if fresh { hydration_graph(&store, &root, &paths, &owner) } else { graph.clone() };
         hydration_observations(&store);
-        let (answer, usage) = hydration_query(&store, &repeated, "definitely-absent", &owner);
+        let (answer, usage) = hydration_index_query(&store, &repeated, "definitely-absent", &owner);
         hydration_false(&answer);
         let observed = hydration_observations(&store);
         assert_eq!(hydration_fact_visits(&observed, &owner), identities);
@@ -166,7 +168,7 @@ fn prepared_cache_hydration_63_pressure_append_preserves_other_sources() {
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
     hydration_observations(&store);
-    let (cold, _) = hydration_query(&store, &graph, "definitely-absent", &owner);
+    let (cold, _) = hydration_index_query(&store, &graph, "definitely-absent", &owner);
     hydration_false(&cold);
     let observed = hydration_observations(&store);
     assert_eq!(hydration_fact_visits(&observed, &owner), identities);
@@ -189,7 +191,7 @@ fn prepared_cache_hydration_63_pressure_append_preserves_other_sources() {
         assert!(state.recent_codex_raw_bytes <= raw_limit);
     }
     hydration_compact_facts(&store, &paths);
-    let (unchanged, unchanged_usage) = hydration_query(&store, &graph, "definitely-absent", &owner);
+    let (unchanged, unchanged_usage) = hydration_index_query(&store, &graph, "definitely-absent", &owner);
     hydration_false(&unchanged);
     assert_eq!((unchanged_usage[1], unchanged_usage[15], unchanged_usage[19]), (0, 0, 0));
     assert!(unchanged_usage[7] >= 63);
@@ -199,11 +201,11 @@ fn prepared_cache_hydration_63_pressure_append_preserves_other_sources() {
         let stamp = SourceStamp::of(&std::fs::metadata(path).unwrap());
         if stamp.identity != victim { assert_eq!(stamps[&stamp.identity], stamp); }
     }
-    let (stale, _) = hydration_query(&store, &graph, "definitely-absent", &owner);
+    let (stale, _) = hydration_index_query(&store, &graph, "definitely-absent", &owner);
     assert_eq!(stale["status"].as_str(), Some("changed"), "{stale:?}");
     let fresh = hydration_graph(&store, &root, &paths, &owner);
     hydration_observations(&store);
-    let (answer, usage) = hydration_query(&store, &fresh, "definitely-absent", &owner);
+    let (answer, usage) = hydration_index_query(&store, &fresh, "definitely-absent", &owner);
     hydration_false(&answer);
     let after = hydration_observations(&store);
     assert_eq!(hydration_fact_visits(&after, &owner), identities);
@@ -238,7 +240,7 @@ fn prepared_cache_hydration_legal_append_without_pressure_is_incremental() {
     let owner = context("hydration-legal-append");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
     let stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
     let prior = store.lock_state().latest_source(&stamp.identity).unwrap();
     let prior_entries = sonic_rs::to_string(&prior.entries()).unwrap();
@@ -246,7 +248,7 @@ fn prepared_cache_hydration_legal_append_without_pressure_is_incremental() {
     std::fs::OpenOptions::new().append(true).open(&paths[0]).unwrap().write_all(suffix.as_bytes()).unwrap();
     let fresh = hydration_graph(&store, &root, &paths, &owner);
     hydration_observations(&store);
-    let (answer, usage) = hydration_query(&store, &fresh, "definitely-absent", &owner);
+    let (answer, usage) = hydration_index_query(&store, &fresh, "definitely-absent", &owner);
     hydration_false(&answer);
     let observed = hydration_observations(&store);
     assert!(observed.iter().any(|item| matches!(item, HydrationObservation::Codex { previous: true, raw: true, index: true, append: true, fallback: None, suffix_bytes, .. } if *suffix_bytes == suffix.len())));
@@ -272,7 +274,7 @@ fn prepared_cache_hydration_context_fences_and_cancellation_remain_authoritative
     let owner = context("hydration-context");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
     let stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
     let classifier = json!({"id":"native","version":"1"});
     let original = PreparedDiskKey::new(stamp, owner["registry_generation"].as_str().unwrap(), "hook", &owner["authority"], &classifier).unwrap();
@@ -288,7 +290,7 @@ fn prepared_cache_hydration_context_fences_and_cancellation_remain_authoritative
     for changed in [registry, admission, authority] {
         let different = PreparedDiskKey::new(stamp, changed["registry_generation"].as_str().unwrap(), changed["admission"].as_str().unwrap(), &changed["authority"], &classifier).unwrap();
         assert_ne!(original, different);
-        let (response, usage) = hydration_query(&store, &graph, "definitely-absent", &changed);
+        let (response, usage) = hydration_index_query(&store, &graph, "definitely-absent", &changed);
         assert_eq!(response["status"].as_str(), Some("stale_handle"), "{response:?}");
         assert_eq!((usage[1], usage[15]), (0, 0));
     }
@@ -296,7 +298,7 @@ fn prepared_cache_hydration_context_fences_and_cancellation_remain_authoritative
     token.cancel();
     let cancelled = store.request(&hydration_query_request(&graph, "definitely-absent"), &owner, &token);
     assert_eq!(cancelled["status"].as_str(), Some("cancelled"));
-    hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
     store.assert_conserved();
 }
 
@@ -327,7 +329,7 @@ fn prepared_cache_hydration_rewrite_replace_and_provisional_completion_keep_sema
     std::fs::rename(replacement, &paths[0]).unwrap();
     assert_eq!(hydration_tool_query(&store, &truncated_graph, "base-0", &owner).0["status"].as_str(), Some("changed"));
     let provisional = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_query(&store, &provisional, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &provisional, "definitely-absent", &owner).0);
     let suffix = "\n".to_owned() + &hydration_tool("completed-tool", "completed-call");
     std::fs::OpenOptions::new().append(true).open(&paths[0]).unwrap().write_all(suffix.as_bytes()).unwrap();
     let completed = hydration_graph(&store, &root, &paths, &owner);

@@ -105,6 +105,29 @@ jobs:
           cargo test -p cc-transcript-core --no-default-features --lib -- pressure_ --nocapture
           cargo test -p cc-transcript-core --no-default-features --lib -- cache_ --nocapture
 
+      - name: Test typed Skills framing and capability controls
+        id: typed_skills_positive
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/typed-skills-evidence"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib typed_skills_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/typed-skills-evidence/positive.log"
+
+      - name: Verify exact old-production Skills negatives
+        run: python3 scripts/check_typed_skills_old.py
+
+      - name: Upload typed Skills source and raw controls
+        if: always() && steps.typed_skills_positive.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: typed-skills-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/typed-skills-evidence/positive.log
+            ${{ runner.temp }}/typed-skills-evidence/old-negative.log
+            ${{ runner.temp }}/typed-skills-evidence/old-source.json
+          if-no-files-found: error
+
       - name: Test shared source-spine work on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- source_spine_ --nocapture
 
