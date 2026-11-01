@@ -1823,6 +1823,85 @@ pub fn facts_bound(snapshot: &TranscriptSnapshot, need: FactsNeed) -> usize {
     }
 }
 
+pub(crate) fn index_columns<
+    C: serde::Serialize,
+    D: serde::Serialize,
+    E: serde::Serialize,
+    S: serde::Serialize,
+>(
+    calls: C,
+    commands: D,
+    edited_files: E,
+    skills: S,
+) -> Value {
+    json!({"calls":calls,"commands":commands,"edited_files":edited_files,"skills":skills})
+}
+
+fn index_inputs(calls: &[&crate::activity::ToolUse<'_>]) -> Value {
+    index_columns(
+        calls
+            .iter()
+            .map(|use_| (use_.call.name(), use_.call.file_paths()))
+            .collect::<Vec<_>>(),
+        calls
+            .iter()
+            .filter(|use_| tool_name_matches(use_.call.name(), "Bash"))
+            .filter_map(|use_| match &use_.call {
+                ToolCall::Bash(call) => Some(call.command.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        calls
+            .iter()
+            .flat_map(|use_| {
+                use_.edits
+                    .iter()
+                    .map(|(path, _)| PredicateFileWire { path })
+            })
+            .collect::<Vec<_>>(),
+        calls
+            .iter()
+            .filter(|use_| tool_name_matches(use_.call.name(), "Skill"))
+            .filter_map(|use_| match &use_.call {
+                ToolCall::Skill(call) => Some(call.skill.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub(crate) fn compact_index_calls_bound(snapshot: &TranscriptSnapshot) -> usize {
+    let root = hashbrown_tier(
+        JSON_LITERAL_OBJECT_CAPACITY,
+        std::mem::size_of::<(Value, Value)>(),
+    ) * std::mem::size_of::<(Value, Value)>()
+        + ["calls", "commands", "edited_files", "skills"]
+            .iter()
+            .map(|key| key.len())
+            .sum::<usize>();
+    facts_bound(snapshot, FactsNeed::Index)
+        + snapshot.activity.shape().calls * (root + std::mem::size_of::<(String, Value)>())
+}
+
+pub(crate) fn compact_index_calls(
+    snapshot: &TranscriptSnapshot,
+    limits: &WorkLimits,
+    cancel: &Cancellation,
+) -> Result<Vec<(String, Value)>, SnapshotError> {
+    let mut work = Work::new(snapshot, limits, cancel);
+    let range = 0..snapshot.event_count;
+    work.charge_range(range.clone())?;
+    let lift = lift_range(&mut work, &range, None)?;
+    let session = view(&lift, &range, snapshot);
+    Ok(session
+        .tool_calls()
+        .with_errors()
+        .items()
+        .into_iter()
+        .map(|call| (call.tool_use_id.to_owned(), index_inputs(&[call])))
+        .collect())
+}
+
 fn prepare_facts_limited(
     snapshot: &TranscriptSnapshot,
     selectors: &Value,
@@ -1838,18 +1917,7 @@ fn prepare_facts_limited(
     let lift = lift_range(&mut work, &range, None)?;
     let session = view(&lift, &range, snapshot);
     let calls = session.tool_calls().items();
-    let inputs = json!({
-        "calls":calls.iter().map(|use_| (use_.call.name(), use_.call.file_paths())).collect::<Vec<_>>(),
-        "commands":calls.iter().filter(|use_| tool_name_matches(use_.call.name(), "Bash")).filter_map(|use_| match &use_.call {
-            ToolCall::Bash(call) => Some(call.command.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>(),
-        "edited_files":calls.iter().flat_map(|use_| use_.edits.iter().map(|(path, _)| PredicateFileWire { path })).collect::<Vec<_>>(),
-        "skills":calls.iter().filter(|use_| tool_name_matches(use_.call.name(), "Skill")).filter_map(|use_| match &use_.call {
-            ToolCall::Skill(call) => Some(call.skill.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>()
-    });
+    let inputs = index_inputs(&calls);
     if snapshot_codec::write_json(
         &mut OutputCounter {
             remaining: max_fact_bytes,

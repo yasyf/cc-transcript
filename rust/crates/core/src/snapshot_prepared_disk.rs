@@ -556,6 +556,25 @@ pub struct PreparedDiskKey {
 }
 
 impl PreparedDiskKey {
+    pub(super) fn identity_range(
+        identity: SourceIdentity,
+    ) -> (std::ops::Bound<Self>, std::ops::Bound<Self>) {
+        (
+            std::ops::Bound::Included(Self {
+                identity,
+                digest: [0; 32],
+                name: [0; 32],
+                native: false,
+            }),
+            std::ops::Bound::Included(Self {
+                identity,
+                digest: [255; 32],
+                name: [255; 32],
+                native: true,
+            }),
+        )
+    }
+
     pub fn new(
         stamp: SourceStamp,
         registry_generation: &str,
