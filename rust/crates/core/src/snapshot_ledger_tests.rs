@@ -561,6 +561,11 @@ fn orphaned(
     let (handle, orphan) = acquired(store, &source.path, owner);
     assert_eq!(orphan.chunks.len(), 1);
     release_lease(store, &handle, owner);
+    store
+        .lock_state()
+        .evict_cache_owner(CacheOwner::Generation(snapshot_key(&orphan)));
+    assert_eq!(Arc::strong_count(&orphan), 1);
+    store.assert_conserved();
     std::fs::write(&source.path, lines(0..3)).unwrap();
     let (_, replacement) = acquired(store, &source.path, owner);
     assert!(!Arc::ptr_eq(&orphan.chunks[0], &replacement.chunks[0]));
@@ -2563,19 +2568,14 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
     };
     key + arc_mirror::<Mutex<PreparedGraph>>()
         + MUTEX_STORAGE_MIRROR
+        + arc_mirror::<PreparedGraphHeader>()
         + graph.claimant.capacity()
         + graph.registry_generation.capacity()
         + graph.admission.capacity()
         + graph.revision.capacity()
         + value_bytes(&graph.authority)
-        + value_bytes(&graph.root_handle)
-        + value_bytes(&graph.classifier)
-        + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-        + graph
-            .stamps
-            .iter()
-            .map(|(path, _)| path.capacity())
-            .sum::<usize>()
+        + value_bytes(&graph.header.handle)
+        + value_bytes(&graph.header.classifier)
         + graph.root_slices.reserved_bytes()
         + graph
             .root_slices
@@ -2595,6 +2595,7 @@ fn published_graph_allocations(state: &StoreState, graph_id: &str, graph: &Prepa
         .expect("published graph key")
         + arc_mirror::<Mutex<PreparedGraph>>()
         + MUTEX_STORAGE_MIRROR
+        + arc_mirror::<PreparedGraphHeader>()
         + graph.registry_generation.capacity()
         + graph.admission.capacity()
         + graph.revision.capacity()
@@ -2605,14 +2606,8 @@ fn published_graph_allocations(state: &StoreState, graph_id: &str, graph: &Prepa
 
 fn moved_build_bytes(graph: &PreparedGraph) -> usize {
     graph.claimant.capacity()
-        + value_bytes(&graph.root_handle)
-        + value_bytes(&graph.classifier)
-        + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-        + graph
-            .stamps
-            .iter()
-            .map(|(path, _)| path.capacity())
-            .sum::<usize>()
+        + value_bytes(&graph.header.handle)
+        + value_bytes(&graph.header.classifier)
         + graph
             .sources
             .iter()
@@ -8365,7 +8360,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
     let (store, owner) = (&warmed.store, &warmed.owner);
     store.assert_conserved();
     let first_id = warmed.graph["graph_id"].as_str().unwrap().to_owned();
-    let (membership_key, membership_charge, membership_header, positions, shared, first_charge) = {
+    let (membership_key, membership_charge, membership_header, positions, shared, first_header, first_charge) = {
         let state = store.lock_state();
         let (key, slot) = state
             .warm_memberships
@@ -8373,17 +8368,20 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
             .next()
             .expect("warmed membership");
         let membership = slot.positive().expect("positive membership");
-        let header = arc_mirror::<WarmMembership>() + membership.revision.capacity();
+        let membership_header = arc_mirror::<WarmMembership>() + membership.revision.capacity();
         let first = state.prepared_graphs[&first_id].lock().unwrap();
         assert!(Arc::ptr_eq(&first.sources, &membership.members));
         assert!(Arc::ptr_eq(
             &first.sidechain_dirs,
             &membership.sidechain_dirs
         ));
+        let first_header = arc_mirror::<PreparedGraphHeader>()
+            + value_bytes(&first.header.handle)
+            + value_bytes(&first.header.classifier);
         (
             key.clone(),
-            charged_bytes(key, slot) + header,
-            header,
+            charged_bytes(key, slot) + membership_header,
+            membership_header,
             arc_slice_mirror::<(SourceIdentity, usize)>(membership.members.len()),
             arc_slice_mirror::<PreparedSourceRef>(membership.members.len())
                 + membership
@@ -8399,13 +8397,14 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
                     .iter()
                     .map(|(path, _)| path.capacity())
                     .sum::<usize>(),
-            charged_bytes(&first_id, &*first),
+            first_header,
+            charged_bytes(&first_id, &*first) + first_header,
         )
     };
     assert!(shared > 0);
     assert_eq!(
         warm_buffer_charge(store),
-        shared + positions + membership_header
+        shared + positions + membership_header + first_header
     );
     let one_graph = settled_charges(store);
     let second = settle(
@@ -8423,9 +8422,15 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
         .unwrap()
         .to_owned();
     store.assert_conserved();
-    let second_charge = {
+    let (second_header, second_charge) = {
         let state = store.lock_state();
-        charged_bytes(&second_id, &state.prepared_graphs[&second_id])
+        let first = state.prepared_graphs[&first_id].lock().unwrap();
+        let second = state.prepared_graphs[&second_id].lock().unwrap();
+        assert!(!Arc::ptr_eq(&first.header, &second.header));
+        let header = arc_mirror::<PreparedGraphHeader>()
+            + value_bytes(&second.header.handle)
+            + value_bytes(&second.header.classifier);
+        (header, charged_bytes(&second_id, &*second) + header)
     };
     let two_graphs = settled_charges(store);
     eprintln!(
@@ -8434,14 +8439,14 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
     assert_eq!(two_graphs - one_graph, second_charge);
     assert_eq!(
         warm_buffer_charge(store),
-        shared + positions + membership_header
+        shared + positions + membership_header + first_header + second_header
     );
     store.lock_state().remove_prepared_graph(&first_id);
     store.assert_conserved();
     assert_eq!(settled_charges(store), two_graphs - first_charge);
     assert_eq!(
         warm_buffer_charge(store),
-        shared + positions + membership_header
+        shared + positions + membership_header + second_header
     );
     store.lock_state().remove_warm_membership(&membership_key);
     store.assert_conserved();
@@ -8449,7 +8454,7 @@ fn shared_warm_buffers_are_charged_once_across_their_owners() {
         settled_charges(store),
         two_graphs - first_charge - membership_charge - positions
     );
-    assert_eq!(warm_buffer_charge(store), shared);
+    assert_eq!(warm_buffer_charge(store), shared + second_header);
     store.lock_state().remove_prepared_graph(&second_id);
     store.assert_conserved();
     assert_eq!(
@@ -10158,7 +10163,8 @@ fn sidechain_directories_are_built_at_exact_capacity() {
         let graph = state.prepared_graphs[&graph_id].lock().unwrap();
         assert_exact_sidechain_directories(
             "direct build",
-            graph.stamps.iter().map(|(path, _)| path.as_path()),
+            std::iter::once(graph.root.canonical_path.as_path())
+                .chain(graph.sources.iter().map(|source| source.path.as_path())),
             &graph.sidechain_dirs,
         );
     }
@@ -11862,34 +11868,82 @@ fn registered_prepare_graph_builds_a_shared_root_slice_in_one_admitted_allocatio
                     .map(|member| &member.path)));
             constructed_graph_bytes(&state, &graph_id, &graph)
         };
-        let site = reached(
-            |store| store.registered_sources.load(Ordering::Relaxed),
-            |fixture| {
-                let catalog_pins: Vec<_> = fixture
-                    .store
-                    .lock_state()
-                    .catalogs
-                    .values()
-                    .map(Arc::clone)
-                    .collect();
-                assert_eq!(catalog_pins.len(), 1);
-                settled_or_refused(&submit(fixture));
-                drop(catalog_pins);
-            },
-        );
-        let exact = exact_headroom(&build, &site);
-        assert_eq!(
-            exact,
-            REPLY_RESERVATION + bytes,
-            "the shared-root slice was built before its record was admitted"
-        );
-        refused_at_site(
-            "registered shared root",
-            &build,
-            &site,
-            REPLY_RESERVATION,
-            exact,
-        );
+        for headroom in [0, bytes - 1, bytes] {
+            let fixture = build();
+            let catalog_pins: Vec<_> = fixture
+                .store
+                .lock_state()
+                .catalogs
+                .values()
+                .map(Arc::clone)
+                .collect();
+            assert_eq!(catalog_pins.len(), 1);
+            let transient = fixture.store.lock_state().transient_bytes;
+            let collected = fixture.store.registered_sources.load(Ordering::Relaxed);
+            let (response, (filler, mut before, request_reserved)) =
+                returned_facts_barrier(&fixture, || {
+                    let filler = fill_to(&fixture.store, &fixture.owner, headroom);
+                    fixture.store.assert_conserved();
+                    let before = (
+                        ledger(&fixture.store),
+                        audited(&fixture.store),
+                        bookkeeping(&fixture.store),
+                    );
+                    let request_reserved =
+                        fixture.store.lock_state().transient_bytes - filler.bytes - transient;
+                    assert!(request_reserved >= REPLY_RESERVATION);
+                    traced(&fixture.store);
+                    (filler, before, request_reserved)
+                });
+            let trace = traced(&fixture.store);
+            assert_eq!(
+                fixture.store.lock_state().transient_bytes,
+                transient + filler.bytes,
+                "the graph request retained a transient reservation"
+            );
+            assert_eq!(
+                fixture.store.registered_sources.load(Ordering::Relaxed) - collected,
+                if headroom == bytes { 1 } else { 0 },
+                "source collection crossed its admitted constructor boundary: {response:?}"
+            );
+            if headroom < bytes {
+                assert_eq!(
+                    response["status"].as_str(),
+                    Some("retained_limit"),
+                    "{response:?}"
+                );
+                for gauge in [&mut before.0, &mut before.1] {
+                    gauge[PENDING] -= request_reserved;
+                    gauge[TOTAL] -= request_reserved;
+                }
+                assert_eq!(
+                    (
+                        ledger(&fixture.store),
+                        audited(&fixture.store),
+                        bookkeeping(&fixture.store)
+                    ),
+                    before,
+                    "the refused graph constructor leaked retained state"
+                );
+                assert!(!trace
+                    .iter()
+                    .any(|event| matches!(event, Trace::Allocated(_))));
+            } else {
+                settled_or_refused(&response);
+                assert_eq!(
+                    reserved_traces(&trace)
+                        .iter()
+                        .filter(|&&reserved| reserved == bytes)
+                        .count(),
+                    1
+                );
+            }
+            fixture.store.assert_conserved();
+            assert!(audited(&fixture.store)[TOTAL] <= cap_of(&fixture.store, &fixture.owner));
+            drop(filler);
+            drop(catalog_pins);
+            fixture.store.assert_conserved();
+        }
     }
 }
 
@@ -14706,3 +14760,5 @@ fn an_oversized_text_source_upgrades_to_exceeded_on_demand() {
     assert_eq!(fixture.store.prepared_disk.stats().writes, writes + 1);
     fixture.store.assert_conserved();
 }
+
+include!("snapshot_graph_validation_tests.rs");
