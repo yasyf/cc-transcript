@@ -54,22 +54,55 @@ pub struct OverrideEvent {
     pub tools: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum FactsNeed {
+    Skills,
     Index,
     Full,
 }
 
 impl FactsNeed {
-    pub fn of_query(query: &Value, observers: Option<&sonic_rs::Array>) -> Self {
-        let wants_overrides =
-            |query: &Value| query.get("kind").and_then(Value::as_str) == Some("has_override");
-        if wants_overrides(query)
-            || observers.is_some_and(|queries| queries.iter().any(wants_overrides))
-        {
-            Self::Full
+    pub fn from_raw(raw: u64) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Skills),
+            1 => Some(Self::Index),
+            2 => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    pub fn of_predicate(query: &Value) -> Self {
+        match query.get("kind").and_then(Value::as_str) {
+            Some("has_override") => Self::Full,
+            Some("has_skill" | "has_skill_suffix")
+                if query
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .is_some_and(|values| values.iter().all(|value| value.as_str().is_some())) =>
+            {
+                Self::Skills
+            }
+            _ => Self::Index,
+        }
+    }
+
+    pub fn of_query(query: &Value, observers: Option<&Value>) -> Self {
+        let primary = Self::of_predicate(query);
+        let Some(observers) = observers else {
+            return primary;
+        };
+        let Some(queries) = observers.as_array() else {
+            return primary.max(Self::Index);
+        };
+        let demand = queries
+            .iter()
+            .map(Self::of_predicate)
+            .fold(primary, Self::max);
+        if queries.len() > crate::snapshot::OBSERVER_LIMIT {
+            demand.max(Self::Index)
         } else {
-            Self::Index
+            demand
         }
     }
 }
@@ -145,21 +178,44 @@ impl OverrideFacts {
     }
 }
 
-#[derive(serde::Serialize)]
-pub struct IndexSection<'a> {
-    pub inputs: &'a Value,
-    pub has_error: bool,
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct CodexSkillProof {
+    pub covered_bytes: u64,
+    pub line_bound: usize,
+    pub tail_bytes: usize,
+    pub first_line_committed: bool,
+    pub fence_seal: [u8; 32],
 }
 
-#[derive(serde::Deserialize)]
-pub struct DecodedIndexSection {
-    pub inputs: Value,
-    pub has_error: bool,
+impl CodexSkillProof {
+    pub fn validates(&self, source_bytes: u64, entry_bound: usize) -> bool {
+        self.covered_bytes == source_bytes
+            && source_bytes != 0
+            && self.line_bound != 0
+            && self.line_bound <= entry_bound
+            && self.line_bound as u64 <= source_bytes
+            && self.tail_bytes <= self.line_bound
+    }
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillEvidence {
+    Parsed { skills: Vec<String> },
+    CodexFramed { proof: Box<CodexSkillProof> },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedEvidence {
+    Index { inputs: Value, has_error: bool },
+    Skills { evidence: SkillEvidence },
+}
+
+pub type DecodedIndexSection = PreparedEvidence;
 
 pub struct PreparedFacts {
-    pub inputs: Value,
-    pub has_error: bool,
+    pub evidence: PreparedEvidence,
     pub overrides: OverrideFacts,
     pub accounted: usize,
 }
@@ -170,10 +226,22 @@ impl PreparedFacts {
     }
 
     pub fn index_accounted_bytes(&self) -> usize {
-        let input_charge = crate::snapshot_memory::value_charge(&self.inputs);
         crate::snapshot_ledger::arc_bytes::<Self>()
-            + input_charge.owned_capacity_bytes
-            + input_charge.opaque_dom_accounted_bytes
+            + match &self.evidence {
+                PreparedEvidence::Index { inputs, .. } => {
+                    let charge = crate::snapshot_memory::value_charge(inputs);
+                    charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+                }
+                PreparedEvidence::Skills {
+                    evidence: SkillEvidence::Parsed { skills },
+                } => {
+                    skills.capacity() * std::mem::size_of::<String>()
+                        + skills.iter().map(String::capacity).sum::<usize>()
+                }
+                PreparedEvidence::Skills {
+                    evidence: SkillEvidence::CodexFramed { .. },
+                } => std::mem::size_of::<CodexSkillProof>(),
+            }
     }
 
     pub fn refresh_accounted(&mut self) {
@@ -181,15 +249,39 @@ impl PreparedFacts {
     }
 
     pub fn is_full(&self) -> bool {
-        self.overrides.is_loaded()
+        matches!(self.evidence, PreparedEvidence::Index { .. }) && self.overrides.is_loaded()
     }
 
     pub fn text_state(&self) -> TextState {
         self.overrides.text_state()
     }
 
+    pub fn validates_source(&self, bytes: u64, entry_bound: usize) -> bool {
+        match &self.evidence {
+            PreparedEvidence::Skills {
+                evidence: SkillEvidence::CodexFramed { proof },
+            } => proof.validates(bytes, entry_bound),
+            PreparedEvidence::Index { .. }
+            | PreparedEvidence::Skills {
+                evidence: SkillEvidence::Parsed { .. },
+            } => true,
+        }
+    }
+
+    pub fn capability(&self) -> FactsNeed {
+        match &self.evidence {
+            PreparedEvidence::Skills { .. } => FactsNeed::Skills,
+            PreparedEvidence::Index { .. } if self.is_full() => FactsNeed::Full,
+            PreparedEvidence::Index { .. } => FactsNeed::Index,
+        }
+    }
+
     pub fn serves(&self, need: FactsNeed) -> bool {
-        need == FactsNeed::Index || self.is_full()
+        match need {
+            FactsNeed::Skills => true,
+            FactsNeed::Index => matches!(self.evidence, PreparedEvidence::Index { .. }),
+            FactsNeed::Full => self.is_full(),
+        }
     }
 
     pub fn without_text(mut self) -> Self {
@@ -198,11 +290,42 @@ impl PreparedFacts {
         self
     }
 
-    pub fn index_section(&self) -> IndexSection<'_> {
-        IndexSection {
-            inputs: &self.inputs,
-            has_error: self.has_error,
+    pub fn index_section(&self) -> &PreparedEvidence {
+        &self.evidence
+    }
+
+    pub fn index_inputs(&self) -> &Value {
+        match &self.evidence {
+            PreparedEvidence::Index { inputs, .. } => inputs,
+            PreparedEvidence::Skills { .. } => unreachable!("Index capability is required"),
         }
+    }
+
+    pub fn has_error(&self) -> bool {
+        match &self.evidence {
+            PreparedEvidence::Index { has_error, .. } => *has_error,
+            PreparedEvidence::Skills { .. } => unreachable!("Index capability is required"),
+        }
+    }
+
+    pub fn index(inputs: Value, has_error: bool, overrides: OverrideFacts) -> Self {
+        let mut facts = Self {
+            evidence: PreparedEvidence::Index { inputs, has_error },
+            overrides,
+            accounted: 0,
+        };
+        facts.refresh_accounted();
+        facts
+    }
+
+    pub fn skills(evidence: SkillEvidence) -> Self {
+        let mut facts = Self {
+            evidence: PreparedEvidence::Skills { evidence },
+            overrides: OverrideFacts::Unloaded,
+            accounted: 0,
+        };
+        facts.refresh_accounted();
+        facts
     }
 
     pub fn text_section(&self) -> Option<&[OverrideEvent]> {
@@ -211,8 +334,7 @@ impl PreparedFacts {
 
     pub fn from_sections(index: DecodedIndexSection, overrides: OverrideFacts) -> Self {
         let mut facts = Self {
-            inputs: index.inputs,
-            has_error: index.has_error,
+            evidence: index,
             overrides,
             accounted: 0,
         };
@@ -222,8 +344,34 @@ impl PreparedFacts {
 
     pub fn query(&self, query: &Value) -> Result<Value, SnapshotError> {
         let kind = string(query, "kind")?;
-        let calls = self
-            .inputs
+        if matches!(kind, "has_skill" | "has_skill_suffix") {
+            let names = strings(query, "values")?;
+            let matches = |skill: &str| {
+                names.contains(&skill)
+                    || kind == "has_skill_suffix"
+                        && names.contains(&skill.split_once(':').map_or(skill, |(_, tail)| tail))
+            };
+            let answer = match &self.evidence {
+                PreparedEvidence::Index { inputs, .. } => inputs["skills"]
+                    .as_array()
+                    .ok_or_else(|| invalid("prepared skills missing"))?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(matches),
+                PreparedEvidence::Skills {
+                    evidence: SkillEvidence::Parsed { skills },
+                } => skills.iter().any(|skill| matches(skill)),
+                PreparedEvidence::Skills {
+                    evidence: SkillEvidence::CodexFramed { .. },
+                } => false,
+            };
+            return Ok(json!({"kind":"scalar","value":answer}));
+        }
+        if !self.serves(FactsNeed::of_predicate(query)) {
+            return Err(invalid("prepared evidence does not serve query"));
+        }
+        let inputs = self.index_inputs();
+        let calls = inputs
             .get("calls")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("prepared calls missing"))?;
@@ -269,7 +417,7 @@ impl PreparedFacts {
             }
             "has_edit_to" => {
                 let globs = strings(query, "values")?;
-                self.inputs["edited_files"]
+                inputs["edited_files"]
                     .as_array()
                     .ok_or_else(|| invalid("prepared edits missing"))?
                     .iter()
@@ -279,26 +427,11 @@ impl PreparedFacts {
                             .is_some_and(|path| FileRef::new(path).matches(&globs))
                     })
             }
-            "has_skill" | "has_skill_suffix" => {
-                let names = strings(query, "values")?;
-                self.inputs["skills"]
-                    .as_array()
-                    .ok_or_else(|| invalid("prepared skills missing"))?
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .any(|skill| {
-                        names.contains(&skill)
-                            || kind == "has_skill_suffix"
-                                && names.contains(
-                                    &skill.split_once(':').map_or(skill, |(_, tail)| tail),
-                                )
-                    })
-            }
             "has_command" => {
                 #[cfg(feature = "command")]
                 {
                     let argv = strings(query, "values")?;
-                    self.inputs["commands"]
+                    inputs["commands"]
                         .as_array()
                         .ok_or_else(|| invalid("prepared commands missing"))?
                         .iter()
@@ -318,15 +451,18 @@ impl PreparedFacts {
             "has_command_regex" => {
                 let regex = Regex::new(string(query, "pattern")?)
                     .map_err(|error| invalid(error.to_string()))?;
-                self.inputs["commands"]
+                inputs["commands"]
                     .as_array()
                     .ok_or_else(|| invalid("prepared commands missing"))?
                     .iter()
                     .filter_map(Value::as_str)
                     .any(|command| regex.is_match(command))
             }
-            "has_error" => self.has_error,
-            "has_edit" => !self.inputs["edited_files"]
+            "has_error" => match self.evidence {
+                PreparedEvidence::Index { has_error, .. } => has_error,
+                PreparedEvidence::Skills { .. } => unreachable!("Index capability is required"),
+            },
+            "has_edit" => !inputs["edited_files"]
                 .as_array()
                 .ok_or_else(|| invalid("prepared edits missing"))?
                 .is_empty(),
@@ -356,5 +492,75 @@ impl PreparedFacts {
             _ => return Err(invalid(format!("unsupported prepared query {kind}"))),
         };
         Ok(json!({"kind":"scalar","value":answer}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_skills_demand_is_union_of_valid_primary_and_observers() {
+        let query = json!({"kind":"has_skill","values":["x"]});
+        let skills = json!([{"kind":"has_skill_suffix","values":["y"]}]);
+        let tool = json!([{"kind":"has_tool","pattern":"Read"}]);
+        let full = json!([{"kind":"has_override","token":"x","invalidated_by":[]}]);
+        let malformed = json!([{"kind":"has_skill","values":[1]}]);
+        assert_eq!(FactsNeed::of_query(&query, None), FactsNeed::Skills);
+        assert_eq!(
+            FactsNeed::of_query(&query, Some(&json!({"kind":"has_skill"}))),
+            FactsNeed::Index
+        );
+        assert_eq!(
+            FactsNeed::of_query(&query, Some(&json!([]))),
+            FactsNeed::Skills
+        );
+        assert_eq!(
+            FactsNeed::of_query(&query, Some(&skills)),
+            FactsNeed::Skills
+        );
+        assert_eq!(FactsNeed::of_query(&query, Some(&tool)), FactsNeed::Index);
+        assert_eq!(FactsNeed::of_query(&query, Some(&full)), FactsNeed::Full);
+        assert_eq!(
+            FactsNeed::of_query(&query, Some(&malformed)),
+            FactsNeed::Index
+        );
+        assert_eq!(
+            FactsNeed::of_predicate(&json!({"kind":"deep_predicate_inputs"})),
+            FactsNeed::Index
+        );
+    }
+
+    #[test]
+    fn typed_skills_evidence_cannot_serve_index_or_full() {
+        let facts = PreparedFacts::skills(SkillEvidence::Parsed {
+            skills: vec!["plugin:x".to_owned()],
+        });
+        assert!(facts.serves(FactsNeed::Skills));
+        assert!(!facts.serves(FactsNeed::Index));
+        assert!(!facts.serves(FactsNeed::Full));
+        assert_eq!(
+            facts
+                .query(&json!({"kind":"has_skill","values":["plugin:x"]}))
+                .unwrap()["value"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            facts
+                .query(&json!({"kind":"has_skill_suffix","values":["x"]}))
+                .unwrap()["value"]
+                .as_bool(),
+            Some(true)
+        );
+        assert!(facts
+            .query(&json!({"kind":"has_tool","pattern":"Read"}))
+            .is_err());
+        let bytes = sonic_rs::to_vec(facts.index_section()).unwrap();
+        let decoded: DecodedIndexSection = sonic_rs::from_slice(&bytes).unwrap();
+        let restored = PreparedFacts::from_sections(decoded, OverrideFacts::Unloaded);
+        assert!(restored.serves(FactsNeed::Skills));
+        assert!(!restored.serves(FactsNeed::Index));
+        assert!(!restored.serves(FactsNeed::Full));
     }
 }

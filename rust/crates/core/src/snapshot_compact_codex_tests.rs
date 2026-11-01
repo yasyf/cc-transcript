@@ -71,7 +71,7 @@ fn prepared_cache_compact_codex_late_duplicate_results_match_complete_projection
         let facts = Arc::clone(&cached.facts);
         store.retain_cached_facts(&mut state, facts)
     };
-    let old_inputs = sonic_rs::to_string(&old.facts().inputs).unwrap();
+    let old_inputs = sonic_rs::to_string(&old.facts().index_inputs()).unwrap();
     let suffixes = [
         (compact_output("initial-0", 1), true),
         (compact_output("initial-0", 0), false),
@@ -91,18 +91,18 @@ fn prepared_cache_compact_codex_late_duplicate_results_match_complete_projection
         let actual = Arc::clone(&store.lock_state().cached_prepared_facts(&stamp.identity).facts);
         let complete = compact_full_oracle(&paths[0]);
         for column in ["calls", "commands", "edited_files", "skills"] {
-            assert_eq!(sonic_rs::to_string(&actual.inputs[column]).unwrap(),
-                sonic_rs::to_string(&complete.inputs[column]).unwrap(), "column {column}");
+            assert_eq!(sonic_rs::to_string(&actual.index_inputs()[column]).unwrap(),
+                sonic_rs::to_string(&complete.index_inputs()[column]).unwrap(), "column {column}");
         }
-        compact_assert_index_inputs(&actual.inputs, &complete.inputs);
-        assert_eq!(actual.has_error, complete.has_error);
-        assert_eq!(actual.has_error, expected);
+        compact_assert_index_inputs(&actual.index_inputs(), &complete.index_inputs());
+        assert_eq!(actual.has_error(), complete.has_error());
+        assert_eq!(actual.has_error(), expected);
         assert!(!actual.is_full());
         eprintln!("compact_result expected_error={expected} suffix={} read={} full_lowerings={}",suffix.len(),usage[1],usage[15]);
         assert!(usage[1] <= suffix.len() as u64 + 256);
         assert_eq!(usage[15], 0);
-        assert!(!old.facts().has_error);
-        assert_eq!(sonic_rs::to_string(&old.facts().inputs).unwrap(), old_inputs);
+        assert!(!old.facts().has_error());
+        assert_eq!(sonic_rs::to_string(&old.facts().index_inputs()).unwrap(), old_inputs);
         assert_eq!(store.lock_state().cached_prepared_facts(&stamp.identity).stamp, stamp);
         store.assert_conserved();
     }
@@ -119,7 +119,7 @@ fn prepared_cache_compact_codex_owner_retirement_keeps_only_guarded_metadata() {
     let owner = context("compact-owner");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
     let old_stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
     let weak = Arc::downgrade(store.lock_state().cached_prepared_facts(&old_stamp.identity).append.as_ref().unwrap());
     let suffix = hydration_tool("next", "next");
@@ -145,7 +145,7 @@ fn prepared_cache_compact_codex_refusal_cancel_and_full_need_keep_authority() {
     let owner = context("compact-refusal");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
     let stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
     let classifier = json!({"id":"native","version":"1"});
     let old_key = PreparedDiskKey::new(stamp, owner["registry_generation"].as_str().unwrap(),
@@ -180,7 +180,7 @@ fn prepared_cache_compact_codex_cancel_and_exact_refusal_never_publish_a_success
     let owner = context("compact-inflight-refusal");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
     let old_stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
     let classifier = json!({"id":"native","version":"1"});
     let suffix = hydration_tool("never-published", "never-published");
@@ -255,7 +255,7 @@ fn prepared_cache_compact_codex_capacity_boundary_admits_successor_and_temporary
         let owner = context("compact-capacity-boundary");
         let root = hydration_root(&store,&source,&owner);
         let graph = hydration_graph(&store,&root,&paths,&owner);
-        hydration_false(&hydration_query(&store,&graph,"definitely-absent",&owner).0);
+        hydration_false(&hydration_index_query(&store,&graph,"definitely-absent",&owner).0);
         let suffix = compact_assistant_line("capacity-new-boundary",echo);
         std::fs::OpenOptions::new().append(true).open(&paths[0]).unwrap().write_all(suffix.as_bytes()).unwrap();
         let stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
@@ -276,7 +276,7 @@ fn prepared_cache_compact_codex_capacity_boundary_admits_successor_and_temporary
         assert!(admitted.append_peak>admitted.successor);
         assert!(admitted.lower_peak>0);
         let fresh = hydration_graph(&store,&root,&paths,&owner);
-        let (answer,usage) = hydration_query(&store,&fresh,"definitely-absent",&owner);
+        let (answer,usage) = hydration_index_query(&store,&fresh,"definitely-absent",&owner);
         hydration_false(&answer);
         let state = store.lock_state();
         let new = &state.cached_prepared_facts(&stamp.identity).append.as_ref().unwrap().index;
@@ -328,14 +328,14 @@ fn prepared_cache_compact_codex_final_seal_parent_swap_rejects_positive_and_keep
     let owner = context("compact-parent-swap");
     let root = hydration_root(&store,&source,&owner);
     let graph = hydration_graph(&store,&root,&paths,&owner);
-    hydration_false(&hydration_query(&store,&graph,"definitely-absent",&owner).0);
+    hydration_false(&hydration_index_query(&store,&graph,"definitely-absent",&owner).0);
     let old_stamp = SourceStamp::of(&std::fs::metadata(&path).unwrap());
     let old = {
         let mut state = store.lock_state();
         let facts = Arc::clone(&state.cached_prepared_facts(&old_stamp.identity).facts);
         store.retain_cached_facts(&mut state,facts)
     };
-    let old_inputs = sonic_rs::to_string(&old.facts().inputs).unwrap();
+    let old_inputs = sonic_rs::to_string(&old.facts().index_inputs()).unwrap();
     let suffix = hydration_tool("swap-positive","swap-positive");
     std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(suffix.as_bytes()).unwrap();
     let stamp = SourceStamp::of(&std::fs::metadata(&path).unwrap());
@@ -359,7 +359,7 @@ fn prepared_cache_compact_codex_final_seal_parent_swap_rejects_positive_and_keep
     assert_ne!(answer["data"]["value"].as_bool(),Some(true));
     assert!(!store.lock_state().prepared_facts.contains_key(&new_key));
     assert_eq!(store.lock_state().cached_prepared_facts(&old_stamp.identity).stamp,old_stamp);
-    assert_eq!(sonic_rs::to_string(&old.facts().inputs).unwrap(),old_inputs);
+    assert_eq!(sonic_rs::to_string(&old.facts().index_inputs()).unwrap(),old_inputs);
     store.assert_conserved();
     drop(old);
     store.assert_conserved();
@@ -383,14 +383,14 @@ fn prepared_cache_compact_codex_cold_failed_call_is_restored_by_successful_resul
     let old = {
         let mut state = store.lock_state();
         let cached = state.cached_prepared_facts(&old_stamp.identity);
-        assert!(cached.facts.inputs["calls"].as_array().unwrap().is_empty());
+        assert!(cached.facts.index_inputs()["calls"].as_array().unwrap().is_empty());
         assert_eq!(cached.append.as_ref().unwrap().reducer.calls.len(), 1);
         assert!(!state.latest.contains_key(&old_stamp.identity));
         assert!(!state.source_spines.contains_key(&old_stamp.identity.file()));
         let facts = Arc::clone(&cached.facts);
         store.retain_cached_facts(&mut state, facts)
     };
-    let old_bytes = sonic_rs::to_string(&old.facts().inputs).unwrap();
+    let old_bytes = sonic_rs::to_string(&old.facts().index_inputs()).unwrap();
     let suffix = compact_output("initial-0", 0);
     std::fs::OpenOptions::new().append(true).open(&paths[0]).unwrap()
         .write_all(suffix.as_bytes()).unwrap();
@@ -402,17 +402,17 @@ fn prepared_cache_compact_codex_cold_failed_call_is_restored_by_successful_resul
     let actual = Arc::clone(&store.lock_state().cached_prepared_facts(&stamp.identity).facts);
     let complete = compact_full_oracle(&paths[0]);
     for column in ["calls", "commands", "edited_files", "skills"] {
-        assert_eq!(sonic_rs::to_string(&actual.inputs[column]).unwrap(),
-            sonic_rs::to_string(&complete.inputs[column]).unwrap(), "column {column}");
+        assert_eq!(sonic_rs::to_string(&actual.index_inputs()[column]).unwrap(),
+            sonic_rs::to_string(&complete.index_inputs()[column]).unwrap(), "column {column}");
     }
-    compact_assert_index_inputs(&actual.inputs, &complete.inputs);
-    assert_eq!(actual.has_error, complete.has_error);
-    assert!(!actual.has_error);
-    assert_eq!(actual.inputs["calls"].as_array().unwrap().len(), 1);
+    compact_assert_index_inputs(&actual.index_inputs(), &complete.index_inputs());
+    assert_eq!(actual.has_error(), complete.has_error());
+    assert!(!actual.has_error());
+    assert_eq!(actual.index_inputs()["calls"].as_array().unwrap().len(), 1);
     assert!(usage[1] <= suffix.len() as u64 + 256);
     assert_eq!(usage[15], 0);
-    assert!(old.facts().has_error);
-    assert_eq!(sonic_rs::to_string(&old.facts().inputs).unwrap(), old_bytes);
+    assert!(old.facts().has_error());
+    assert_eq!(sonic_rs::to_string(&old.facts().index_inputs()).unwrap(), old_bytes);
     store.assert_conserved();
     drop(old);
     store.assert_conserved();
@@ -434,7 +434,7 @@ fn prepared_cache_compact_codex_reducer_tables_grow_with_all_call_metadata_charg
     let owner = context("compact-reducer-growth");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_query(&store, &graph, "definitely-absent", &owner).0);
+    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
     let old_stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
     let (old_calls, old_results, count, old_result_count) = {
         let state = store.lock_state();
@@ -455,7 +455,7 @@ fn prepared_cache_compact_codex_reducer_tables_grow_with_all_call_metadata_charg
     let previous = store.previous_compact_codex(stamp, &owner, &json!({"id":"native","version":"1"})).unwrap().unwrap();
     let old_inputs = previous.append.reducer.inputs();
     let fresh = hydration_graph(&store, &root, &paths, &owner);
-    let (answer, usage) = hydration_query(&store, &fresh, "definitely-absent", &owner);
+    let (answer, usage) = hydration_index_query(&store, &fresh, "definitely-absent", &owner);
     hydration_false(&answer);
     let (selected, bindings) = {
         let mut state = store.lock_state();
@@ -487,11 +487,11 @@ fn prepared_cache_compact_codex_reducer_tables_grow_with_all_call_metadata_charg
     let actual = held.facts();
     let complete = compact_full_oracle(&paths[0]);
     for column in ["calls", "commands", "edited_files", "skills"] {
-        assert_eq!(sonic_rs::to_string(&actual.inputs[column]).unwrap(),
-            sonic_rs::to_string(&complete.inputs[column]).unwrap(), "column {column}");
+        assert_eq!(sonic_rs::to_string(&actual.index_inputs()[column]).unwrap(),
+            sonic_rs::to_string(&complete.index_inputs()[column]).unwrap(), "column {column}");
     }
-    compact_assert_index_inputs(&actual.inputs, &complete.inputs);
-    assert_eq!(actual.has_error, complete.has_error);
+    compact_assert_index_inputs(&actual.index_inputs(), &complete.index_inputs());
+    assert_eq!(actual.has_error(), complete.has_error());
     compact_assert_index_inputs(&previous.append.reducer.inputs(), &old_inputs);
     eprintln!("compact_reducer_growth old_calls={old_calls} new_calls={new_calls} old_results={old_results} new_results={new_results} suffix={} source_bytes={}",
         suffix.len(), usage[1]);

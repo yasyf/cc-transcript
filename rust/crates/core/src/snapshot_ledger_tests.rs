@@ -3372,6 +3372,7 @@ fn default_startup_footprint_is_the_pre_sized_tables_and_the_default_registries(
     assert_eq!(
         store.retained_accounted_bytes(),
         size_of::<StoreState>()
+            + arc_mirror::<AtomicUsize>()
             + arc_mirror::<crate::snapshot_ledger::ReleaseQueue>()
             + MUTEX_STORAGE_MIRROR
             + PRE_SIZED_SLOTS
@@ -4418,6 +4419,9 @@ fn refused_prepared_query_page_releases_its_pending_source_waiter() {
                 .pending
                 .as_ref()
                 .expect("the parked page carries its pending source");
+            let PendingQuerySource::Native(pending) = pending else {
+                panic!("this page owns a native waiter")
+            };
             assert_eq!(state.waiters.len(), 1);
             assert!(state.waiters.contains_key(&pending.token));
         }
@@ -5157,6 +5161,7 @@ fn facts_cache_fixture(
     let request = graph_query(
         &graph,
         match need {
+            FactsNeed::Skills => unreachable!("this fixture sizes Index and Full facts"),
             FactsNeed::Index => missing_tool(),
             FactsNeed::Full => missing_override(),
         },
@@ -5331,9 +5336,12 @@ fn facts_bound_walk_for(snapshot: &Arc<TranscriptSnapshot>, need: FactsNeed) -> 
         events.push(OverrideEvent { text, tools });
     }
     NativeStore::audit_facts_bytes(&PreparedFacts {
-        inputs,
-        has_error: false,
+        evidence: crate::snapshot_prepared::PreparedEvidence::Index {
+            inputs,
+            has_error: false,
+        },
         overrides: match need {
+            FactsNeed::Skills => unreachable!("this oracle models Index and Full work"),
             FactsNeed::Index => OverrideFacts::Unloaded,
             FactsNeed::Full => OverrideFacts::Loaded(events),
         },
@@ -6201,10 +6209,7 @@ fn root_slice_for_need(mut fixture: Fixture, need: FactsNeed, observer: bool) ->
         fixture.request.insert("query", query);
     }
     assert_eq!(
-        FactsNeed::of_query(
-            &fixture.request["query"],
-            fixture.request.get("observers").and_then(Value::as_array),
-        ),
+        FactsNeed::of_query(&fixture.request["query"], fixture.request.get("observers"),),
         need,
     );
     fixture
@@ -6213,10 +6218,7 @@ fn root_slice_for_need(mut fixture: Fixture, need: FactsNeed, observer: bool) ->
 fn root_slice_prediction(fixture: &Fixture) -> usize {
     facts_bound_walk_for(
         &fixture.pins[0],
-        FactsNeed::of_query(
-            &fixture.request["query"],
-            fixture.request.get("observers").and_then(Value::as_array),
-        ),
+        FactsNeed::of_query(&fixture.request["query"], fixture.request.get("observers")),
     )
 }
 
@@ -6345,20 +6347,20 @@ fn patch_transcript(patch: &str, failed: bool) -> String {
 }
 
 fn assert_paths_twice(site: &str, facts: &PreparedFacts, paths: &[String]) {
-    let listed: Vec<&str> = facts.inputs["calls"][0][1]
+    let listed: Vec<&str> = facts.index_inputs()["calls"][0][1]
         .as_array()
         .unwrap()
         .iter()
         .map(|path| path.as_str().unwrap())
         .collect();
-    let edited: Vec<&str> = facts.inputs["edited_files"]
+    let edited: Vec<&str> = facts.index_inputs()["edited_files"]
         .as_array()
         .unwrap()
         .iter()
         .map(|file| file["path"].as_str().unwrap())
         .collect();
     assert_eq!(
-        facts.inputs["calls"][0][0].as_str(),
+        facts.index_inputs()["calls"][0][0].as_str(),
         Some("apply_patch"),
         "{site}"
     );
@@ -6474,7 +6476,10 @@ fn patch_facts_outgrow_their_entry_bytes_but_never_their_bound() {
             );
             if failed {
                 assert!(
-                    full.inputs["edited_files"].as_array().unwrap().is_empty(),
+                    full.index_inputs()["edited_files"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty(),
                     "{site}: a failed patch reached the edited files"
                 );
                 assert!(walked < bound, "{site}: walked={walked} bound={bound}");
@@ -7159,7 +7164,7 @@ fn user_text_with_tool_results_is_built_at_exact_capacity() {
     assert_eq!(
         NativeStore::audit_facts_bytes(&facts),
         arc_mirror::<PreparedFacts>()
-            + NativeStore::audit_value_bytes(&facts.inputs)
+            + NativeStore::audit_value_bytes(&facts.index_inputs())
             + events.capacity() * size_of::<OverrideEvent>()
             + text.len()
             + result.len()
@@ -13220,7 +13225,9 @@ fn predicate_queue_bound(fixture: &Fixture) -> (usize, usize) {
     let encoded = {
         let state = fixture.store.lock_state();
         let graph = state.prepared_graphs[graph_id].lock().unwrap();
-        sonic_rs::to_vec(&graph.root_facts.inputs).unwrap().len()
+        sonic_rs::to_vec(&graph.root_facts.index_inputs())
+            .unwrap()
+            .len()
     };
     let records = 2 * (4 * encoded) / crate::snapshot_codec::PREDICATE_INPUT_CHUNK_BYTES + 2;
     let framing = r#"{"calls":[],"commands":[],"edited_files":[],"skills":[]}"#.len();
@@ -13375,6 +13382,18 @@ fn membership_key(fixture: &Fixture) -> String {
     NativeStore::membership_collection_key(&fixture.request, &fixture.owner).unwrap()
 }
 
+fn membership_owner_admitted(fixture: &Fixture) -> bool {
+    let mut reservation = fixture.store.reserve_projection(&fixture.owner, 0).unwrap();
+    match fixture
+        .store
+        .membership_slot(&membership_key(fixture), &fixture.owner, &mut reservation)
+    {
+        Ok(_) => true,
+        Err(error) if error.status == Status::RetainedLimit => false,
+        Err(error) => panic!("membership owner admission failed outside admission: {error:?}"),
+    }
+}
+
 fn membership_record_bytes() -> usize {
     size_of::<MembershipBuild>()
 }
@@ -13525,27 +13544,101 @@ fn fresh_warm_membership_admits_its_record_before_building_its_buffers() {
 }
 
 #[test]
-fn published_warm_membership_draws_its_record_from_the_build_reservation() {
+fn cache_warm_membership_owner_admission_is_atomic_before_materialization() {
     let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
     for background in [false, true] {
         let build = || membership_fixture(&scenario, background);
-        let record = membership_record_bytes();
-        let peak = exact_headroom(&build, &membership_built);
-        let exact = exact_headroom(&build, &membership_published);
+        let exact = exact_headroom(&build, &membership_owner_admitted);
         refused_at_site(
-            "warm membership publication",
+            "warm membership owner",
             &build,
-            &membership_published,
+            &membership_owner_admitted,
             0,
             exact,
         );
         let fitted = build();
         let cap = cap_for(&fitted.owner);
+        let table_before = fitted.store.lock_state().warm_memberships.capacity_bytes();
+        let _filler = fill_to(&fitted.store, &fitted.owner, exact);
+        traced(&fitted.store);
+        assert!(membership_owner_admitted(&fitted));
+        fitted.store.assert_conserved();
+        let trace = traced(&fitted.store);
+        assert_admitted_before_allocating("warm membership owner", &trace);
+        let (slot, stored) = {
+            let state = fitted.store.lock_state();
+            assert_eq!(state.warm_memberships.len(), 1);
+            let (key, slot) = state.warm_memberships.iter().next().unwrap();
+            (
+                Arc::clone(slot),
+                NativeStore::audit_warm_membership_bytes(key, slot)
+                    + state.warm_memberships.capacity_bytes()
+                    - table_before,
+            )
+        };
+        assert!(matches!(&*slot.cell.lock().unwrap(), MembershipCell::Empty));
+        assert_eq!(slot.accounted.load(Ordering::Acquire), 0);
+        assert!(!slot.pending.load(Ordering::Acquire));
+        assert_eq!(exact, stored);
+        assert_eq!(ledger(&fitted.store)[TOTAL], cap);
+        assert_eq!(audited(&fitted.store)[TOTAL], cap);
+    }
+}
+
+#[test]
+fn cache_published_warm_membership_draws_its_record_from_the_build_reservation() {
+    let scenario = Scenario::new(4, |index| line(&format!("thread-{index:04}")));
+    for background in [false, true] {
+        let pin_owner = |fixture: &Fixture| {
+            fixture
+                .store
+                .lock_state()
+                .warm_memberships
+                .get(&membership_key(fixture))
+                .cloned()
+                .expect("admitted membership owner")
+        };
+        let assert_empty = |slot: &Arc<MembershipSlot>| {
+            assert!(matches!(&*slot.cell.lock().unwrap(), MembershipCell::Empty));
+            assert_eq!(slot.accounted.load(Ordering::Acquire), 0);
+            assert!(!slot.pending.load(Ordering::Acquire));
+        };
+        let build = || {
+            let fixture = membership_fixture(&scenario, background);
+            assert!(membership_owner_admitted(&fixture));
+            assert_empty(&pin_owner(&fixture));
+            fixture
+        };
+        let built = |fixture: &Fixture| {
+            let _owner = pin_owner(fixture);
+            membership_built(fixture)
+        };
+        let published = |fixture: &Fixture| {
+            let owner = pin_owner(fixture);
+            assert_empty(&owner);
+            let admitted = membership_published(fixture);
+            if !admitted {
+                assert_empty(&owner);
+            }
+            admitted
+        };
+        let record = membership_record_bytes();
+        let peak = exact_headroom(&build, &built);
+        let exact = exact_headroom(&build, &published);
+        refused_at_site("warm membership publication", &build, &published, 0, exact);
+        let fitted = build();
+        let cap = cap_for(&fitted.owner);
         let shared_table = fitted.store.lock_state().ledger.shared.table_bytes();
+        let owner_record = {
+            let state = fitted.store.lock_state();
+            let (key, owner) = state.warm_memberships.iter().next().unwrap();
+            NativeStore::audit_warm_membership_bytes(key, owner)
+                + state.warm_memberships.capacity_bytes()
+        };
         let _filler = fill_to(&fitted.store, &fitted.owner, exact);
         traced(&fitted.store);
         let released = released_by(&fitted.store, || {
-            assert!(membership_published(&fitted), "the exact fit was refused");
+            assert!(published(&fitted), "the exact fit was refused");
         });
         let trace = traced(&fitted.store);
         fitted.store.assert_conserved();
@@ -13561,6 +13654,7 @@ fn published_warm_membership_draws_its_record_from_the_build_reservation() {
                 + NativeStore::audit_warm_buffer_bytes(&state)
                 + state.ledger.shared.table_bytes()
                 - shared_table
+                - owner_record
         };
         assert_eq!(
             retained, stored,

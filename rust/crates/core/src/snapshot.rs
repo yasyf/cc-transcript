@@ -917,6 +917,10 @@ enum PreparedSourceOutcome<'a> {
         cached: bool,
     },
     Pending(String),
+    SkillPending {
+        work: Box<PendingSkillSource>,
+        reservation: ProjectionReservation<'a>,
+    },
     Stored,
     Superseded,
 }
@@ -963,6 +967,11 @@ struct PendingPreparedSource {
     token: String,
     path: PathBuf,
     stamp: SourceStamp,
+}
+
+enum PendingQuerySource {
+    Native(PendingPreparedSource),
+    Skills(Box<PendingSkillSource>),
 }
 
 #[derive(Clone)]
@@ -1154,7 +1163,7 @@ struct PreparedQueryCursor {
     claimant: String,
     graph_id: String,
     query: Value,
-    pending: Option<PendingPreparedSource>,
+    pending: Option<PendingQuerySource>,
     input_records: Option<VecDeque<String>>,
     observers: Observers,
     need: FactsNeed,
@@ -2067,8 +2076,11 @@ impl Charge<String> for PreparedQueryCursor {
             + self.claimant.capacity()
             + self.graph_id.capacity()
             + value_bytes(&self.query)
-            + self.pending.as_ref().map_or(0, |pending| {
-                pending.token.capacity() + pending.path.capacity()
+            + self.pending.as_ref().map_or(0, |pending| match pending {
+                PendingQuerySource::Native(pending) => {
+                    pending.token.capacity() + pending.path.capacity()
+                }
+                PendingQuerySource::Skills(work) => work.accounted_bytes(),
             })
             + self.input_records.as_ref().map_or(0, |records| {
                 records.capacity() * size_of::<String>()
@@ -2152,6 +2164,7 @@ pub(crate) struct StoreState {
     catalog_owners: Ledgered<usize, CatalogOwner>,
     recent_codex: Table<SourceIdentity, u64>,
     loads: Table<SourceIdentity, Arc<LoadSlot>>,
+    skill_admissions: Arc<AtomicUsize>,
     prepared_loads: Table<SourceIdentity, (Arc<LoadSlot>, u64)>,
     leases: Ledgered<String, Lease>,
     waiters: Ledgered<String, Waiter>,
@@ -2233,6 +2246,7 @@ impl StoreState {
             catalog_owners: Ledgered::new(work.clone()),
             recent_codex: Table::new(work.clone()),
             loads: Table::new(work.clone()),
+            skill_admissions: Arc::new(AtomicUsize::new(0)),
             prepared_loads: Table::new(work.clone()),
             leases: Ledgered::new(work.clone()),
             waiters: Ledgered::new(work.clone()),
@@ -5331,7 +5345,7 @@ impl NativeStore {
             .collect();
         for token in expired_queries {
             if let Some(query) = state.prepared_queries.remove(&token) {
-                if let Some(pending) = query.pending {
+                if let Some(PendingQuerySource::Native(pending)) = query.pending {
                     state.waiters.remove(&pending.token);
                 }
                 if query.remaining.deadline_unix_ms <= now {
@@ -6178,14 +6192,14 @@ impl NativeStore {
             + claimant.capacity()
             + graph_id.capacity()
             + value_bytes(query)
-            + pending.as_ref().map_or(
-                0,
-                |PendingPreparedSource {
-                     token,
-                     path,
-                     stamp: _,
-                 }| token.capacity() + path.capacity(),
-            )
+            + pending.as_ref().map_or(0, |pending| match pending {
+                PendingQuerySource::Native(PendingPreparedSource {
+                    token,
+                    path,
+                    stamp: _,
+                }) => token.capacity() + path.capacity(),
+                PendingQuerySource::Skills(work) => Self::audit_skill_source_bytes(work),
+            })
             + input_records.as_ref().map_or(0, |records| {
                 records.capacity() * size_of::<String>()
                     + records.iter().map(String::capacity).sum::<usize>()
@@ -6426,6 +6440,7 @@ impl NativeStore {
 
     fn bookkeeping_bytes(state: &StoreState) -> usize {
         size_of::<StoreState>()
+            + arc_bytes::<AtomicUsize>()
             + state.ledger.shared.table_bytes()
             + state.registries.capacity_bytes()
             + state.generations.capacity_bytes()
@@ -7330,7 +7345,7 @@ impl NativeStore {
         released |= state.registered_builds.remove(token).is_some();
         released |= state.projections.remove(token).is_some();
         if let Some(query) = state.prepared_queries.remove(token) {
-            if let Some(pending) = query.pending {
+            if let Some(PendingQuerySource::Native(pending)) = query.pending {
                 state.waiters.remove(&pending.token);
             }
             released = true;
@@ -7376,7 +7391,7 @@ impl NativeStore {
             .is_some_and(|query| query.claimant == claimant)
         {
             if let Some(query) = state.prepared_queries.remove(token) {
-                if let Some(pending) = query.pending {
+                if let Some(PendingQuerySource::Native(pending)) = query.pending {
                     state.waiters.remove(&pending.token);
                 }
             }
@@ -7948,7 +7963,7 @@ impl NativeStore {
                             .collect();
                         for query_token in discarded {
                             if let Some(query) = state.prepared_queries.remove(&query_token) {
-                                if let Some(pending) = query.pending {
+                                if let Some(PendingQuerySource::Native(pending)) = query.pending {
                                     state.waiters.remove(&pending.token);
                                 }
                             }
@@ -12273,6 +12288,7 @@ include!("snapshot_catalog_owner.rs");
 include!("snapshot_membership_progress.rs");
 include!("snapshot_sidechain_absence.rs");
 include!("snapshot_prepared_service.rs");
+include!("snapshot_skills.rs");
 include!("snapshot_hydration_observations.rs");
 include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
@@ -12349,6 +12365,8 @@ mod tests {
     include!("snapshot_raw_tail_tests.rs");
     include!("snapshot_direct_tail_tests.rs");
     include!("snapshot_query_hydration_tests.rs");
+    include!("snapshot_skill_demand_controls.rs");
+    include!("snapshot_skill_demand_tests.rs");
     include!("snapshot_compact_codex_tests.rs");
     include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");

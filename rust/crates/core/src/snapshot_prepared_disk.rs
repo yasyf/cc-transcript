@@ -24,7 +24,7 @@ use crate::snapshot_prepared::{
     DecodedIndexSection, FactsNeed, OverrideEvent, OverrideFacts, PreparedFacts, TextState,
 };
 
-const VERSION: &[u8; 8] = b"CTPF0004";
+const VERSION: &[u8; 8] = b"CTPF0005";
 pub(crate) const HEADER_BYTES: usize = 144;
 const SONIC_STRING_BLOCK_LANES: usize = 32;
 const NAMESPACE: &str = "cc-transcript-prepared";
@@ -457,6 +457,7 @@ struct EntryHeader {
     index_seal: [u8; 32],
     text_seal: [u8; 32],
     text_state: TextState,
+    scope: FactsNeed,
 }
 
 impl EntryHeader {
@@ -471,11 +472,17 @@ impl EntryHeader {
         bytes[72..104].copy_from_slice(&self.index_seal);
         bytes[104..136].copy_from_slice(&self.text_seal);
         bytes[136] = self.text_state as u8;
+        bytes[137] = self.scope as u8;
         bytes
     }
 
     fn decode(bytes: &[u8; HEADER_BYTES]) -> Option<Self> {
         if bytes[..8] != *VERSION {
+            return None;
+        }
+        let text_state = TextState::from_raw(u64::from(bytes[136]))?;
+        let scope = FactsNeed::from_raw(u64::from(bytes[137]))?;
+        if (scope == FactsNeed::Full) != (text_state != TextState::Unbuilt) {
             return None;
         }
         Some(Self {
@@ -488,7 +495,8 @@ impl EntryHeader {
             accounted: u64::from_le_bytes(bytes[64..72].try_into().expect("accounted header")),
             index_seal: bytes[72..104].try_into().expect("index seal header"),
             text_seal: bytes[104..136].try_into().expect("text seal header"),
-            text_state: TextState::from_raw(u64::from(bytes[136]))?,
+            text_state,
+            scope,
         })
     }
 }
@@ -501,6 +509,7 @@ struct EntryName {
     index_bytes: usize,
     index_accounted: usize,
     text_state: u64,
+    scope: FactsNeed,
 }
 
 impl EntryName {
@@ -516,7 +525,7 @@ impl EntryName {
             self.accounted,
             self.index_bytes,
             self.index_accounted,
-            self.text_state
+            self.text_state | ((self.scope as u64) << 8)
         ))
         .expect("entry file name")
     }
@@ -542,7 +551,8 @@ impl EntryName {
             accounted: usize::from_str_radix(&text[96..112], 16).ok()?,
             index_bytes: usize::from_str_radix(&text[112..128], 16).ok()?,
             index_accounted: usize::from_str_radix(&text[128..144], 16).ok()?,
-            text_state: u64::from_str_radix(&text[144..160], 16).ok()?,
+            text_state: u64::from_str_radix(&text[144..160], 16).ok()? & 255,
+            scope: FactsNeed::from_raw(u64::from_str_radix(&text[144..160], 16).ok()? >> 8)?,
         })
     }
 }
@@ -617,6 +627,7 @@ impl PreparedDiskKey {
 pub enum DiskLookup {
     Hit(PreparedFacts),
     IndexOnly(PreparedFacts),
+    SkillsOnly(PreparedFacts),
     Changed,
     Miss,
     Retired,
@@ -656,6 +667,7 @@ struct DiskEntry {
     index_bytes: usize,
     index_accounted: usize,
     text_state: TextState,
+    scope: FactsNeed,
     last_used: u64,
 }
 
@@ -664,30 +676,27 @@ impl DiskEntry {
         self.bytes - HEADER_BYTES - self.index_bytes
     }
 
-    fn served(&self, need: FactsNeed) -> FactsNeed {
-        match self.text_state {
-            TextState::Unbuilt => FactsNeed::Index,
-            TextState::Present | TextState::Exceeded => need,
-        }
+    fn read_scope(&self, need: FactsNeed) -> FactsNeed {
+        need.min(self.scope)
     }
 
     fn read_bytes(&self, need: FactsNeed) -> usize {
         match need {
-            FactsNeed::Index => HEADER_BYTES + self.index_bytes,
+            FactsNeed::Skills | FactsNeed::Index => HEADER_BYTES + self.index_bytes,
             FactsNeed::Full => probed_read_bytes(self.bytes),
         }
     }
 
     fn accounted_for(&self, need: FactsNeed) -> usize {
-        match self.served(need) {
-            FactsNeed::Index => self.index_accounted,
+        match self.read_scope(need) {
+            FactsNeed::Skills | FactsNeed::Index => self.index_accounted,
             FactsNeed::Full => self.accounted,
         }
     }
 
     fn decoded_bytes(&self, need: FactsNeed) -> usize {
-        match self.served(need) {
-            FactsNeed::Index => {
+        match self.read_scope(need) {
+            FactsNeed::Skills | FactsNeed::Index => {
                 HEADER_BYTES
                     + self.index_bytes
                     + self.index_accounted
@@ -1197,7 +1206,7 @@ impl PreparedDiskCache {
         let mut examined = 0;
         let mut growth = 0usize;
         let mut largest = 0usize;
-        let mut refused: HashMap<[u8; 32], (TextState, usize)> = HashMap::new();
+        let mut refused: HashMap<[u8; 32], (FactsNeed, TextState, usize)> = HashMap::new();
         'listing: for rank in (0..claimed.len()).rev() {
             let Ok(mut names) = DirEntries::new(claimed[rank].dir.as_raw_fd()) else {
                 continue;
@@ -1221,15 +1230,16 @@ impl PreparedDiskCache {
                     && parsed.index_bytes <= parsed.bytes - HEADER_BYTES
                     && parsed.index_accounted <= parsed.accounted
                     && text_state.is_some_and(|text_state| {
-                        text_state != TextState::Unbuilt
-                            || parsed.bytes == HEADER_BYTES + parsed.index_bytes
-                                && parsed.accounted == parsed.index_accounted
+                        (parsed.scope == FactsNeed::Full) == (text_state != TextState::Unbuilt)
+                            && (text_state != TextState::Unbuilt
+                                || parsed.bytes == HEADER_BYTES + parsed.index_bytes
+                                    && parsed.accounted == parsed.index_accounted)
                     });
                 let standing = state.entries.get(&parsed.key).map(|listed| {
                     (
                         listed.last_used as usize,
                         listed.bytes,
-                        (listed.text_state, listed.bytes),
+                        (listed.scope, listed.text_state, listed.bytes),
                     )
                 });
                 let displaced_bytes = standing.map_or(0, |(_, bytes, _)| bytes);
@@ -1237,7 +1247,7 @@ impl PreparedDiskCache {
                     && parsed.tag == engine_tag
                     && newest - claimed[rank].generation < MAX_INHERITED_GENERATIONS
                     && text_state.is_some_and(|text_state| {
-                        let candidate = (text_state, parsed.bytes);
+                        let candidate = (parsed.scope, text_state, parsed.bytes);
                         standing.is_none_or(|(_, _, standing)| candidate > standing)
                             && refused
                                 .get(&parsed.key)
@@ -1273,6 +1283,7 @@ impl PreparedDiskCache {
                                 index_bytes: parsed.index_bytes,
                                 index_accounted: parsed.index_accounted,
                                 text_state: text_state.expect("well-formed entry"),
+                                scope: parsed.scope,
                                 last_used: rank as u64,
                             },
                         );
@@ -1289,7 +1300,11 @@ impl PreparedDiskCache {
                             }
                             refused.insert(
                                 parsed.key,
-                                (text_state.expect("well-formed entry"), parsed.bytes),
+                                (
+                                    parsed.scope,
+                                    text_state.expect("well-formed entry"),
+                                    parsed.bytes,
+                                ),
                             );
                         }
                         claimed[rank].garbage = claimed[rank]
@@ -1338,6 +1353,7 @@ impl PreparedDiskCache {
             index_bytes: entry.index_bytes,
             index_accounted: entry.index_accounted,
             text_state: entry.text_state as u64,
+            scope: entry.scope,
         }
         .encode()
     }
@@ -1355,6 +1371,7 @@ impl PreparedDiskCache {
                     index_bytes: entry.index_bytes,
                     index_accounted: entry.index_accounted,
                     text_state: entry.text_state as u64,
+                    scope: entry.scope,
                 }
                 .encode()
             })
@@ -1406,6 +1423,7 @@ impl PreparedDiskCache {
             index_bytes: 0,
             index_accounted: 0,
             text_state: 0,
+            scope: FactsNeed::Index,
         }
         .encode();
         let prefix = &bare.to_str().expect("entry file name")[..64];
@@ -1573,6 +1591,7 @@ impl PreparedDiskCache {
                                 && entry.index_bytes == parsed.index_bytes
                                 && entry.index_accounted == parsed.index_accounted
                                 && entry.text_state as u64 == parsed.text_state
+                                && entry.scope == parsed.scope
                         });
                     if kept {
                         continue;
@@ -1647,7 +1666,7 @@ impl PreparedDiskCache {
         let (expected, index_bytes, last_used) = (entry.bytes, entry.index_bytes, entry.last_used);
         let (accounted, index_accounted) = (entry.accounted, entry.index_accounted);
         let (wanted, accounted_bound) = (entry.read_bytes(need), entry.accounted_for(need));
-        let (text_state, served) = (entry.text_state, entry.served(need));
+        let (text_state, served, scope) = (entry.text_state, entry.read_scope(need), entry.scope);
         let name = self.entry_name(key, entry);
         let inherited = last_used < MAX_CLAIMED_OWNERS as u64;
         let dir_fd = if inherited {
@@ -1678,7 +1697,7 @@ impl PreparedDiskCache {
             let finished = read_chunks(&file, wanted, &mut bytes, checkpoint);
             read.bytes += bytes.len() as u64;
             finished?;
-            if need == FactsNeed::Index
+            if need != FactsNeed::Full
                 && file.metadata().map_err(disk_error)?.len() != expected as u64
             {
                 return Err(incomplete("prepared facts cache entry changed"));
@@ -1696,8 +1715,9 @@ impl PreparedDiskCache {
                         && header.index_accounted == index_accounted as u64
                         && header.accounted == accounted as u64
                         && header.text_state == text_state
+                        && header.scope == scope
                         && match served {
-                            FactsNeed::Index => {
+                            FactsNeed::Skills | FactsNeed::Index => {
                                 bytes.len() == index_end
                                     && header.index_seal
                                         == seal(header.index_accounted, &bytes[HEADER_BYTES..])
@@ -1721,7 +1741,7 @@ impl PreparedDiskCache {
             let index: DecodedIndexSection = sonic_rs::from_slice(&bytes[HEADER_BYTES..index_end])
                 .map_err(|_| incomplete("prepared facts cache payload invalid"))?;
             let overrides = match served {
-                FactsNeed::Index => OverrideFacts::Unloaded,
+                FactsNeed::Skills | FactsNeed::Index => OverrideFacts::Unloaded,
                 FactsNeed::Full => {
                     cancel.check(deadline_unix_ms)?;
                     let section: Option<Vec<OverrideEvent>> =
@@ -1731,6 +1751,15 @@ impl PreparedDiskCache {
                 }
             };
             let facts = PreparedFacts::from_sections(index, overrides);
+            if facts.capability()
+                != scope.min(if served == FactsNeed::Full {
+                    FactsNeed::Full
+                } else {
+                    FactsNeed::Index
+                })
+            {
+                return Err(incomplete("prepared facts capability differs"));
+            }
             cancel.check(deadline_unix_ms)?;
             if inherited {
                 if facts.accounted_bytes() > accounted_bound {
@@ -1760,10 +1789,12 @@ impl PreparedDiskCache {
                     let _ = self.make_room(&mut state, 0, None);
                 }
                 self.sweep(&mut state, INSERT_SWEEP_NAMES);
-                Ok(if served == need {
+                Ok(if facts.serves(need) {
                     DiskLookup::Hit(facts)
-                } else {
+                } else if facts.serves(FactsNeed::Index) {
                     DiskLookup::IndexOnly(facts)
+                } else {
+                    DiskLookup::SkillsOnly(facts)
                 })
             }
             Err(error) if matches!(error.status, Status::Cancelled | Status::Deadline) => {
@@ -1786,13 +1817,19 @@ impl PreparedDiskCache {
     }
 
     pub fn lists(&self, key: &PreparedDiskKey) -> bool {
+        self.lists_for(key, FactsNeed::Skills)
+    }
+
+    pub fn lists_for(&self, key: &PreparedDiskKey, need: FactsNeed) -> bool {
         let listed = self
             .state
             .lock()
             .expect("prepared facts disk state")
             .entries
             .get(&key.name)
-            .is_some_and(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64);
+            .is_some_and(|entry| {
+                entry.last_used >= MAX_CLAIMED_OWNERS as u64 && entry.scope >= need
+            });
         #[cfg(test)]
         {
             let hook = self.list_hook.lock().expect("list hook").clone();
@@ -1814,7 +1851,10 @@ impl PreparedDiskCache {
         let owned = state
             .entries
             .get(&key.name)
-            .filter(|entry| entry.last_used >= MAX_CLAIMED_OWNERS as u64)
+            .filter(|entry| {
+                entry.last_used >= MAX_CLAIMED_OWNERS as u64
+                    && entry.scope >= need.min(FactsNeed::Index)
+            })
             .map(|entry| entry.accounted_for(need));
         if !owned.is_some_and(unread) {
             return Ok(false);
@@ -1937,11 +1977,13 @@ impl PreparedDiskCache {
         let listed = state.entries.get(&key.name).map(|entry| {
             (
                 entry.last_used >= MAX_CLAIMED_OWNERS as u64,
+                entry.scope,
                 entry.text_state,
             )
         });
         let replaced = match listed {
-            Some((_, TextState::Unbuilt)) if text_state != TextState::Unbuilt => {
+            Some((_, scope, _)) if facts.capability() < scope => return Ok(Inserted::Listed),
+            Some((_, scope, _)) if facts.capability() > scope => {
                 let entry = state.entries.get(&key.name).expect("listed entry");
                 Some(Replaced {
                     name: self.entry_name(key, entry),
@@ -1950,15 +1992,15 @@ impl PreparedDiskCache {
                         .then_some(entry.last_used as usize),
                 })
             }
-            Some((_, TextState::Present | TextState::Exceeded)) => {
-                return Ok(if text_state == TextState::Unbuilt {
-                    Inserted::Listed
-                } else {
+            Some((_, FactsNeed::Full, TextState::Present | TextState::Exceeded)) => {
+                return Ok(if facts.is_full() {
                     Inserted::AlreadyFull
+                } else {
+                    Inserted::Listed
                 });
             }
-            Some((true, TextState::Unbuilt)) => return Ok(Inserted::Listed),
-            Some((false, TextState::Unbuilt)) => {
+            Some((true, _, _)) => return Ok(Inserted::Listed),
+            Some((false, _, _)) => {
                 self.retire(&mut state, key.name)?;
                 None
             }
@@ -2025,6 +2067,7 @@ impl PreparedDiskCache {
             index_bytes: index_len,
             index_accounted,
             text_state,
+            scope: facts.capability(),
             last_used: state.clock,
         };
         let name = self.entry_name(key, &entry);
@@ -2044,6 +2087,7 @@ impl PreparedDiskCache {
             index_seal: seal(index_accounted as u64, &payload[..index_len]),
             text_seal: seal(accounted as u64, &payload[index_len..]),
             text_state,
+            scope: facts.capability(),
         }
         .encode();
         let mut staged = None;
@@ -2439,13 +2483,15 @@ mod tests {
 
     fn facts() -> PreparedFacts {
         PreparedFacts {
-            inputs: json!({
-                "calls": [["Read", ["/repo/file.rs"]]],
-                "commands": [],
-                "edited_files": [],
-                "skills": [],
-            }),
-            has_error: false,
+            evidence: crate::snapshot_prepared::PreparedEvidence::Index {
+                inputs: json!({
+                    "calls": [["Read", ["/repo/file.rs"]]],
+                    "commands": [],
+                    "edited_files": [],
+                    "skills": [],
+                }),
+                has_error: false,
+            },
             overrides: OverrideFacts::Loaded(vec![OverrideEvent {
                 text: "override only in source".to_owned(),
                 tools: vec!["Read".to_owned()],
@@ -2497,7 +2543,7 @@ mod tests {
         match lookup(&cache, &first, &mut DiskRead::default(), FactsNeed::Full).unwrap() {
             DiskLookup::Hit(loaded) => {
                 assert!(loaded.accounted_bytes() >= std::mem::size_of::<PreparedFacts>());
-                assert_eq!(loaded.inputs, facts().inputs);
+                assert_eq!(loaded.index_inputs(), facts().index_inputs());
                 assert_eq!(
                     loaded.text_section().unwrap()[0].text,
                     "override only in source"
@@ -3020,13 +3066,15 @@ mod tests {
 
     fn chunked_facts() -> PreparedFacts {
         let mut facts = PreparedFacts {
-            inputs: json!({
-                "calls": [["Read", ["/repo/file.rs"]]],
-                "commands": [],
-                "edited_files": [],
-                "skills": [],
-            }),
-            has_error: false,
+            evidence: crate::snapshot_prepared::PreparedEvidence::Index {
+                inputs: json!({
+                    "calls": [["Read", ["/repo/file.rs"]]],
+                    "commands": [],
+                    "edited_files": [],
+                    "skills": [],
+                }),
+                has_error: false,
+            },
             overrides: OverrideFacts::Loaded(vec![OverrideEvent {
                 text: "x".repeat(3 * READ_CHUNK_BYTES),
                 tools: vec!["Read".to_owned()],
@@ -3167,7 +3215,7 @@ mod tests {
         else {
             panic!("expected the inherited entry to serve");
         };
-        assert_eq!(loaded.inputs, built.inputs);
+        assert_eq!(loaded.index_inputs(), built.index_inputs());
         assert_eq!((read.operations, read.bytes), (1, stored));
         assert_eq!(budget(&successor), (1, stored as usize, 0, 0));
         assert!(!left.exists());
@@ -3188,13 +3236,15 @@ mod tests {
             });
         }
         let mut facts = PreparedFacts {
-            inputs: json!({
-                "calls": [["Read", ["/repo/file.rs"]], ["Edit", ["/repo/a.rs", "/repo/b.rs"]]],
-                "commands": ["true"],
-                "edited_files": [{"path": "/repo/a.rs"}, {"path": "/repo/b.rs"}],
-                "skills": [],
-            }),
-            has_error: false,
+            evidence: crate::snapshot_prepared::PreparedEvidence::Index {
+                inputs: json!({
+                    "calls": [["Read", ["/repo/file.rs"]], ["Edit", ["/repo/a.rs", "/repo/b.rs"]]],
+                    "commands": ["true"],
+                    "edited_files": [{"path": "/repo/a.rs"}, {"path": "/repo/b.rs"}],
+                    "skills": [],
+                }),
+                has_error: false,
+            },
             overrides: OverrideFacts::Loaded(override_events),
             accounted: 0,
         };
@@ -3221,7 +3271,7 @@ mod tests {
     }
 
     fn index_only(decoded: &PreparedFacts) -> bool {
-        matches!(decoded.overrides, OverrideFacts::Unloaded)
+        decoded.serves(FactsNeed::Index) && matches!(decoded.overrides, OverrideFacts::Unloaded)
     }
 
     #[test]
@@ -3280,13 +3330,15 @@ mod tests {
         let cache = cache(2 * 1024 * 1024);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let mut built = PreparedFacts {
-            inputs: json!({
-                "calls": [["Read", ["/repo/file.rs"]]],
-                "commands": [],
-                "edited_files": [],
-                "skills": [],
-            }),
-            has_error: false,
+            evidence: crate::snapshot_prepared::PreparedEvidence::Index {
+                inputs: json!({
+                    "calls": [["Read", ["/repo/file.rs"]]],
+                    "commands": [],
+                    "edited_files": [],
+                    "skills": [],
+                }),
+                has_error: false,
+            },
             overrides: OverrideFacts::Loaded(vec![OverrideEvent {
                 text: "override line\n".repeat(32 * 1024),
                 tools: vec!["Read".to_owned()],
@@ -3331,7 +3383,7 @@ mod tests {
         assert_eq!(decoded_event.text, built_event.text);
         assert_eq!(decoded_event.text.capacity(), decoded_event.text.len());
         assert_eq!(decoded_event.tools, built_event.tools);
-        assert_eq!(decoded.inputs, built.inputs);
+        assert_eq!(decoded.index_inputs(), built.index_inputs());
     }
 
     #[test]
@@ -3407,7 +3459,7 @@ mod tests {
         else {
             panic!("expected completed facts");
         };
-        assert_eq!(decoded.inputs, sample.inputs);
+        assert_eq!(decoded.index_inputs(), sample.index_inputs());
     }
 
     #[test]
@@ -3502,7 +3554,7 @@ mod tests {
         else {
             panic!("expected inherited facts");
         };
-        assert_eq!(loaded.inputs, built.inputs);
+        assert_eq!(loaded.index_inputs(), built.index_inputs());
         assert_eq!((read.operations, read.bytes), (1, stored));
         assert!(second.has_entry(&entry).unwrap());
         assert_eq!(second.stats().bytes, stored as usize);
@@ -3799,6 +3851,7 @@ mod tests {
                 index_bytes: 0,
                 index_accounted: 0,
                 text_state: 1,
+                scope: FactsNeed::Full,
             }
             .encode(),
             size,
@@ -3889,6 +3942,7 @@ mod tests {
                 index_bytes: 0,
                 index_accounted: 0,
                 text_state: 1,
+                scope: FactsNeed::Full,
             }
             .encode(),
             100,
@@ -3903,6 +3957,7 @@ mod tests {
                 index_bytes: index,
                 index_accounted: built.index_accounted_bytes(),
                 text_state: 1,
+                scope: FactsNeed::Full,
             }
             .encode(),
             stored,
@@ -3975,6 +4030,7 @@ mod tests {
                     index_bytes: 0,
                     index_accounted: 0,
                     text_state: 1,
+                    scope: FactsNeed::Full,
                 }
                 .encode(),
                 1024,
@@ -4098,6 +4154,7 @@ mod tests {
                     index_bytes: 0,
                     index_accounted: 0,
                     text_state: 1,
+                    scope: FactsNeed::Full,
                 }
                 .encode(),
                 100,
@@ -4150,6 +4207,7 @@ mod tests {
                     index_bytes: 0,
                     index_accounted: 0,
                     text_state: 1,
+                    scope: FactsNeed::Full,
                 }
                 .encode(),
                 1024,
@@ -4392,6 +4450,7 @@ mod tests {
                 index_bytes: 0,
                 index_accounted: 0,
                 text_state: 1,
+                scope: FactsNeed::Full,
             }
             .encode()
             .to_str()
@@ -4420,6 +4479,7 @@ mod tests {
             index_bytes: 512,
             index_accounted: 256,
             text_state: TextState::Present as u64,
+            scope: FactsNeed::Full,
         };
         let encoded = name.encode();
         let text = encoded.to_str().unwrap();
@@ -4427,7 +4487,7 @@ mod tests {
             text,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\
              0123456789abcdef000000000000100000000000000008000000000000000200\
-             00000000000001000000000000000001.facts"
+             00000000000001000000000000000201.facts"
         );
         assert_eq!(text.len(), ENTRY_NAME_BYTES);
         assert!(!generated_entry(&encoded));
@@ -4441,7 +4501,8 @@ mod tests {
                 parsed.accounted,
                 parsed.index_bytes,
                 parsed.index_accounted,
-                parsed.text_state
+                parsed.text_state,
+                parsed.scope
             ),
             (
                 name.key,
@@ -4450,7 +4511,8 @@ mod tests {
                 name.accounted,
                 name.index_bytes,
                 name.index_accounted,
-                name.text_state
+                name.text_state,
+                name.scope
             )
         );
         for (legacy_bytes, hex_len) in LEGACY_ENTRY_NAME_BYTES.iter().zip([144, 112]) {
@@ -4486,13 +4548,15 @@ mod tests {
         let cache = cache(4 * 1024 * 1024);
         let entry = key(stamp(1), &json!({"root":"/repo"}));
         let mut built = PreparedFacts {
-            inputs: json!({
-                "calls": [["Read", ["/repo/file.rs"]]],
-                "commands": [],
-                "edited_files": [],
-                "skills": [],
-            }),
-            has_error: true,
+            evidence: crate::snapshot_prepared::PreparedEvidence::Index {
+                inputs: json!({
+                    "calls": [["Read", ["/repo/file.rs"]]],
+                    "commands": [],
+                    "edited_files": [],
+                    "skills": [],
+                }),
+                has_error: true,
+            },
             overrides: OverrideFacts::Loaded(vec![OverrideEvent {
                 text: "x".repeat(1024 * 1024),
                 tools: vec!["Read".to_owned()],
@@ -4528,8 +4592,8 @@ mod tests {
             (1, HEADER_BYTES + index)
         );
         assert!(index_only(&decoded));
-        assert_eq!(decoded.inputs, built.inputs);
-        assert!(decoded.has_error);
+        assert_eq!(decoded.index_inputs(), built.index_inputs());
+        assert!(decoded.has_error());
         assert!(decoded.accounted_bytes() <= built.index_accounted_bytes());
         assert!(decoded.serves(FactsNeed::Index) && !decoded.serves(FactsNeed::Full));
         let mut full = DiskRead::default();
@@ -4610,7 +4674,7 @@ mod tests {
         let mut read = DiskRead::default();
         assert!(matches!(
             lookup(&cache, &entry, &mut read, FactsNeed::Index).unwrap(),
-            DiskLookup::Hit(decoded) if index_only(&decoded) && decoded.inputs == built.inputs
+            DiskLookup::Hit(decoded) if index_only(&decoded) && decoded.index_inputs() == built.index_inputs()
         ));
         assert_eq!(read.bytes as usize, HEADER_BYTES + index);
         assert_eq!(cache.stats().entries, 1);
@@ -4697,7 +4761,7 @@ mod tests {
             panic!("expected inherited index facts");
         };
         assert!(index_only(&loaded));
-        assert_eq!(loaded.inputs, built.inputs);
+        assert_eq!(loaded.index_inputs(), built.index_inputs());
         assert_eq!(
             (read.operations, read.bytes as usize),
             (1, HEADER_BYTES + index)
@@ -4873,7 +4937,7 @@ mod tests {
         else {
             panic!("expected index facts");
         };
-        assert!(index_only(&decoded) && decoded.inputs == compact.inputs);
+        assert!(index_only(&decoded) && decoded.index_inputs() == compact.index_inputs());
         assert_eq!((read.operations, read.bytes as usize), (1, stored));
         let mut probed = DiskRead::default();
         let DiskLookup::IndexOnly(partial) =
@@ -4881,7 +4945,7 @@ mod tests {
         else {
             panic!("expected an index-only answer to the full lookup");
         };
-        assert!(index_only(&partial) && partial.inputs == compact.inputs);
+        assert!(index_only(&partial) && partial.index_inputs() == compact.index_inputs());
         assert_eq!((probed.operations, probed.bytes as usize), (1, stored));
         assert!(cache
             .touch(&entry, FactsNeed::Full, |accounted| accounted
@@ -5767,5 +5831,107 @@ mod tests {
     fn core_carries_a_build_identity() {
         assert_eq!(crate::BUILD_IDENTITY.len(), 64);
         assert!(hex_bytes(crate::BUILD_IDENTITY.as_bytes()));
+    }
+    #[test]
+    fn typed_skills_disk_capability_is_never_reported_as_index_or_full() {
+        let cache = cache(2 * 1024 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        let weak = PreparedFacts::skills(crate::snapshot_prepared::SkillEvidence::Parsed {
+            skills: Vec::new(),
+        });
+        assert!(cache
+            .insert(&entry, &weak, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let DiskLookup::Hit(loaded) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Skills).unwrap()
+        else {
+            panic!("Skills must satisfy its exact demand")
+        };
+        assert!(loaded.serves(FactsNeed::Skills));
+        assert!(!loaded.serves(FactsNeed::Index));
+        assert!(!loaded.serves(FactsNeed::Full));
+        assert!(!index_only(&loaded));
+        assert!(cache.lists_for(&entry, FactsNeed::Skills));
+        for need in [FactsNeed::Index, FactsNeed::Full] {
+            assert!(!cache.lists_for(&entry, need));
+            assert!(!cache.touch(&entry, need, |_| true).unwrap());
+            assert!(matches!(
+                lookup(&cache, &entry, &mut DiskRead::default(), need).unwrap(),
+                DiskLookup::SkillsOnly(_)
+            ));
+        }
+        assert!(cache
+            .insert(&entry, &facts(), |_| true, |_| true)
+            .unwrap()
+            .serves());
+        assert!(cache
+            .insert(&entry, &weak, |_| true, |_| true)
+            .unwrap()
+            .serves());
+        let DiskLookup::Hit(complete) =
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap()
+        else {
+            panic!("weaker publication must retain Full")
+        };
+        assert!(complete.serves(FactsNeed::Full));
+        assert_eq!(
+            complete
+                .query(&json!({"kind":"has_tool","pattern":"Read"}))
+                .unwrap()["value"]
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn typed_skills_inherited_stronger_evidence_is_not_downgraded() {
+        for need in [FactsNeed::Index, FactsNeed::Full] {
+            let namespace = isolated_namespace();
+            let entry = revision(1);
+            let mut strong = facts();
+            if need == FactsNeed::Index {
+                strong.overrides = OverrideFacts::Unloaded;
+                strong.refresh_accounted();
+            }
+            let old = left_behind(&namespace, &entry, &strong);
+            let bytes = fs::read(&old).unwrap();
+            let successor = reuse_cache(&namespace, 64 * 1024);
+            let inherited = budget(&successor);
+            assert_eq!(inherited, (1, 0, bytes.len(), 0));
+            let weak = PreparedFacts::skills(crate::snapshot_prepared::SkillEvidence::Parsed {
+                skills: Vec::new(),
+            });
+            assert!(successor
+                .insert(&entry, &weak, |_| true, |_| true)
+                .unwrap()
+                .serves());
+            assert_eq!(budget(&successor), inherited);
+            assert_eq!(fs::read(&old).unwrap(), bytes);
+            let DiskLookup::Hit(loaded) =
+                lookup(&successor, &entry, &mut DiskRead::default(), need).unwrap()
+            else {
+                panic!("inherited stronger evidence must retain its capability")
+            };
+            assert_eq!(loaded.capability(), need);
+            assert_eq!(loaded.index_inputs(), strong.index_inputs());
+            drop(successor);
+            fs::remove_dir_all(namespace).unwrap();
+        }
+    }
+
+    #[test]
+    fn typed_skills_unknown_disk_capability_is_rejected_before_payload_acceptance() {
+        let cache = cache(2 * 1024 * 1024);
+        let entry = key(stamp(1), &json!({"root":"/repo"}));
+        cache.insert(&entry, &facts(), |_| true, |_| true).unwrap();
+        let path = cache.entry_path(entry.digest);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[137] = 3;
+        fs::write(path, bytes).unwrap();
+        assert!(matches!(
+            lookup(&cache, &entry, &mut DiskRead::default(), FactsNeed::Full).unwrap(),
+            DiskLookup::Retired
+        ));
     }
 }
