@@ -193,7 +193,21 @@ impl NativeStore {
             arc_slice_mirror::<(PathBuf, Option<SourceStamp>)>(dirs.len())
                 + dirs.iter().map(|(path, _)| path.capacity()).sum::<usize>()
         };
-        for membership in state.warm_memberships.values() {
+        let memberships = state
+            .warm_memberships
+            .values()
+            .filter_map(|slot| slot.metadata())
+            .chain(
+                state
+                    .retained_membership_owners
+                    .iter()
+                    .map(|owner| owner.upgrade().expect("retained membership is live")),
+            );
+        for membership in memberships {
+            add(
+                Arc::as_ptr(&membership) as usize,
+                arc_mirror::<WarmMembership>() + membership.revision.capacity(),
+            );
             add(slice_key(&membership.members), sources(&membership.members));
             add(
                 slice_key(&membership.positions),
@@ -685,7 +699,7 @@ impl NativeStore {
                 crate::snapshot_prepared_disk::DiskLookup::Miss => {
                     #[cfg(test)]
                     self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-miss" });
-                    
+
                 }
             }
         } else {
@@ -933,10 +947,32 @@ impl NativeStore {
         })
     }
 
-    fn warm_membership_key(
+    fn membership_collection_key(
         request: &Value,
         context: &Value,
     ) -> Result<String, SnapshotError> {
+        let binding = json!({
+            "thread_ids": request["thread_ids"],
+            "roots": request["roots"],
+            "direct_paths": request["direct_paths"],
+            "registry_generation": context["registry_generation"],
+            "admission": context["admission"],
+            "authority": context["authority"],
+        });
+        let canonical =
+            crate::ids::canonical_json(&binding).map_err(|error| invalid(error.to_string()))?;
+        Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
+    }
+
+    fn scoped_warm_revision(key: &str, membership: &WarmMembership) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"registered-warm-v1\0");
+        digest.update(key.as_bytes());
+        digest.update(membership.revision.as_bytes());
+        format!("{:x}", digest.finalize())
+    }
+
+    fn warm_membership_key(request: &Value, context: &Value) -> Result<String, SnapshotError> {
         let binding = json!({
             "thread_ids": request["thread_ids"],
             "roots": request["roots"],
@@ -1067,9 +1103,9 @@ impl NativeStore {
         }
         let since = active_since_ns(request)?;
         if !ids.is_empty() {
-            let key = Self::warm_membership_key(request, context)?;
+            let key = Self::membership_collection_key(request, context)?;
             let mut membership_limits = remaining;
-            let (membership, mut membership_reservation) = self.registered_membership(
+            let membership = self.membership_work(
                 &key,
                 request,
                 context,
@@ -1078,13 +1114,6 @@ impl NativeStore {
                 &mut membership_limits,
                 true,
             )?;
-            self.publish_warm_membership(
-                &key,
-                &membership,
-                context,
-                membership_reservation.as_mut(),
-            )?;
-            drop(membership_reservation);
             let members = Arc::clone(&membership.members);
             let sidechain_dirs = Arc::clone(&membership.sidechain_dirs);
             let (retained, mut reservation) = self.prepared_root_facts(
@@ -1712,58 +1741,6 @@ impl NativeStore {
         }
     }
 
-    fn registered_membership(
-        &self,
-        key: &str,
-        request: &Value,
-        context: &Value,
-        cancel: &Cancellation,
-        usage: &mut [u64; 20],
-        remaining: &mut WorkLimits,
-        revalidate: bool,
-    ) -> Result<(WarmMembership, Option<ProjectionReservation<'_>>), SnapshotError> {
-        let cached = self.lock_state().warm_memberships.get(key).cloned();
-        if let Some(cached) = cached {
-            let namespace_valid = self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)?;
-            let absences = if namespace_valid && revalidate {
-                self.sidechain_absences(cached.catalog, &cached.sidechain_dirs, context, cancel, remaining.deadline_unix_ms)?
-            } else { None };
-            if namespace_valid && (!revalidate
-                || self.validate_warm_membership(
-                    &cached.members,
-                    &cached.sidechain_dirs,
-                    context,
-                    cancel,
-                    remaining.deadline_unix_ms,
-                    absences.as_ref(),
-                )?)
-            {
-                if !self.catalog_membership_valid(cached.catalog, request, context, cancel, remaining)? {
-                    return Err(SnapshotError::new(Status::Changed, "registered catalog changed during member validation"));
-                }
-                return Ok((cached, None));
-            }
-            drop(absences);
-            self.lock_state().remove_warm_membership(key);
-            if namespace_valid {
-                if let Some((membership, reservation)) =
-                    self.refreshed_warm_membership(key, &cached, request, context, cancel, remaining)?
-                {
-                    return Ok((membership, Some(reservation)));
-                }
-            }
-        }
-        let (membership, reservation) =
-            self.build_warm_membership(key, request, context, cancel, usage, remaining)?;
-        if !membership.complete {
-            return Err(SnapshotError::new(
-                Status::Incomplete,
-                "registered membership is incomplete",
-            ));
-        }
-        Ok((membership, Some(reservation)))
-    }
-
     fn refreshed_warm_membership(
         &self,
         key: &str,
@@ -1867,233 +1844,36 @@ impl NativeStore {
         revision
     }
 
-    fn build_warm_membership(
-        &self,
-        key: &str,
-        request: &Value,
+    #[cfg(test)]
+    fn publish_warm_membership<'a>(
+        &'a self,
+        key: &String,
+        membership: &Arc<WarmMembership>,
         context: &Value,
-        cancel: &Cancellation,
-        usage: &mut [u64; 20],
-        remaining: &mut WorkLimits,
-    ) -> Result<(WarmMembership, ProjectionReservation<'_>), SnapshotError> {
-        let ids = request["thread_ids"]
-            .as_array()
-            .ok_or_else(|| invalid("missing registered thread ids"))?;
-        let roots = request["roots"]
-            .as_array()
-            .ok_or_else(|| invalid("missing registered roots"))?;
-        let direct = request["direct_paths"]
-            .as_array()
-            .ok_or_else(|| invalid("missing registered direct paths"))?;
-        let revision_len = 2 * <Sha256 as Digest>::output_size();
-        let mut reservation = self.reserve_projection(
-            context,
-            key.len() + size_of::<WarmMembership>() + revision_len,
-        )?;
-        #[cfg(test)]
-        self.warm_records.fetch_add(1, Ordering::Relaxed);
-        let since = active_since_ns(request)?;
-        let (located, _catalog_reservation, certificate) = if ids.is_empty() {
-            (HashMap::new(), None, None)
-        } else {
-            match self.catalog_access(
-                CatalogInput { ids, roots }, context, cancel, remaining, usage, CatalogMode::Locate,
-            )? {
-                CatalogResolution::Ready { paths, reservation, certificate } => (paths, Some(reservation), certificate),
-                CatalogResolution::Indexed | CatalogResolution::Pending(_) | CatalogResolution::Checked(_) => unreachable!("synchronous catalog lookup"),
+        reservation: &mut ProjectionReservation<'a>,
+    ) -> Result<(), SnapshotError> {
+        let slot = self.membership_slot(key, context, reservation)?;
+        let prior = {
+            let _state = self.lock_state();
+            let mut cell = slot.cell.lock().expect("registered membership");
+            match std::mem::replace(&mut *cell, MembershipCell::Busy) {
+                MembershipCell::Empty => None,
+                MembershipCell::Collected(prior) | MembershipCell::Positive(prior) => Some(prior),
+                MembershipCell::Pending(_) | MembershipCell::Busy => {
+                    panic!("test publication owns no in-flight work")
+                }
             }
         };
-        let mut members = Vec::new();
-        let mut seen = HashSet::new();
-        for path in ids
-            .iter()
-            .filter_map(Value::as_str)
-            .filter_map(|id| located.get(id).cloned())
-            .chain(direct.iter().filter_map(Value::as_str).map(PathBuf::from))
-        {
-            cancel.check(remaining.deadline_unix_ms)?;
-            let canonical = self.canonical_path(&path).map_err(io_error)?;
-            self.authority(context, Some(&canonical))?;
-            let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-            self.after_source_resolved(&path);
-            if !metadata.is_file() {
-                return Err(invalid("registered source must be a file"));
-            }
-            let stamp = SourceStamp::of(&metadata);
-            if seen.insert(stamp.identity) {
-                self.extend_projection_reservation(
-                    &mut reservation,
-                    context,
-                    vec_growth(&members, 1) + canonical.capacity(),
-                )?;
-                let predicted = vec_capacity_for(&members, 1);
-                members.push(PreparedSourceRef {
-                    path: canonical,
-                    stamp,
-                });
-                assert_eq!(members.capacity(), predicted);
-            }
-        }
-        let mut sidechain_dirs = Vec::new();
-        let mut examined = 0usize;
-        while examined < members.len() {
-            cancel.check(remaining.deadline_unix_ms)?;
-            let source = &members[examined];
-            let directory = sidechain_directory(
-                source
-                    .path
-                    .parent()
-                    .ok_or_else(|| invalid("registered source has no parent"))?,
-                source
-                    .path
-                    .file_stem()
-                    .ok_or_else(|| invalid("registered source has no stem"))?,
-            );
-            let canonical = match std::fs::canonicalize(&directory) {
-                Ok(canonical) => canonical,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    self.extend_projection_reservation(
-                        &mut reservation,
-                        context,
-                        vec_growth(&sidechain_dirs, 1) + directory.capacity(),
-                    )?;
-                    let predicted = vec_capacity_for(&sidechain_dirs, 1);
-                    sidechain_dirs.push((directory, None));
-                    assert_eq!(sidechain_dirs.capacity(), predicted);
-                    examined += 1;
-                    continue;
-                }
-                Err(error) => return Err(io_error(error)),
-            };
-            self.authority(context, Some(&canonical))?;
-            let directory_stamp = SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
-            self.extend_projection_reservation(
-                &mut reservation,
-                context,
-                vec_growth(&sidechain_dirs, 1) + canonical.as_os_str().len(),
-            )?;
-            let predicted = vec_capacity_for(&sidechain_dirs, 1);
-            sidechain_dirs.push((canonical.clone(), Some(directory_stamp)));
-            assert_eq!(sidechain_dirs.capacity(), predicted);
-            let mut children = Vec::new();
-            for entry in std::fs::read_dir(&canonical).map_err(io_error)? {
-                cancel.check(remaining.deadline_unix_ms)?;
-                if remaining.max_discovery_entries == 0 {
-                    return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "registered sidechain discovery budget exhausted",
-                    ));
-                }
-                remaining.max_discovery_entries -= 1;
-                usage[17] += 1;
-                let entry = entry.map_err(io_error)?;
-                let path = entry.path();
-                if path.extension().is_some_and(|extension| extension == "jsonl")
-                    && !entry.file_name().to_string_lossy().starts_with("._")
-                {
-                    children.push(path);
-                }
-            }
-            children.sort();
-            for path in children {
-                cancel.check(remaining.deadline_unix_ms)?;
-                let canonical = std::fs::canonicalize(&path).map_err(io_error)?;
-                self.authority(context, Some(&canonical))?;
-                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-                if !metadata.is_file() {
-                    return Err(invalid("registered sidechain must be a file"));
-                }
-                let stamp = SourceStamp::of(&metadata);
-                if seen.insert(stamp.identity) {
-                    self.extend_projection_reservation(
-                        &mut reservation,
-                        context,
-                        vec_growth(&members, 1) + canonical.capacity(),
-                    )?;
-                    let predicted = vec_capacity_for(&members, 1);
-                    members.push(PreparedSourceRef {
-                        path: canonical,
-                        stamp,
-                    });
-                    assert_eq!(members.capacity(), predicted);
-                }
-            }
-            examined += 1;
-        }
-        if !self.catalog_membership_valid(certificate, request, context, cancel, remaining)? {
-            return Err(SnapshotError::new(Status::Changed, "registered catalog changed during member preparation"));
-        }
-        if members.iter().filter(|member| active(member, since)).count() > remaining.max_sources {
-            return Err(SnapshotError::new(
-                Status::Incomplete,
-                "registered source bound exhausted",
-            ));
-        }
-        self.extend_projection_reservation(
-            &mut reservation,
+        self.restore_membership(
+            key,
+            &slot,
+            MembershipCell::Positive(Arc::clone(membership)),
+            prior,
+            Ok(Arc::clone(membership)),
             context,
-            arc_slice_bytes::<PreparedSourceRef>(members.len())
-                + arc_slice_bytes::<(SourceIdentity, usize)>(members.len())
-                + arc_slice_bytes::<(PathBuf, Option<SourceStamp>)>(sidechain_dirs.len()),
-        )?;
-        Ok((
-            WarmMembership {
-                catalog: certificate,
-                revision: Self::warm_membership_revision(&members),
-                positions: member_positions(&members),
-                members: members.into(),
-                sidechain_dirs: sidechain_dirs.into(),
-                complete: located.len() == ids.len(),
-                expires: now_ms().saturating_add(30 * 60_000),
-            },
             reservation,
-        ))
-    }
-
-    fn publish_warm_membership(
-        &self,
-        key: &String,
-        membership: &WarmMembership,
-        context: &Value,
-        reservation: Option<&mut ProjectionReservation<'_>>,
-    ) -> Result<(), SnapshotError> {
-        let mut state = self.lock_state();
-        Self::prune(&mut state);
-        let _catalog_pin = membership.catalog.map(|certificate| {
-            let slot = state.catalogs.get(certificate.key()).ok_or_else(||
-                SnapshotError::new(Status::Changed, "registered catalog was evicted before publication"))?;
-            let slot = Arc::clone(slot);
-            let cell = slot.cell.lock().expect("source catalog");
-            if !matches!(&*cell, CatalogCell::Idle(catalog) if certificate.matches(catalog)) {
-                return Err(SnapshotError::new(Status::Changed, "registered catalog changed before publication"));
-            }
-            drop(cell);
-            Ok(slot)
-        }).transpose()?;
-        if state.warm_memberships.contains_key(key) {
-            return Ok(());
-        }
-        if state.warm_memberships.len() >= 32 {
-            let oldest = state
-                .warm_memberships
-                .iter()
-                .min_by_key(|(_, membership)| membership.expires)
-                .map(|(key, _)| key.clone())
-                .expect("full warm membership cache");
-            state.remove_warm_membership(&oldest);
-        }
-        let additional = state.admission(key, membership, membership.anchors())
-            + state.warm_memberships.growth_for(key);
-        let covered = reservation
-            .as_ref()
-            .map_or(0, |reservation| additional.min(reservation.bytes));
-        self.admit_memory(&mut state, context, additional - covered)?;
-        if let Some(reservation) = reservation {
-            state.transient_bytes -= covered;
-            reservation.bytes -= covered;
-        }
-        state.insert_warm_membership(key.clone(), membership.clone());
-        Ok(())
+        )
+        .map(drop)
     }
 
     fn warm_registered(
@@ -2124,8 +1904,9 @@ impl NativeStore {
         }
         let start = number(request, "start_index")?;
         let key = Self::warm_membership_key(request, context)?;
-        let (membership, mut reservation) = self.registered_membership(
-            &key,
+        let collection_key = Self::membership_collection_key(request, context)?;
+        let membership = self.membership_work(
+            &collection_key,
             request,
             context,
             cancel,
@@ -2133,10 +1914,10 @@ impl NativeStore {
             &mut remaining,
             start == 0,
         )?;
-        self.publish_warm_membership(&key, &membership, context, reservation.as_mut())?;
-        drop(reservation);
         let members = &membership.members;
-        let membership_revision = &membership.revision;
+        let _scope_reservation =
+            self.reserve_projection(context, 2 * <Sha256 as Digest>::output_size())?;
+        let membership_revision = Self::scoped_warm_revision(&key, &membership);
         if start > members.len() {
             return Err(invalid("registered warming index exceeds membership"));
         }
@@ -2308,7 +2089,7 @@ impl NativeStore {
                 remaining.deadline_unix_ms,
                 None,
             )? {
-                self.lock_state().remove_warm_membership(&key);
+                self.lock_state().remove_warm_membership(&collection_key);
                 return Err(SnapshotError::new(
                     Status::Changed,
                     "registered warming membership changed",
