@@ -729,19 +729,27 @@ impl NativeStore {
             ) => Arc::ptr_eq(current, prior),
             _ => false,
         };
+        let old_bytes = slot.accounted.load(Ordering::Acquire);
         if let MembershipCell::Collected(membership) | MembershipCell::Positive(membership) = &cell
         {
             if !same_owner {
-                let growth = state.ledger.shared.growth(membership_anchors(membership));
-                if let Err(error) =
-                    self.extend_projection_reservation_in(&mut state, reservation, context, growth)
-                {
+                let additional = state
+                    .ledger
+                    .shared
+                    .admission(membership_anchors(membership))
+                    .saturating_sub(old_bytes)
+                    .saturating_sub(reservation.bytes);
+                if let Err(error) = self.extend_projection_reservation_in(
+                    &mut state,
+                    reservation,
+                    context,
+                    additional,
+                ) {
                     outcome = Err(error);
                     cell = MembershipCell::Empty;
                 }
             }
         }
-        let old_bytes = slot.accounted.load(Ordering::Acquire);
         let new_bytes = match &cell {
             MembershipCell::Pending(build) => build.heap_bytes(),
             MembershipCell::Empty | MembershipCell::Collected(_) | MembershipCell::Positive(_) => 0,
