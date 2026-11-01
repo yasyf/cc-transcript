@@ -3370,6 +3370,7 @@ fn default_startup_footprint_is_the_pre_sized_tables_and_the_default_registries(
     assert_eq!(
         store.retained_accounted_bytes(),
         size_of::<StoreState>()
+            + arc_mirror::<AtomicUsize>()
             + arc_mirror::<crate::snapshot_ledger::ReleaseQueue>()
             + MUTEX_STORAGE_MIRROR
             + PRE_SIZED_SLOTS
@@ -4416,6 +4417,9 @@ fn refused_prepared_query_page_releases_its_pending_source_waiter() {
                 .pending
                 .as_ref()
                 .expect("the parked page carries its pending source");
+            let PendingQuerySource::Native(pending) = pending else {
+                panic!("this page owns a native waiter")
+            };
             assert_eq!(state.waiters.len(), 1);
             assert!(state.waiters.contains_key(&pending.token));
         }
@@ -5155,6 +5159,7 @@ fn facts_cache_fixture(
     let request = graph_query(
         &graph,
         match need {
+            FactsNeed::Skills => unreachable!("this fixture sizes Index and Full facts"),
             FactsNeed::Index => missing_tool(),
             FactsNeed::Full => missing_override(),
         },
@@ -5329,9 +5334,12 @@ fn facts_bound_walk_for(snapshot: &Arc<TranscriptSnapshot>, need: FactsNeed) -> 
         events.push(OverrideEvent { text, tools });
     }
     NativeStore::audit_facts_bytes(&PreparedFacts {
-        inputs,
-        has_error: false,
+        evidence: crate::snapshot_prepared::PreparedEvidence::Index {
+            inputs,
+            has_error: false,
+        },
         overrides: match need {
+            FactsNeed::Skills => unreachable!("this oracle models Index and Full work"),
             FactsNeed::Index => OverrideFacts::Unloaded,
             FactsNeed::Full => OverrideFacts::Loaded(events),
         },
@@ -6199,10 +6207,7 @@ fn root_slice_for_need(mut fixture: Fixture, need: FactsNeed, observer: bool) ->
         fixture.request.insert("query", query);
     }
     assert_eq!(
-        FactsNeed::of_query(
-            &fixture.request["query"],
-            fixture.request.get("observers").and_then(Value::as_array),
-        ),
+        FactsNeed::of_query(&fixture.request["query"], fixture.request.get("observers"),),
         need,
     );
     fixture
@@ -6211,10 +6216,7 @@ fn root_slice_for_need(mut fixture: Fixture, need: FactsNeed, observer: bool) ->
 fn root_slice_prediction(fixture: &Fixture) -> usize {
     facts_bound_walk_for(
         &fixture.pins[0],
-        FactsNeed::of_query(
-            &fixture.request["query"],
-            fixture.request.get("observers").and_then(Value::as_array),
-        ),
+        FactsNeed::of_query(&fixture.request["query"], fixture.request.get("observers")),
     )
 }
 
@@ -6343,20 +6345,20 @@ fn patch_transcript(patch: &str, failed: bool) -> String {
 }
 
 fn assert_paths_twice(site: &str, facts: &PreparedFacts, paths: &[String]) {
-    let listed: Vec<&str> = facts.inputs["calls"][0][1]
+    let listed: Vec<&str> = facts.index_inputs()["calls"][0][1]
         .as_array()
         .unwrap()
         .iter()
         .map(|path| path.as_str().unwrap())
         .collect();
-    let edited: Vec<&str> = facts.inputs["edited_files"]
+    let edited: Vec<&str> = facts.index_inputs()["edited_files"]
         .as_array()
         .unwrap()
         .iter()
         .map(|file| file["path"].as_str().unwrap())
         .collect();
     assert_eq!(
-        facts.inputs["calls"][0][0].as_str(),
+        facts.index_inputs()["calls"][0][0].as_str(),
         Some("apply_patch"),
         "{site}"
     );
@@ -6472,7 +6474,10 @@ fn patch_facts_outgrow_their_entry_bytes_but_never_their_bound() {
             );
             if failed {
                 assert!(
-                    full.inputs["edited_files"].as_array().unwrap().is_empty(),
+                    full.index_inputs()["edited_files"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty(),
                     "{site}: a failed patch reached the edited files"
                 );
                 assert!(walked < bound, "{site}: walked={walked} bound={bound}");
@@ -7157,7 +7162,7 @@ fn user_text_with_tool_results_is_built_at_exact_capacity() {
     assert_eq!(
         NativeStore::audit_facts_bytes(&facts),
         arc_mirror::<PreparedFacts>()
-            + NativeStore::audit_value_bytes(&facts.inputs)
+            + NativeStore::audit_value_bytes(&facts.index_inputs())
             + events.capacity() * size_of::<OverrideEvent>()
             + text.len()
             + result.len()
@@ -13201,7 +13206,9 @@ fn predicate_queue_bound(fixture: &Fixture) -> (usize, usize) {
     let encoded = {
         let state = fixture.store.lock_state();
         let graph = state.prepared_graphs[graph_id].lock().unwrap();
-        sonic_rs::to_vec(&graph.root_facts.inputs).unwrap().len()
+        sonic_rs::to_vec(&graph.root_facts.index_inputs())
+            .unwrap()
+            .len()
     };
     let records = 2 * (4 * encoded) / crate::snapshot_codec::PREDICATE_INPUT_CHUNK_BYTES + 2;
     let framing = r#"{"calls":[],"commands":[],"edited_files":[],"skills":[]}"#.len();

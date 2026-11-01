@@ -1789,6 +1789,9 @@ pub fn prepare_facts(
 }
 
 pub fn facts_bound(snapshot: &TranscriptSnapshot, need: FactsNeed) -> usize {
+    if need == FactsNeed::Skills && snapshot.provider == crate::gateway::Provider::Codex {
+        return crate::snapshot_ledger::arc_bytes::<crate::snapshot_prepared::PreparedFacts>();
+    }
     let shape = snapshot.activity.shape();
     let slot = std::mem::size_of::<Value>();
     let pair = std::mem::size_of::<(Value, Value)>();
@@ -1812,7 +1815,7 @@ pub fn facts_bound(snapshot: &TranscriptSnapshot, need: FactsNeed) -> usize {
         + shape.skills * slot
         + shape.skill_bytes;
     match need {
-        FactsNeed::Index => index,
+        FactsNeed::Skills | FactsNeed::Index => index,
         FactsNeed::Full => {
             index
                 + pushed_capacity(snapshot.event_count) * event
@@ -1913,9 +1916,56 @@ fn prepare_facts_limited(
     let request = json!({"view":{"attachments":[],"selectors":selectors}});
     let mut work = Work::new(snapshot, limits, cancel);
     let range = selected_range(&mut work, &request)?;
+    if need == FactsNeed::Skills && snapshot.provider == crate::gateway::Provider::Codex {
+        cancel.check(limits.deadline_unix_ms)?;
+        let facts = crate::snapshot_prepared::PreparedFacts::skills(
+            crate::snapshot_prepared::SkillEvidence::Parsed { skills: Vec::new() },
+        );
+        snapshot_codec::write_json(
+            &mut OutputCounter {
+                remaining: max_fact_bytes,
+            },
+            facts.index_section(),
+            max_fact_bytes,
+        )
+        .map_err(|_| {
+            SnapshotError::new(Status::Incomplete, "prepared skills exceed source bound")
+        })?;
+        return Ok((facts, work.bytes, work.events));
+    }
     work.charge_range(range.clone())?;
-    let lift = lift_range(&mut work, &range, None)?;
+    let lift = lift_range(
+        &mut work,
+        &range,
+        (need == FactsNeed::Skills).then_some("Skill"),
+    )?;
     let session = view(&lift, &range, snapshot);
+    if need == FactsNeed::Skills {
+        let skills = session
+            .tool_calls()
+            .named("Skill")
+            .items()
+            .into_iter()
+            .filter_map(|use_| match &use_.call {
+                ToolCall::Skill(call) => Some(call.skill.to_owned()),
+                _ => None,
+            })
+            .collect();
+        let facts = crate::snapshot_prepared::PreparedFacts::skills(
+            crate::snapshot_prepared::SkillEvidence::Parsed { skills },
+        );
+        snapshot_codec::write_json(
+            &mut OutputCounter {
+                remaining: max_fact_bytes,
+            },
+            facts.index_section(),
+            max_fact_bytes,
+        )
+        .map_err(|_| {
+            SnapshotError::new(Status::Incomplete, "prepared skills exceed source bound")
+        })?;
+        return Ok((facts, work.bytes, work.events));
+    }
     let calls = session.tool_calls().items();
     let inputs = index_inputs(&calls);
     if snapshot_codec::write_json(
@@ -1933,21 +1983,20 @@ fn prepare_facts_limited(
         ));
     }
     let overrides = match need {
+        FactsNeed::Skills => unreachable!("Skills facts returned before Index preparation"),
         FactsNeed::Index => crate::snapshot_prepared::OverrideFacts::Unloaded,
         FactsNeed::Full => override_facts(&session, max_fact_bytes),
     };
-    let mut facts = crate::snapshot_prepared::PreparedFacts {
+    let facts = crate::snapshot_prepared::PreparedFacts::index(
         inputs,
-        has_error: session
+        session
             .tool_calls()
             .with_errors()
             .items()
             .iter()
             .any(|use_| use_.result.is_some_and(|result| result.is_error)),
         overrides,
-        accounted: 0,
-    };
-    facts.refresh_accounted();
+    );
     Ok((facts, work.bytes, work.events))
 }
 
