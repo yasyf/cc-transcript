@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"ops":[{"kind":"set_assignee","assignee":""}]}
+{"v":1,"lamport":5,"ops":[{"kind":"claim","assignee":"/root/cci_canonical_union_peer \u003ccci-canonical-union-peer@codex.local\u003e"}]}
