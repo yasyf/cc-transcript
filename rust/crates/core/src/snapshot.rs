@@ -14971,7 +14971,12 @@ mod tests {
             .lock()
             .unwrap();
         assert!(prepared.sources.is_empty());
-        assert_eq!(prepared.stamps.len(), 1);
+        assert_eq!(
+            std::iter::once(prepared.root.canonical_path.as_path())
+                .chain(prepared.sources.iter().map(|source| source.path.as_path()))
+                .count(),
+            1
+        );
         assert_eq!(state.counters[1], before);
     }
 
