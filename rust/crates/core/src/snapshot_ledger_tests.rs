@@ -2561,13 +2561,14 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
     };
     key + arc_mirror::<Mutex<PreparedGraph>>()
         + MUTEX_STORAGE_MIRROR
+        + arc_mirror::<PreparedGraphHeader>()
         + graph.claimant.capacity()
         + graph.registry_generation.capacity()
         + graph.admission.capacity()
         + graph.revision.capacity()
         + value_bytes(&graph.authority)
-        + value_bytes(&graph.root_handle)
-        + value_bytes(&graph.classifier)
+        + value_bytes(&graph.header.handle)
+        + value_bytes(&graph.header.classifier)
         + graph.root_slices.reserved_bytes()
         + graph
             .root_slices
@@ -2587,6 +2588,7 @@ fn published_graph_allocations(state: &StoreState, graph_id: &str, graph: &Prepa
         .expect("published graph key")
         + arc_mirror::<Mutex<PreparedGraph>>()
         + MUTEX_STORAGE_MIRROR
+        + arc_mirror::<PreparedGraphHeader>()
         + graph.registry_generation.capacity()
         + graph.admission.capacity()
         + graph.revision.capacity()
@@ -2597,8 +2599,8 @@ fn published_graph_allocations(state: &StoreState, graph_id: &str, graph: &Prepa
 
 fn moved_build_bytes(graph: &PreparedGraph) -> usize {
     graph.claimant.capacity()
-        + value_bytes(&graph.root_handle)
-        + value_bytes(&graph.classifier)
+        + value_bytes(&graph.header.handle)
+        + value_bytes(&graph.header.classifier)
         + graph
             .sources
             .iter()

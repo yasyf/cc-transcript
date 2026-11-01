@@ -663,6 +663,14 @@ impl SharedAllocations {
         *self.total(anchor.kind) += anchor.bytes;
     }
 
+    pub(crate) fn retain(&mut self, id: usize) {
+        self.work.tick(1);
+        self.owners
+            .get_mut(&id)
+            .expect("retained allocation is owned")
+            .owners += 1;
+    }
+
     pub(crate) fn release(&mut self, id: usize) {
         self.work.tick(1);
         let existing = self.owners.get_mut(&id).expect("balanced retained ledger");

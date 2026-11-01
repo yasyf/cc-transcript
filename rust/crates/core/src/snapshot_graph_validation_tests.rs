@@ -43,7 +43,7 @@ fn cache_warm923_validation_cancellation_stops_before_the_next_member() {
         !graph.validated,
         "WARM923_CANCELLED_VALIDATION_WAS_PUBLISHED"
     );
-    assert!(state.retained_source_owners.is_empty());
+    assert!(state.retained_graph_input_owners.is_empty());
     drop(graph);
     drop(state);
     assert_eq!(ledger(&store), audited(&store));
@@ -169,7 +169,7 @@ fn cache_warm923_member_metadata_does_not_hold_foreground_store_admission() {
 
 #[test]
 fn cache_warm923_validation_sources_remain_charged_after_graph_removal() {
-    let (_scenario, store, owner, graph) = warm923_validation_fixture(3);
+    let (_scenario, store, _owner, graph) = warm923_validation_fixture(3);
     let id = graph["graph_id"].as_str().unwrap().to_owned();
     let (weak_graph, weak_sources) = {
         let state = store.lock_state();
@@ -178,8 +178,21 @@ fn cache_warm923_validation_sources_remain_charged_after_graph_removal() {
         (Arc::downgrade(shared), Arc::downgrade(&graph.sources))
     };
     let before = ledger(&store);
-    let validation = store.borrow_prepared_graph_validation(&id, &owner).unwrap();
-    assert_eq!(store.lock_state().retained_source_owners.len(), 1);
+    let weak_header = Arc::downgrade(
+        &store.lock_state().prepared_graphs[&id]
+            .lock()
+            .unwrap()
+            .header,
+    );
+    let retained_before = ledger(&store);
+    traced(&store);
+    let validation = store.borrow_prepared_graph_validation(&id).unwrap();
+    assert!(traced(&store).is_empty());
+    assert_eq!(ledger(&store), retained_before);
+    let second = store.borrow_prepared_graph_validation(&id).unwrap();
+    assert!(traced(&store).is_empty());
+    assert_eq!(ledger(&store), retained_before);
+    assert_eq!(store.lock_state().retained_graph_input_owners.len(), 2);
     let removed = store.lock_state().remove_prepared_graph(&id).unwrap();
     drop(removed);
     assert!(
@@ -188,10 +201,16 @@ fn cache_warm923_validation_sources_remain_charged_after_graph_removal() {
     );
     assert!(weak_sources.upgrade().is_some());
     assert_eq!(ledger(&store), audited(&store));
-    assert!(store.lock_state().transient_bytes >= validation._reservation.bytes);
+    assert!(weak_header.upgrade().is_some());
     drop(validation);
+    assert!(weak_sources.upgrade().is_some());
+    assert!(weak_header.upgrade().is_some());
+    assert_eq!(store.lock_state().retained_graph_input_owners.len(), 1);
+    assert_eq!(ledger(&store), audited(&store));
+    drop(second);
     assert!(weak_sources.upgrade().is_none());
-    assert!(store.lock_state().retained_source_owners.is_empty());
+    assert!(weak_header.upgrade().is_none());
+    assert!(store.lock_state().retained_graph_input_owners.is_empty());
     assert_eq!(ledger(&store), audited(&store));
     assert!(ledger(&store)[TOTAL] < before[TOTAL]);
 }
@@ -213,7 +232,7 @@ fn cache_warm923_removed_graph_cannot_publish_validated_evidence() {
                 weak_graph.upgrade().is_none(),
                 "unlocked validation retained graph payload"
             );
-            assert_eq!(store.lock_state().retained_source_owners.len(), 1);
+            assert_eq!(store.lock_state().retained_graph_input_owners.len(), 1);
             assert_eq!(ledger(&store), audited(&store));
         }
     }));
@@ -228,7 +247,7 @@ fn cache_warm923_removed_graph_cannot_publish_validated_evidence() {
         "{response:?}"
     );
     assert!(removed.load(Ordering::Relaxed));
-    assert!(store.lock_state().retained_source_owners.is_empty());
+    assert!(store.lock_state().retained_graph_input_owners.is_empty());
     assert_eq!(ledger(&store), audited(&store));
 }
 
@@ -247,13 +266,13 @@ fn cache_warm923_root_positive_still_checks_the_last_member() {
     );
     assert_eq!(response["status"].as_str(), Some("changed"), "{response:?}");
     assert!(response["data"].is_null());
-    assert!(store.lock_state().retained_source_owners.is_empty());
+    assert!(store.lock_state().retained_graph_input_owners.is_empty());
     assert_eq!(ledger(&store), audited(&store));
 }
 
 #[test]
 fn cache_warm923_final_publication_rechecks_cancellation_context_revision_and_expiry() {
-    for fault in ["cancel", "context", "revision", "expiry", "root"] {
+    for fault in ["cancel", "context", "revision", "expiry", "root", "append"] {
         let (scenario, store, owner, graph) = warm923_validation_fixture(3);
         let id = graph["graph_id"].as_str().unwrap().to_owned();
         let weak_store = Arc::downgrade(&store);
@@ -270,6 +289,15 @@ fn cache_warm923_final_publication_rechecks_cancellation_context_revision_and_ex
                 }
                 if fault == "root" {
                     std::fs::write(&root, line("rewritten-root")).unwrap();
+                    return;
+                }
+                if fault == "append" {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&root)
+                        .unwrap()
+                        .write_all(line("appended-root").as_bytes())
+                        .unwrap();
                     return;
                 }
                 let store = weak_store.upgrade().unwrap();
@@ -296,7 +324,7 @@ fn cache_warm923_final_publication_rechecks_cancellation_context_revision_and_ex
         );
         let expected = match fault {
             "cancel" => "cancelled",
-            "root" => "changed",
+            "root" | "append" => "changed",
             _ => "stale_handle",
         };
         assert_eq!(
@@ -315,7 +343,7 @@ fn cache_warm923_final_publication_rechecks_cancellation_context_revision_and_ex
                 "{fault}: refused validation was published"
             );
         }
-        assert!(state.retained_source_owners.is_empty());
+        assert!(state.retained_graph_input_owners.is_empty());
         drop(state);
         assert_eq!(ledger(&store), audited(&store));
     }
