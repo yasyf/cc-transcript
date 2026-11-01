@@ -1059,14 +1059,6 @@ fn sidechain_dir_bytes(sidechain_dirs: &Arc<[(PathBuf, Option<SourceStamp>)]>) -
             .sum::<usize>()
 }
 
-fn stamp_bytes(stamps: &Vec<(PathBuf, SourceStamp)>) -> usize {
-    stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-        + stamps
-            .iter()
-            .map(|(path, _)| path.capacity())
-            .sum::<usize>()
-}
-
 fn task_bytes(task: &GraphTask) -> usize {
     match task {
         GraphTask::Visit {
@@ -1174,7 +1166,6 @@ struct PreparedGraph {
     root_facts: Arc<crate::snapshot_prepared::PreparedFacts>,
     root_slices: Table<String, Arc<crate::snapshot_prepared::PreparedFacts>>,
     revision: String,
-    stamps: Vec<(PathBuf, SourceStamp)>,
     validated: bool,
     sources: Arc<[PreparedSourceRef]>,
     sidechain_dirs: Arc<[(PathBuf, Option<SourceStamp>)]>,
@@ -2007,7 +1998,6 @@ impl Charge<String> for PreparedGraph {
             + value_bytes(&self.authority)
             + value_bytes(&self.root_handle)
             + value_bytes(&self.classifier)
-            + stamp_bytes(&self.stamps)
             + self.root_slices.reserved_bytes()
             + self.root_slices.keys().map(String::capacity).sum::<usize>()
     }
@@ -2194,6 +2184,8 @@ pub(crate) struct StoreState {
     #[cfg(test)]
     retained_owners: Vec<Weak<crate::snapshot_prepared::PreparedFacts>>,
     #[cfg(test)]
+    retained_source_owners: Vec<Weak<[PreparedSourceRef]>>,
+    #[cfg(test)]
     retained_append_owners: Vec<Weak<CompactCodexIndex>>,
 }
 
@@ -2270,6 +2262,8 @@ impl StoreState {
             audits: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
             retained_owners: Vec::new(),
+            #[cfg(test)]
+            retained_source_owners: Vec::new(),
             #[cfg(test)]
             retained_append_owners: Vec::new(),
         }
@@ -3181,6 +3175,22 @@ impl StoreState {
         }
     }
 
+    fn retained_sources<'a>(
+        &mut self,
+        store: &'a NativeStore,
+        sources: Arc<[PreparedSourceRef]>,
+    ) -> RetainedSources<'a> {
+        let anchor = sources_anchor(&sources);
+        self.ledger.shared.acquire(anchor);
+        #[cfg(test)]
+        self.retained_source_owners.push(Arc::downgrade(&sources));
+        RetainedSources {
+            store,
+            sources: Some(sources),
+            anchor,
+        }
+    }
+
     fn insert_prepared_graph(&mut self, graph_id: String, graph: Arc<Mutex<PreparedGraph>>) {
         self.prepared_graphs.reserve_for(&graph_id);
         let prepared = graph.lock().expect("prepared graph");
@@ -3420,6 +3430,8 @@ pub struct NativeStore {
     #[cfg(test)]
     read_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
+    graph_validation_hook: Mutex<Option<Arc<dyn Fn(&Path) + Send + Sync>>>,
+    #[cfg(test)]
     decode_hook: Mutex<Option<Arc<dyn Fn(&'static str) + Send + Sync>>>,
     #[cfg(test)]
     pin_hook: Mutex<Option<Arc<dyn Fn(&Value) -> Result<(), SnapshotError> + Send + Sync>>>,
@@ -3537,6 +3549,56 @@ impl Drop for FactReadClaim<'_> {
 struct RetainedFacts<'a> {
     store: &'a NativeStore,
     facts: Option<Arc<crate::snapshot_prepared::PreparedFacts>>,
+}
+
+struct RetainedSources<'a> {
+    store: &'a NativeStore,
+    sources: Option<Arc<[PreparedSourceRef]>>,
+    anchor: Anchor,
+}
+
+impl RetainedSources<'_> {
+    fn sources(&self) -> &Arc<[PreparedSourceRef]> {
+        self.sources
+            .as_ref()
+            .expect("retained sources are released once")
+    }
+}
+
+impl Drop for RetainedSources<'_> {
+    fn drop(&mut self) {
+        let mut state = self.store.lock_state();
+        let sources = self
+            .sources
+            .take()
+            .expect("retained sources are released once");
+        state.ledger.shared.release(self.anchor.id);
+        #[cfg(test)]
+        {
+            let registered = state
+                .retained_source_owners
+                .iter()
+                .position(|owner| std::ptr::addr_eq(owner.as_ptr(), Arc::as_ptr(&sources)))
+                .expect("retained sources are registered");
+            state.retained_source_owners.swap_remove(registered);
+        }
+        drop(sources);
+    }
+}
+
+struct PreparedRootValidation {
+    handle: Value,
+    classifier: Value,
+    stamp: SourceStamp,
+    deadline: u64,
+}
+
+struct PreparedGraphValidation<'a> {
+    sources: RetainedSources<'a>,
+    root: PreparedRootValidation,
+    revision: String,
+    validate_members: bool,
+    _reservation: ProjectionReservation<'a>,
 }
 
 impl RetainedFacts<'_> {
@@ -3925,6 +3987,8 @@ impl NativeStore {
             policies: Mutex::new(HashMap::new()),
             #[cfg(test)]
             read_hook: Mutex::new(None),
+            #[cfg(test)]
+            graph_validation_hook: Mutex::new(None),
             #[cfg(test)]
             decode_hook: Mutex::new(None),
             #[cfg(test)]

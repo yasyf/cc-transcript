@@ -12,12 +12,6 @@ impl NativeStore {
             + value_bytes(&graph.authority)
             + value_bytes(&graph.root_handle)
             + value_bytes(&graph.classifier)
-            + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-            + graph
-                .stamps
-                .iter()
-                .map(|(path, _)| path.capacity())
-                .sum::<usize>()
             + graph.root_slices.reserved_bytes()
             + graph
                 .root_slices
@@ -211,6 +205,10 @@ impl NativeStore {
                 slice_key(&graph.sidechain_dirs),
                 dirs(&graph.sidechain_dirs),
             );
+        }
+        for owner in &state.retained_source_owners {
+            let source = owner.upgrade().expect("retained graph sources are live");
+            add(slice_key(&source), sources(&source));
         }
         bytes
     }
@@ -685,7 +683,7 @@ impl NativeStore {
                 crate::snapshot_prepared_disk::DiskLookup::Miss => {
                     #[cfg(test)]
                     self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-miss" });
-                    
+
                 }
             }
         } else {
@@ -1112,11 +1110,6 @@ impl NativeStore {
             };
             let copied = shared.is_some() || since.is_some();
             let graph_id = self.token("prepared-graph");
-            let stamps_bytes = (others().count() + 1) * size_of::<(PathBuf, SourceStamp)>()
-                + root.canonical_path.as_os_str().len()
-                + others()
-                    .map(|source| source.path.as_os_str().len())
-                    .sum::<usize>();
             let buffers: usize = if copied {
                 arc_slice_bytes::<PreparedSourceRef>(others().count())
                     + others()
@@ -1138,7 +1131,6 @@ impl NativeStore {
                 PreparedGraph::key_charge(&graph_id)
                     + PREPARED_GRAPH_BYTES
                     + record
-                    + stamps_bytes
                     + buffers,
             )?;
             let sources: Arc<[PreparedSourceRef]> = if copied {
@@ -1148,17 +1140,12 @@ impl NativeStore {
             } else {
                 Arc::clone(&members)
             };
-            let mut stamps = Vec::with_capacity(sources.len() + 1);
-            stamps.push((root.canonical_path.clone(), root.stamp));
-            stamps.extend(
-                sources
-                    .iter()
-                    .map(|source| (source.path.clone(), source.stamp)),
-            );
             let mut digest = Sha256::new();
-            for (path, stamp) in &stamps {
-                digest.update(path.as_os_str().as_encoded_bytes());
-                digest.update(stamp.revision().as_bytes());
+            digest.update(root.canonical_path.as_os_str().as_encoded_bytes());
+            digest.update(root.stamp.revision().as_bytes());
+            for source in sources.iter() {
+                digest.update(source.path.as_os_str().as_encoded_bytes());
+                digest.update(source.stamp.revision().as_bytes());
             }
             let revision = format!("{:x}", digest.finalize());
             let work = self.lock_state().ledger.shared.work().clone();
@@ -1173,7 +1160,6 @@ impl NativeStore {
                 root_facts: Arc::clone(retained.facts()),
                 root_slices: Table::new(work),
                 revision: revision.clone(),
-                stamps,
                 validated: false,
                 sources,
                 sidechain_dirs,
@@ -1618,7 +1604,6 @@ impl NativeStore {
             root_facts: build.root_facts,
             root_slices: Table::new(work),
             revision: revision.clone(),
-            stamps: build.stamps,
             validated: false,
             sources: build.sources.into(),
             sidechain_dirs: build.sidechain_dirs.into(),
@@ -2360,24 +2345,34 @@ impl NativeStore {
         remaining: &mut WorkLimits,
         usage: &mut [u64; 20],
     ) -> Result<(), SnapshotError> {
-        let (handle, classifier, stamp, deadline) = {
+        let root = {
             let graph = graph.lock().expect("prepared graph");
-            (
-                graph.root_handle.clone(),
-                graph.classifier.clone(),
-                graph.root.stamp,
-                graph.remaining.deadline_unix_ms,
-            )
+            PreparedRootValidation {
+                handle: graph.root_handle.clone(),
+                classifier: graph.classifier.clone(),
+                stamp: graph.root.stamp,
+                deadline: graph.remaining.deadline_unix_ms,
+            }
         };
-        let scope = self.renew_scope_for_work(&handle, context, deadline)?;
-        let root = scope.snapshot;
-        let current = SourceStamp::of(&std::fs::metadata(&root.canonical_path).map_err(|_| {
+        self.validate_prepared_root_fields(&root, context, remaining, usage)
+    }
+
+    fn validate_prepared_root_fields(
+        &self,
+        root: &PreparedRootValidation,
+        context: &Value,
+        remaining: &mut WorkLimits,
+        usage: &mut [u64; 20],
+    ) -> Result<(), SnapshotError> {
+        let scope = self.renew_scope_for_work(&root.handle, context, root.deadline)?;
+        let snapshot = scope.snapshot;
+        let current = SourceStamp::of(&std::fs::metadata(&snapshot.canonical_path).map_err(|_| {
             SnapshotError::new(Status::Changed, "prepared graph root disappeared")
         })?)
-        .viewed_as(stamp);
-        if root.stamp != stamp
-            || current != stamp && !self.extends_prefix(&root, remaining, usage)?
-            || !classifier_eq(&classifier, &scope.classifier)?
+        .viewed_as(root.stamp);
+        if snapshot.stamp != root.stamp
+            || current != root.stamp && !self.extends_prefix(&snapshot, remaining, usage)?
+            || !classifier_eq(&root.classifier, &scope.classifier)?
         {
             return Err(SnapshotError::new(
                 Status::Changed,
@@ -2385,6 +2380,130 @@ impl NativeStore {
             ));
         }
         Ok(())
+    }
+
+    fn borrow_prepared_graph_validation(
+        &self,
+        token: &str,
+        context: &Value,
+    ) -> Result<PreparedGraphValidation<'_>, SnapshotError> {
+        let mut reservation = ProjectionReservation { store: self, bytes: 0 };
+        let mut state = self.lock_state();
+        let shared = state.prepared_graphs.get(token).cloned().ok_or_else(|| {
+            SnapshotError::new(Status::StaleHandle, "prepared graph expired")
+        })?;
+        let graph = shared.lock().expect("prepared graph");
+        let bytes = value_bytes(&graph.root_handle)
+            + value_bytes(&graph.classifier)
+            + graph.revision.len();
+        drop(graph);
+        self.extend_projection_reservation_in(&mut state, &mut reservation, context, bytes)?;
+        let graph = shared.lock().expect("prepared graph");
+        let root = PreparedRootValidation {
+            handle: graph.root_handle.clone(),
+            classifier: graph.classifier.clone(),
+            stamp: graph.root.stamp,
+            deadline: graph.remaining.deadline_unix_ms,
+        };
+        let revision = graph.revision.clone();
+        let validate_members = !graph.validated;
+        let sources = state.retained_sources(self, Arc::clone(&graph.sources));
+        Ok(PreparedGraphValidation { sources, root, revision, validate_members, _reservation: reservation })
+    }
+
+    fn validate_prepared_graph_identity(
+        graph: &PreparedGraph,
+        handle: &Value,
+        context: &Value,
+    ) -> Result<(), SnapshotError> {
+        if graph.claimant != str_field(context, "claimant")?
+            || graph.registry_generation != str_field(context, "registry_generation")?
+            || graph.admission != str_field(context, "admission")?
+            || graph.authority != context["authority"]
+        {
+            return Err(SnapshotError::new(Status::StaleHandle, "prepared graph context differs"));
+        }
+        if graph.revision != str_field(handle, "revision")?
+            || handle["complete"].as_bool() != Some(true)
+        {
+            return Err(SnapshotError::new(Status::StaleHandle, "prepared graph revision differs"));
+        }
+        Ok(())
+    }
+
+    fn checked_prepared_graph(
+        &self,
+        token: &str,
+        handle: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        remaining: &mut WorkLimits,
+        usage: &mut [u64; 20],
+    ) -> Result<Arc<Mutex<PreparedGraph>>, SnapshotError> {
+        let mut validation = self.borrow_prepared_graph_validation(token, context)?;
+        self.validate_prepared_root_fields(&validation.root, context, remaining, usage)?;
+        {
+            let state = self.lock_state();
+            let shared = state.prepared_graphs.get(token).ok_or_else(|| {
+                SnapshotError::new(Status::StaleHandle, "prepared graph expired")
+            })?;
+            let graph = shared.lock().expect("prepared graph");
+            Self::validate_prepared_graph_identity(&graph, handle, context)?;
+            if !Arc::ptr_eq(&graph.sources, validation.sources.sources())
+                || graph.revision != validation.revision
+                || graph.root.stamp != validation.root.stamp
+                || graph.root_handle != validation.root.handle
+                || !classifier_eq(&graph.classifier, &validation.root.classifier)?
+            {
+                return Err(SnapshotError::new(Status::StaleHandle, "prepared graph changed during validation"));
+            }
+            validation.validate_members = !graph.validated;
+        }
+        if validation.validate_members {
+            for source in validation.sources.sources().iter().filter(|source| {
+                source.stamp.identity.file() != validation.root.stamp.identity.file()
+            }) {
+                cancel.check(remaining.deadline_unix_ms)?;
+                self.authority(context, Some(&source.path))?;
+                let current = std::fs::metadata(&source.path).map_err(|_| {
+                    SnapshotError::new(Status::Changed, "prepared graph source disappeared")
+                })?;
+                #[cfg(test)]
+                {
+                    let hook = self.graph_validation_hook.lock().expect("graph validation hook").clone();
+                    if let Some(hook) = hook { hook(&source.path); }
+                }
+                if SourceStamp::of(&current) != source.stamp {
+                    return Err(SnapshotError::new(Status::Changed, "prepared graph source changed"));
+                }
+            }
+            cancel.check(remaining.deadline_unix_ms)?;
+            self.validate_prepared_root_fields(&validation.root, context, remaining, usage)?;
+        }
+        cancel.check(remaining.deadline_unix_ms)?;
+        let state = self.lock_state();
+        let shared = state.prepared_graphs.get(token).cloned().ok_or_else(|| {
+            SnapshotError::new(Status::StaleHandle, "prepared graph expired")
+        })?;
+        let mut graph = shared.lock().expect("prepared graph");
+        Self::validate_prepared_graph_identity(&graph, handle, context)?;
+        if !Arc::ptr_eq(&graph.sources, validation.sources.sources())
+            || graph.revision != validation.revision
+            || graph.root.stamp != validation.root.stamp
+            || graph.root_handle != validation.root.handle
+            || !classifier_eq(&graph.classifier, &validation.root.classifier)?
+        {
+            return Err(SnapshotError::new(Status::StaleHandle, "prepared graph changed during validation"));
+        }
+        if graph.expires <= now_ms() {
+            return Err(SnapshotError::new(Status::StaleHandle, "prepared graph expired"));
+        }
+        cancel.check(remaining.deadline_unix_ms)?;
+        if validation.validate_members { graph.validated = true; }
+        drop(graph);
+        drop(state);
+        drop(validation);
+        Ok(shared)
     }
 
     fn prepared_query_page(
@@ -2711,51 +2830,9 @@ impl NativeStore {
             .cloned()
             .ok_or_else(|| SnapshotError::new(Status::StaleHandle, "prepared graph expired"))?;
         let mut bounds = limits(request)?;
-        self.validate_prepared_root(&shared, context, &mut bounds, usage)?;
-        let mut graph = shared.lock().expect("prepared graph");
-        if graph.claimant != str_field(context, "claimant")?
-            || graph.registry_generation != str_field(context, "registry_generation")?
-            || graph.admission != str_field(context, "admission")?
-            || graph.authority != context["authority"]
-        {
-            return Err(SnapshotError::new(
-                Status::StaleHandle,
-                "prepared graph context differs",
-            ));
-        }
-        if graph.revision != str_field(handle, "revision")?
-            || handle["complete"].as_bool() != Some(true)
-        {
-            return Err(SnapshotError::new(
-                Status::StaleHandle,
-                "prepared graph revision differs",
-            ));
-        }
-        if !graph.validated {
-            for (path, stamp) in graph
-                .stamps
-                .iter()
-                .filter(|(_, stamp)| stamp.identity.file() != graph.root.stamp.identity.file())
-            {
-                self.authority(context, Some(path))?;
-                let current = std::fs::metadata(path).map_err(|_| {
-                    SnapshotError::new(Status::Changed, "prepared graph source disappeared")
-                })?;
-                if SourceStamp::of(&current) != *stamp {
-                    return Err(SnapshotError::new(
-                        Status::Changed,
-                        "prepared graph source changed",
-                    ));
-                }
-            }
-            graph.validated = true;
-        }
-        if graph.expires <= now_ms() {
-            return Err(SnapshotError::new(
-                Status::StaleHandle,
-                "prepared graph expired",
-            ));
-        }
+        drop(shared);
+        let shared = self.checked_prepared_graph(token, handle, context, cancel, &mut bounds, usage)?;
+        let graph = shared.lock().expect("prepared graph");
         let query = request
             .get("query")
             .ok_or_else(|| invalid("missing prepared graph query"))?;

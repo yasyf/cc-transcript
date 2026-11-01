@@ -2568,12 +2568,6 @@ fn constructed_graph_bytes(state: &StoreState, graph_id: &str, graph: &PreparedG
         + value_bytes(&graph.authority)
         + value_bytes(&graph.root_handle)
         + value_bytes(&graph.classifier)
-        + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-        + graph
-            .stamps
-            .iter()
-            .map(|(path, _)| path.capacity())
-            .sum::<usize>()
         + graph.root_slices.reserved_bytes()
         + graph
             .root_slices
@@ -2605,12 +2599,6 @@ fn moved_build_bytes(graph: &PreparedGraph) -> usize {
     graph.claimant.capacity()
         + value_bytes(&graph.root_handle)
         + value_bytes(&graph.classifier)
-        + graph.stamps.capacity() * size_of::<(PathBuf, SourceStamp)>()
-        + graph
-            .stamps
-            .iter()
-            .map(|(path, _)| path.capacity())
-            .sum::<usize>()
         + graph
             .sources
             .iter()
@@ -10143,7 +10131,8 @@ fn sidechain_directories_are_built_at_exact_capacity() {
         let graph = state.prepared_graphs[&graph_id].lock().unwrap();
         assert_exact_sidechain_directories(
             "direct build",
-            graph.stamps.iter().map(|(path, _)| path.as_path()),
+            std::iter::once(graph.root.canonical_path.as_path())
+                .chain(graph.sources.iter().map(|source| source.path.as_path())),
             &graph.sidechain_dirs,
         );
     }
@@ -14677,3 +14666,5 @@ fn an_oversized_text_source_upgrades_to_exceeded_on_demand() {
     assert_eq!(fixture.store.prepared_disk.stats().writes, writes + 1);
     fixture.store.assert_conserved();
 }
+
+include!("snapshot_graph_validation_tests.rs");
