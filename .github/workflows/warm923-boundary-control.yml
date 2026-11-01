@@ -1,0 +1,88 @@
+name: Warm923 graph boundary control
+
+on:
+  push:
+    branches: [diagnostic/warm923-boundary-control]
+
+permissions:
+  contents: read
+
+jobs:
+  paired-native:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record immutable sources and toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/warm923-proof"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/warm923-proof/definition.txt"
+          rustc --version --verbose > "$RUNNER_TEMP/warm923-proof/toolchain.txt"
+          echo '07b602bd3c1ed01e63318b37ea5b260ffa634d32153da54b438899b0d382aa6a  tests/testdata/warm923-before-test-seam.patch' | sha256sum --check
+      - name: Prove original boundary failures
+        id: before
+        continue-on-error: true
+        run: |
+          before="$RUNNER_TEMP/warm923-before"
+          git fetch --no-tags --depth=1 origin 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          git worktree add --detach "$before" 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          test "$(git -C "$before" rev-parse HEAD)" = 52cacb24466ee3cc1263c88bf677cd9b9a703672
+          test "$(git -C "$before" rev-parse HEAD^{tree})" = 35dd626ccbfbb1be914c9bce7b514bafb4524fbb
+          git -C "$before" diff --exit-code
+          git -C "$before" rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/warm923-proof/before-source.txt"
+          git -C "$before" apply --check "$GITHUB_WORKSPACE/tests/testdata/warm923-before-test-seam.patch"
+          git -C "$before" apply "$GITHUB_WORKSPACE/tests/testdata/warm923-before-test-seam.patch"
+          cd "$before"
+          set +e
+          cargo test --locked -p cc-transcript-core --no-default-features --lib cache_warm923_ -- --nocapture --test-threads=1 > "$RUNNER_TEMP/warm923-proof/before.log" 2>&1
+          code=$?
+          set -e
+          echo "$code" > "$RUNNER_TEMP/warm923-proof/before-exit.txt"
+          test "$code" -ne 0
+          grep -F 'running 2 tests' "$RUNNER_TEMP/warm923-proof/before.log"
+          grep -F 'test result: FAILED. 0 passed; 2 failed;' "$RUNNER_TEMP/warm923-proof/before.log"
+          grep -F 'WARM923_VALIDATION_KEPT_SCANNING_AFTER_CANCEL' "$RUNNER_TEMP/warm923-proof/before.log"
+          grep -F 'WARM923_MEMBER_METADATA_HELD_GRAPH_LOCK' "$RUNNER_TEMP/warm923-proof/before.log"
+          git apply --reverse "$GITHUB_WORKSPACE/tests/testdata/warm923-before-test-seam.patch"
+          test -z "$(git status --porcelain)"
+      - uses: actions/checkout@v7
+        if: ${{ !cancelled() }}
+        with:
+          ref: e59386e149b92828e22e362a1455d061bc2a9ab4
+          path: fixed
+          persist-credentials: false
+      - name: Prove fixed boundary and ownership controls
+        id: fixed
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        working-directory: fixed
+        run: |
+          test "$(git rev-parse HEAD)" = e59386e149b92828e22e362a1455d061bc2a9ab4
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/warm923-proof/fixed-source.txt"
+          set +e
+          cargo test --locked -p cc-transcript-core --no-default-features --lib cache_warm923_ -- --nocapture --test-threads=1 > "$RUNNER_TEMP/warm923-proof/fixed.log" 2>&1
+          code=$?
+          set -e
+          echo "$code" > "$RUNNER_TEMP/warm923-proof/fixed-exit.txt"
+          test "$code" -eq 0
+          grep -F 'running 6 tests' "$RUNNER_TEMP/warm923-proof/fixed.log"
+          grep -F 'test result: ok. 6 passed; 0 failed;' "$RUNNER_TEMP/warm923-proof/fixed.log"
+      - name: Require both actual grades
+        if: ${{ !cancelled() }}
+        env:
+          BEFORE_OUTCOME: ${{ steps.before.outcome }}
+          FIXED_OUTCOME: ${{ steps.fixed.outcome }}
+        run: |
+          test "$BEFORE_OUTCOME" = success
+          test "$FIXED_OUTCOME" = success
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: warm923-boundary-${{ github.sha }}
+          path: ${{ runner.temp }}/warm923-proof
+          if-no-files-found: error
