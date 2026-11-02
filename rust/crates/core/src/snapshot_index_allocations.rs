@@ -296,13 +296,13 @@ impl AllocationSet {
         let state = self.registry.state.lock().expect("allocation registry");
         let count = self.len().saturating_add(inserts);
         let width = size_of::<usize>() + size_of::<Arc<AllocationOwner>>() + 4 * size_of::<usize>();
-        let nodes = (count.saturating_mul(8) + 64)
-            .saturating_mul(width)
-            .saturating_add(
-                inserts
-                    .saturating_mul(count.max(1).ilog2() as usize + 4)
-                    .saturating_mul(64 * width),
-            );
+        let bound = (count.saturating_mul(8) + 64).saturating_mul(width);
+        let nodes = bound.saturating_add(
+            inserts
+                .saturating_mul(count.max(1).ilog2() as usize + 4)
+                .saturating_mul(64 * width)
+                .min(bound),
+        );
         let registry = (arc_bytes::<Registry>() + MUTEX_STORAGE_BYTES)
             .saturating_add(
                 state

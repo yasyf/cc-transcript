@@ -174,12 +174,14 @@ impl<K: Ord + Clone + Borrow<str>, V: Clone> Tree<K, V> {
             return 0;
         }
         let count = self.len().saturating_add(inserts);
-        Self::metadata_bound(count, self.max_key_bytes).saturating_add(
+        let bound = Self::metadata_bound(count, self.max_key_bytes);
+        bound.saturating_add(
             inserts
                 .saturating_mul(count.max(1).ilog2() as usize + 4)
                 .saturating_mul(
                     64 * (size_of::<K>() + size_of::<Counted<V>>() + 4 * size_of::<usize>()),
-                ),
+                )
+                .min(bound),
         )
     }
 }
@@ -266,10 +268,12 @@ impl<T: Clone> Vector<T> {
             return 0;
         }
         let count = self.len().saturating_add(inserts);
-        Self::metadata_bound(count).saturating_add(
+        let bound = Self::metadata_bound(count);
+        bound.saturating_add(
             inserts
                 .saturating_mul(count.max(1).ilog2() as usize + 4)
-                .saturating_mul(256 * (size_of::<Counted<T>>() + 4 * size_of::<usize>())),
+                .saturating_mul(256 * (size_of::<Counted<T>>() + 4 * size_of::<usize>()))
+                .min(bound),
         )
     }
     pub(crate) fn partition_point(&self, mut predicate: impl FnMut(&T) -> bool) -> usize {
