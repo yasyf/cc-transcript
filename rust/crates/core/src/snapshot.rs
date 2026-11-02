@@ -22127,7 +22127,7 @@ mod tests {
             );
         }
         let source = Source::new(&contents);
-        let store = NativeStore::new(&json!({"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":2*1024*1024,"max_entry_bytes":64*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let owner = context("a");
         let request = json!({"schema":SCHEMA,"id":"request","operation":"acquire","path":source.path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},
             "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":8*1024*1024,"max_source_read_bytes":8*1024*1024,"max_events":4096,"max_items":4096,"max_output_bytes":8*1024*1024,"max_discovery_entries":1000,"max_sources":100}});
