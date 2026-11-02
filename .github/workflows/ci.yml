@@ -326,6 +326,17 @@ jobs:
         run: |
           uv venv .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
+      - name: Test installed registered review boundary
+        run: |
+          set -euo pipefail
+          wheel_python="${GITHUB_WORKSPACE:?}/.wheel-smoke/bin/python"
+          probe_root="${RUNNER_TEMP:?}/registered-review-installed"
+          uv pip install --python "$wheel_python" --only-binary :all: pytest orjson
+          mkdir -p "$probe_root/tests"
+          cp tests/test_registered_review.py tests/test_snapshots.py "$probe_root/tests/"
+          touch "$probe_root/tests/__init__.py"
+          cd "$probe_root"
+          "$wheel_python" -I -B -m pytest -c /dev/null tests/test_registered_review.py -x -s --tb=long
       - name: Verify distribution contents and installed NLP APIs
         run: |
           .wheel-smoke/bin/python -I scripts/check_distribution.py dist > distribution-proof.json
