@@ -240,9 +240,11 @@ impl NativeStore {
             .as_ref()
             .map_or(0, RegisteredReviewInput::accounted_bytes);
         if let Some(input) = &input {
-            assert!(state
-                .cache_order
-                .remove(&(input.touched, CacheOwner::Review(*epoch))));
+            assert!(
+                state
+                    .cache_order
+                    .remove(&(input.touched, CacheOwner::Review(*epoch)))
+            );
         }
         state.transient_bytes += bytes;
         (input, ProjectionReservation { store: self, bytes })
@@ -262,9 +264,11 @@ impl NativeStore {
         self.admit_memory(&mut state, context, additional - covered)?;
         state.review_inputs.reserve_for(&key);
         input.touched = state.next_cache_touch();
-        assert!(state
-            .cache_order
-            .insert((input.touched, CacheOwner::Review(key))));
+        assert!(
+            state
+                .cache_order
+                .insert((input.touched, CacheOwner::Review(key)))
+        );
         assert!(state.review_inputs.insert(key, input).is_none());
         state.transient_bytes -= covered;
         reservation.bytes -= covered;
@@ -419,6 +423,18 @@ impl NativeStore {
             + vec_reallocation_bound(&input.model_events, 1)
             + vec_reallocation_bound(&input.hook_markers, 1)
             + map_reallocation_bound(&input.digests, entry.tool_uses().count())
+            + input.activity.append_key_reservation_bytes(
+                1,
+                entry.tool_results().count(),
+                entry
+                    .meta()
+                    .map_or(0, |meta| arc_slice_bytes::<u8>(meta.uuid.len())),
+                entry
+                    .tool_results()
+                    .map(|result| arc_slice_bytes::<u8>(result.tool_use_id.len()))
+                    .max()
+                    .unwrap_or(0),
+            )
             + input.contexts.append_bound(entry)
             + input.facts.append_bound(entry)
             + heap * 10
@@ -890,7 +906,7 @@ impl NativeStore {
                             && (error.reason == "source_read_limit"
                                 || error.reason.contains("budget")) =>
                     {
-                        break
+                        break;
                     }
                     Err(error) => return Err(error.into()),
                 };
@@ -1044,6 +1060,7 @@ impl NativeStore {
                         &mut reservation,
                         input.accounted_bytes() + payload_bytes + bytes.capacity(),
                     )?;
+                    input.preparation_decoded += bytes.len();
                     budget.commit_parse()?;
                     let mut entries = entries.into_iter();
                     let entry = entries.next().expect("recorded Claude review event");

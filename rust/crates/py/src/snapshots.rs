@@ -347,6 +347,17 @@ impl NativeSnapshotStore {
         .map_err(error)
     }
 
+    #[staticmethod]
+    fn new_agent(py: Python<'_>, config_json: &str) -> PyResult<Self> {
+        py.detach(|| {
+            let config = validated(config_json, &SCHEMAS.config)?;
+            NativeStore::new_agent(&config).map(|inner| Self {
+                inner: Arc::new(inner),
+            })
+        })
+        .map_err(error)
+    }
+
     fn default_registry_generation(&self) -> String {
         self.inner.default_registry_generation()
     }
@@ -384,6 +395,22 @@ impl NativeSnapshotStore {
             let request = validated(request_json, &SCHEMAS.request)?;
             let context = validated(context_json, &SCHEMAS.context)?;
             let response = self.inner.request(&request, &context, &cancel.inner);
+            snapshot_codec::encode(&response, MAX_INPUT_BYTES)
+        })
+        .map_err(error)
+    }
+
+    fn request_agent(
+        &self,
+        py: Python<'_>,
+        request_json: &str,
+        context_json: &str,
+        cancel: &SnapshotCancellation,
+    ) -> PyResult<String> {
+        py.detach(|| {
+            let request = validated(request_json, &SCHEMAS.request)?;
+            let context = validated(context_json, &SCHEMAS.context)?;
+            let response = self.inner.request_agent(&request, &context, &cancel.inner);
             snapshot_codec::encode(&response, MAX_INPUT_BYTES)
         })
         .map_err(error)

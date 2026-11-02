@@ -454,3 +454,23 @@ fn registered_review_codex_adjacent_echo_reuses_untouched_prefix_at_32_and_10000
         println!("REGISTERED_REVIEW_CODEX_ECHO N={count} append={} source_read={} callbacks=2 warm_read=0", append.len(), changed.progress.source_bytes);
     }
 }
+
+#[test]
+fn registered_review_sparse_question_payload_decode_usage_includes_affected_old_bytes() {
+    let result = sonic_rs::to_string(&json!({"type":"user","sessionId":"s","uuid":"answer","timestamp":"2026-11-02T00:00:00Z","toolUseResult":{"answers":{"Which?":"A"}},"message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"answer"}]}})).unwrap();
+    let question = sonic_rs::to_string(&json!({"type":"assistant","sessionId":"s","uuid":"ask","timestamp":"2026-11-02T00:00:01Z","message":{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"q","name":"AskUserQuestion","input":{"questions":[{"question":"Which?","header":"choice","multiSelect":false,"options":[{"label":"A"},{"label":"B"}]}]}}]}})).unwrap();
+    let contents = format!("{result}\n{question}\n");
+    let source = Source::new(&contents);
+    let store = NativeStore::new(&json!({})).unwrap();
+    let spec = registered_review_spec();
+    let read = registered_review_read(&store, &source.path, Arc::clone(&spec));
+    assert!(read.complete);
+    assert_eq!(read.value, registered_reference(&source, &spec));
+    assert_eq!(
+        read.preparation_usage["bytes_decoded"].as_u64(),
+        Some((result.len() * 2 + question.len()) as u64)
+    );
+    let warm = registered_review_read(&store, &source.path, spec);
+    assert_eq!(warm.preparation_usage["bytes_decoded"].as_u64(), Some(0));
+    assert_eq!(warm.progress.source_bytes, 0);
+}

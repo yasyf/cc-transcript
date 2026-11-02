@@ -1,3 +1,4 @@
+use crate::snapshot_index_allocations::RegistryWitness;
 use std::alloc::Layout;
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
@@ -243,6 +244,9 @@ pub(crate) fn arc_slice_bytes<T>(len: usize) -> usize {
 pub enum LedgerEvent {
     Generation(usize),
     Chunk(usize),
+    IndexAllocation(usize, usize),
+    IndexRegistry(usize),
+    UnpublishedLoad(usize),
 }
 
 #[derive(Default)]
@@ -640,6 +644,7 @@ struct Shared {
     owners: u32,
     bytes: usize,
     kind: AnchorKind,
+    registry: Option<RegistryWitness>,
 }
 
 pub(crate) struct SharedAllocations {
@@ -723,9 +728,78 @@ impl SharedAllocations {
                 owners: 1,
                 bytes: anchor.bytes,
                 kind: anchor.kind,
+                registry: None,
             },
         );
         *self.total(anchor.kind) += anchor.bytes;
+    }
+
+    pub(crate) fn acquire_index_owner(&mut self, allocation: (usize, usize)) {
+        self.acquire(Anchor::indexes(allocation));
+    }
+
+    pub(crate) fn registry_growth_bytes(&self, allocation: (usize, usize)) -> usize {
+        self.owners
+            .get(&allocation.0)
+            .map_or(0, |owner| allocation.1.saturating_sub(owner.bytes))
+    }
+
+    pub(crate) fn upsert_index_registry(
+        &mut self,
+        allocation: (usize, usize),
+        witness: RegistryWitness,
+    ) -> usize {
+        let (id, bytes) = allocation;
+        if let Some(existing) = self.owners.get_mut(&id) {
+            assert_eq!(existing.kind, AnchorKind::Indexes);
+            assert_eq!(existing.owners, 1, "registry lifetime owner");
+            assert!(existing.registry.is_some(), "registry allocation identity");
+            let bytes = bytes.max(existing.bytes);
+            self.indexes += bytes - existing.bytes;
+            existing.bytes = bytes;
+            bytes
+        } else {
+            self.acquire(Anchor::indexes(allocation));
+            self.owners
+                .get_mut(&id)
+                .expect("registered index registry")
+                .registry = Some(witness);
+            bytes
+        }
+    }
+
+    pub(crate) fn settle_existing_index_registry(&mut self, witness: &RegistryWitness) {
+        let Some(allocation) = witness.allocation() else {
+            return;
+        };
+        if self
+            .owners
+            .get(&allocation.0)
+            .is_some_and(|owner| owner.registry.is_some())
+        {
+            let bytes = self.upsert_index_registry(allocation, witness.clone());
+            witness.credit_admitted(bytes);
+        }
+    }
+
+    pub(crate) fn refresh_index_registry(&mut self, id: usize) {
+        let Some(witness) = self
+            .owners
+            .get(&id)
+            .and_then(|owner| owner.registry.clone())
+        else {
+            return;
+        };
+        let Some((current_id, bytes)) = witness.allocation() else {
+            return;
+        };
+        assert_eq!(current_id, id);
+        let existing = self.owners.get_mut(&id).expect("registered index registry");
+        if bytes <= existing.bytes {
+            self.indexes -= existing.bytes - bytes;
+            existing.bytes = bytes;
+            witness.credit_admitted(bytes);
+        }
     }
 
     pub(crate) fn retain(&mut self, id: usize) {
@@ -1355,5 +1429,48 @@ where
 
     fn index(&self, key: &Q) -> &V {
         self.get(key).expect("ledgered entry")
+    }
+}
+
+#[cfg(test)]
+mod index_owner_tests {
+    use super::*;
+    use crate::snapshot_index_allocations::AllocationSet;
+
+    #[test]
+    fn distinct_owner_hooks_share_physical_bytes_and_release_independent_references() {
+        let mut ledger = RetainedLedger::new(Work::default());
+        let mut first = AllocationSet::default();
+        let mut second = AllocationSet::default();
+        first.insert(7, 64);
+        second.insert(7, 64);
+        let first_owner = first.take_pending().pop().unwrap();
+        let second_owner = second.take_pending().pop().unwrap();
+        for owner in [&first_owner, &second_owner] {
+            assert!(owner.arm(
+                &ledger.queue,
+                LedgerEvent::IndexAllocation(owner.id, owner.registry_id())
+            ));
+            ledger.shared.acquire_index_owner((owner.id, owner.bytes));
+        }
+        assert_eq!(ledger.shared.indexes(), 64);
+        drop(first);
+        drop(first_owner);
+        for event in ledger.queue.take() {
+            let LedgerEvent::IndexAllocation(id, _) = event else {
+                panic!("body owner event")
+            };
+            ledger.shared.release(id);
+        }
+        assert_eq!(ledger.shared.indexes(), 64);
+        drop(second);
+        drop(second_owner);
+        for event in ledger.queue.take() {
+            let LedgerEvent::IndexAllocation(id, _) = event else {
+                panic!("body owner event")
+            };
+            ledger.shared.release(id);
+        }
+        assert_eq!(ledger.shared.indexes(), 0);
     }
 }

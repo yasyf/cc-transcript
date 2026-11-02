@@ -10,7 +10,6 @@ impl NativeStore {
             + graph.admission.capacity()
             + graph.revision.capacity()
             + value_bytes(&graph.authority)
-
             + graph.root_slices.reserved_bytes()
             + graph
                 .root_slices
@@ -121,10 +120,15 @@ impl NativeStore {
             | crate::snapshot_prepared::OverrideFacts::Exceeded => 0,
         };
         let evidence_bytes = match evidence {
-            crate::snapshot_prepared::PreparedEvidence::Index { inputs, .. } => Self::audit_value_bytes(inputs),
+            crate::snapshot_prepared::PreparedEvidence::Index { inputs, .. } => {
+                Self::audit_value_bytes(inputs)
+            }
             crate::snapshot_prepared::PreparedEvidence::Skills {
                 evidence: crate::snapshot_prepared::SkillEvidence::Parsed { skills },
-            } => skills.capacity() * size_of::<String>() + skills.iter().map(String::capacity).sum::<usize>(),
+            } => {
+                skills.capacity() * size_of::<String>()
+                    + skills.iter().map(String::capacity).sum::<usize>()
+            }
             crate::snapshot_prepared::PreparedEvidence::Skills {
                 evidence: crate::snapshot_prepared::SkillEvidence::CodexFramed { .. },
             } => size_of::<crate::snapshot_prepared::CodexSkillProof>(),
@@ -164,10 +168,16 @@ impl NativeStore {
             }
         };
         for cached in state.prepared_facts.values() {
-            if let Some(append) = &cached.append { add_append(append); }
+            if let Some(append) = &cached.append {
+                add_append(append);
+            }
         }
         for owner in &state.retained_append_owners {
-            add_append(&owner.upgrade().expect("retained compact provenance is live"));
+            add_append(
+                &owner
+                    .upgrade()
+                    .expect("retained compact provenance is live"),
+            );
         }
         bytes
     }
@@ -283,10 +293,16 @@ impl NativeStore {
         }
         state.retire_identity_facts(stamp.identity, |cached| cached.stamp == stamp);
         let budget = self.prepared_fact_budget();
-        if append.as_ref().is_some_and(|append| facts.accounted_bytes().saturating_add(append.accounted_bytes()) > budget) {
+        if append.as_ref().is_some_and(|append| {
+            facts
+                .accounted_bytes()
+                .saturating_add(append.accounted_bytes())
+                > budget
+        }) {
             append = None;
         }
-        let accounted = facts.accounted_bytes() + append.as_ref().map_or(0, |append| append.accounted_bytes());
+        let accounted =
+            facts.accounted_bytes() + append.as_ref().map_or(0, |append| append.accounted_bytes());
         if accounted > budget {
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
@@ -316,8 +332,8 @@ impl NativeStore {
         };
         let anchors = std::iter::once(facts_anchor(&cached.facts))
             .chain(cached.append.as_ref().map(append_anchor));
-        let additional = state.admission(&key, &cached, anchors)
-            + state.prepared_facts_growth(&key);
+        let additional =
+            state.admission(&key, &cached, anchors) + state.prepared_facts_growth(&key);
         let covered = additional.min(reservation.bytes);
         self.admit_memory(&mut state, context, additional - covered)?;
         state.transient_bytes -= covered;
@@ -445,7 +461,7 @@ impl NativeStore {
                     }
                     crate::snapshot_prepared_disk::DiskLookup::Changed => continue,
                     crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact)
-                | crate::snapshot_prepared_disk::DiskLookup::SkillsOnly(compact) => {
+                    | crate::snapshot_prepared_disk::DiskLookup::SkillsOnly(compact) => {
                         drop(compact);
                         break;
                     }
@@ -542,10 +558,21 @@ impl NativeStore {
         let stamp = SourceStamp::of(metadata);
         let mut skill_admission = if need == FactsNeed::Skills {
             Some(self.admit_skill_source(context)?)
-        } else { None };
+        } else {
+            None
+        };
         let mut skill_file = if need == FactsNeed::Skills {
-            Some(self.open_skill_source(canonical, stamp, context, remaining.deadline_unix_ms, cancel, usage)?)
-        } else { None };
+            Some(self.open_skill_source(
+                canonical,
+                stamp,
+                context,
+                remaining.deadline_unix_ms,
+                cancel,
+                usage,
+            )?)
+        } else {
+            None
+        };
         {
             let mut state = self.lock_state();
             if let Some((slot, touched)) = state.prepared_loads.get_mut(&stamp.identity) {
@@ -572,188 +599,264 @@ impl NativeStore {
             &classifier,
         )?;
         #[cfg(test)]
-        self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "request" });
+        self.observe_hydration(HydrationObservation::Facts {
+            stamp,
+            key,
+            need,
+            disposition: "request",
+        });
         loop {
-        if let Some(retained) = self.touch_retained_facts(
-            &key,
-            stamp,
-            registry_generation,
-            admission,
-            &context["authority"],
-            &classifier,
-            need,
-        ) {
-            #[cfg(test)]
-            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "retained-hit" });
-            usage[7] += 1;
-            return Ok((
-                stamp,
-                PreparedSourceOutcome::Ready {
-                    stamp,
-                    held: HeldFacts::Retained(retained),
-                    cached: true,
-                },
-            ));
-        }
-        let claim = self.claim_fact_read(cancel, remaining.deadline_unix_ms)?;
-        if let Some(retained) = self.touch_retained_facts(
-            &key,
-            stamp,
-            registry_generation,
-            admission,
-            &context["authority"],
-            &classifier,
-            need,
-        ) {
-            #[cfg(test)]
-            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "retained-hit" });
-            usage[7] += 1;
-            return Ok((
-                stamp,
-                PreparedSourceOutcome::Ready {
-                    stamp,
-                    held: HeldFacts::Retained(retained),
-                    cached: true,
-                },
-            ));
-        }
-        if let Some(decoded) = self.prepared_disk.decoded_bytes(&key, need) {
-            if self
-                .prepared_disk
-                .read_bound(&key, need)
-                .is_some_and(|bound| !cache_reads.admits(bound))
-            {
-                self.prepared_disk.check_dir()?;
-                return Err(prepared_cache_read_limit());
-            }
-            if let PreparedCacheReads::Warming(_, membership, since) = cache_reads {
-                if self.prepared_disk.touch(&key, need, |accounted| {
-                    !self.lock_state().prepared_facts_fit_sparing(
-                        key,
-                        accounted,
-                        self.prepared_fact_budget(),
-                        |cached| {
-                            membership
-                                .active_member(cached.stamp.identity, since)
-                                .is_some_and(|member| {
-                                    cached.serves(
-                                        member.stamp,
-                                        registry_generation,
-                                        admission,
-                                        &context["authority"],
-                                        &classifier,
-                                        need,
-                                    )
-                                })
-                        },
-                    )
-                })? {
-                    return Ok((stamp, PreparedSourceOutcome::Stored));
-                }
-            }
-            let mut reservation = self.reserve_projection(context, decoded)?;
-            #[cfg(test)]
-            self.fact_lookups.fetch_add(1, Ordering::Relaxed);
-            let mut read = crate::snapshot_prepared_disk::DiskRead::default();
-            let lookup = self.prepared_disk.lookup(
+            if let Some(retained) = self.touch_retained_facts(
                 &key,
-                &mut read,
+                stamp,
+                registry_generation,
+                admission,
+                &context["authority"],
+                &classifier,
                 need,
-                decoded,
-                cancel,
-                remaining.deadline_unix_ms,
-            );
-            usage[18] += read.operations;
-            usage[19] += read.bytes;
-            if let PreparedCacheReads::Warming(..) = cache_reads {
-                remaining.max_source_read_bytes = remaining
-                    .max_source_read_bytes
-                    .saturating_sub(read.bytes as usize);
+            ) {
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Facts {
+                    stamp,
+                    key,
+                    need,
+                    disposition: "retained-hit",
+                });
+                usage[7] += 1;
+                return Ok((
+                    stamp,
+                    PreparedSourceOutcome::Ready {
+                        stamp,
+                        held: HeldFacts::Retained(retained),
+                        cached: true,
+                    },
+                ));
             }
-            match lookup? {
-                crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
-                    if !facts.validates_source(stamp.size, self.config.entry) {
-                        return Err(invalid("prepared skill framing proof differs from source bounds"));
+            let claim = self.claim_fact_read(cancel, remaining.deadline_unix_ms)?;
+            if let Some(retained) = self.touch_retained_facts(
+                &key,
+                stamp,
+                registry_generation,
+                admission,
+                &context["authority"],
+                &classifier,
+                need,
+            ) {
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Facts {
+                    stamp,
+                    key,
+                    need,
+                    disposition: "retained-hit",
+                });
+                usage[7] += 1;
+                return Ok((
+                    stamp,
+                    PreparedSourceOutcome::Ready {
+                        stamp,
+                        held: HeldFacts::Retained(retained),
+                        cached: true,
+                    },
+                ));
+            }
+            if let Some(decoded) = self.prepared_disk.decoded_bytes(&key, need) {
+                if self
+                    .prepared_disk
+                    .read_bound(&key, need)
+                    .is_some_and(|bound| !cache_reads.admits(bound))
+                {
+                    self.prepared_disk.check_dir()?;
+                    return Err(prepared_cache_read_limit());
+                }
+                if let PreparedCacheReads::Warming(_, membership, since) = cache_reads {
+                    if self.prepared_disk.touch(&key, need, |accounted| {
+                        !self.lock_state().prepared_facts_fit_sparing(
+                            key,
+                            accounted,
+                            self.prepared_fact_budget(),
+                            |cached| {
+                                membership
+                                    .active_member(cached.stamp.identity, since)
+                                    .is_some_and(|member| {
+                                        cached.serves(
+                                            member.stamp,
+                                            registry_generation,
+                                            admission,
+                                            &context["authority"],
+                                            &classifier,
+                                            need,
+                                        )
+                                    })
+                            },
+                        )
+                    })? {
+                        return Ok((stamp, PreparedSourceOutcome::Stored));
                     }
-                    #[cfg(test)]
-                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-hit" });
-                    usage[7] += 1;
-                    let facts = Arc::new(facts);
-                    let held = match self.cache_prepared_facts(
-                        stamp,
-                        Arc::clone(&facts),
-                        &classifier,
-                        context,
-                        &mut reservation,
-                        need,
-                        None,
-                    ) {
-                        Ok(retained) => HeldFacts::Retained(retained),
-                        Err(error) if error.status == Status::RetainedLimit => {
-                            HeldFacts::Reserved { facts, reservation }
+                }
+                let mut reservation = self.reserve_projection(context, decoded)?;
+                #[cfg(test)]
+                self.fact_lookups.fetch_add(1, Ordering::Relaxed);
+                let mut read = crate::snapshot_prepared_disk::DiskRead::default();
+                let lookup = self.prepared_disk.lookup(
+                    &key,
+                    &mut read,
+                    need,
+                    decoded,
+                    cancel,
+                    remaining.deadline_unix_ms,
+                );
+                usage[18] += read.operations;
+                usage[19] += read.bytes;
+                if let PreparedCacheReads::Warming(..) = cache_reads {
+                    remaining.max_source_read_bytes = remaining
+                        .max_source_read_bytes
+                        .saturating_sub(read.bytes as usize);
+                }
+                match lookup? {
+                    crate::snapshot_prepared_disk::DiskLookup::Hit(facts) => {
+                        if !facts.validates_source(stamp.size, self.config.entry) {
+                            return Err(invalid(
+                                "prepared skill framing proof differs from source bounds",
+                            ));
                         }
-                        Err(error) => return Err(error),
-                    };
-                    return Ok((
-                        stamp,
-                        PreparedSourceOutcome::Ready {
+                        #[cfg(test)]
+                        self.observe_hydration(HydrationObservation::Facts {
                             stamp,
-                            held,
-                            cached: false,
-                        },
-                    ));
+                            key,
+                            need,
+                            disposition: "disk-hit",
+                        });
+                        usage[7] += 1;
+                        let facts = Arc::new(facts);
+                        let held = match self.cache_prepared_facts(
+                            stamp,
+                            Arc::clone(&facts),
+                            &classifier,
+                            context,
+                            &mut reservation,
+                            need,
+                            None,
+                        ) {
+                            Ok(retained) => HeldFacts::Retained(retained),
+                            Err(error) if error.status == Status::RetainedLimit => {
+                                HeldFacts::Reserved { facts, reservation }
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        return Ok((
+                            stamp,
+                            PreparedSourceOutcome::Ready {
+                                stamp,
+                                held,
+                                cached: false,
+                            },
+                        ));
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::Retired => {
+                        #[cfg(test)]
+                        self.observe_hydration(HydrationObservation::Facts {
+                            stamp,
+                            key,
+                            need,
+                            disposition: "disk-retired",
+                        });
+                        return Err(SnapshotError::new(
+                            Status::Incomplete,
+                            "prepared facts revision was evicted",
+                        ));
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::Changed => {
+                        #[cfg(test)]
+                        self.observe_hydration(HydrationObservation::Facts {
+                            stamp,
+                            key,
+                            need,
+                            disposition: "disk-changed",
+                        });
+                        continue;
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => {
+                        #[cfg(test)]
+                        self.observe_hydration(HydrationObservation::Facts {
+                            stamp,
+                            key,
+                            need,
+                            disposition: "disk-index-only",
+                        });
+                        drop(compact);
+                        drop(reservation);
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::SkillsOnly(skills) => {
+                        #[cfg(test)]
+                        self.observe_hydration(HydrationObservation::Facts {
+                            stamp,
+                            key,
+                            need,
+                            disposition: "disk-skills-only",
+                        });
+                        drop(skills);
+                        drop(reservation);
+                    }
+                    crate::snapshot_prepared_disk::DiskLookup::Miss => {
+                        #[cfg(test)]
+                        self.observe_hydration(HydrationObservation::Facts {
+                            stamp,
+                            key,
+                            need,
+                            disposition: "disk-miss",
+                        });
+                    }
                 }
-                crate::snapshot_prepared_disk::DiskLookup::Retired => {
-                    #[cfg(test)]
-                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-retired" });
-                    return Err(SnapshotError::new(
-                        Status::Incomplete,
-                        "prepared facts revision was evicted",
-                    ));
-                }
-                crate::snapshot_prepared_disk::DiskLookup::Changed => {
-                    #[cfg(test)]
-                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-changed" });
-                    continue;
-                }
-                crate::snapshot_prepared_disk::DiskLookup::IndexOnly(compact) => {
-                    #[cfg(test)]
-                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-index-only" });
-                    drop(compact);
-                    drop(reservation);
-                }
-                crate::snapshot_prepared_disk::DiskLookup::SkillsOnly(skills) => {
-                    #[cfg(test)]
-                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-skills-only" });
-                    drop(skills);
-                    drop(reservation);
-                }
-                crate::snapshot_prepared_disk::DiskLookup::Miss => {
-                    #[cfg(test)]
-                    self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-miss" });
-
+            } else {
+                #[cfg(test)]
+                self.observe_hydration(HydrationObservation::Facts {
+                    stamp,
+                    key,
+                    need,
+                    disposition: "disk-absent",
+                });
+            }
+            if need == FactsNeed::Index {
+                if let Some(ready) = self.append_compact_codex(
+                    canonical,
+                    stamp,
+                    context,
+                    &classifier,
+                    remaining,
+                    cancel,
+                    usage,
+                )? {
+                    return Ok((stamp, ready));
                 }
             }
-        } else {
-            #[cfg(test)]
-            self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "disk-absent" });
-        }
-        if need == FactsNeed::Index {
-            if let Some(ready) = self.append_compact_codex(canonical, stamp, context, &classifier, remaining, cancel, usage)? {
-                return Ok((stamp, ready));
+            drop(claim);
+            let parsed_claude = need == FactsNeed::Skills
+                && self
+                    .lock_state()
+                    .latest_source(&stamp.identity)
+                    .is_some_and(|snapshot| {
+                        snapshot.stamp == stamp && snapshot.provider == Provider::Claude
+                    });
+            if need == FactsNeed::Skills && !parsed_claude {
+                return self
+                    .start_skill_source(
+                        canonical,
+                        stamp,
+                        key,
+                        skill_file.take().expect("Skills source was opened"),
+                        skill_admission.take().expect("Skills source was admitted"),
+                        context,
+                        remaining,
+                        cancel,
+                    )
+                    .map(|outcome| (stamp, outcome));
             }
-        }
-        drop(claim);
-        let parsed_claude = need == FactsNeed::Skills && self.lock_state().latest_source(&stamp.identity)
-            .is_some_and(|snapshot| snapshot.stamp == stamp && snapshot.provider == Provider::Claude);
-        if need == FactsNeed::Skills && !parsed_claude {
-            return self.start_skill_source(canonical, stamp, key, skill_file.take().expect("Skills source was opened"), skill_admission.take().expect("Skills source was admitted"), context, remaining, cancel)
-                .map(|outcome| (stamp, outcome));
-        }
-        match self.acquire_prepared_source(canonical, stamp, key, context, remaining, cancel, usage, need)? {
-            (_, PreparedSourceOutcome::Superseded) => continue,
-            ready => return Ok(ready),
-        }
+            match self.acquire_prepared_source(
+                canonical, stamp, key, context, remaining, cancel, usage, need,
+            )? {
+                (_, PreparedSourceOutcome::Superseded) => continue,
+                ready => return Ok(ready),
+            }
         }
     }
 
@@ -769,7 +872,12 @@ impl NativeStore {
         need: FactsNeed,
     ) -> Result<(SourceStamp, PreparedSourceOutcome<'_>), SnapshotError> {
         #[cfg(test)]
-        self.observe_hydration(HydrationObservation::Facts { stamp, key, need, disposition: "acquire" });
+        self.observe_hydration(HydrationObservation::Facts {
+            stamp,
+            key,
+            need,
+            disposition: "acquire",
+        });
         let acquire = json!({"schema":SCHEMA,"id":"prepare-graph-source","operation":"acquire","path":canonical.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},"deadline_unix_ms":remaining.deadline_unix_ms,"limits":remaining.to_json()});
         let before_bytes = usage[1];
         let before_events = usage[3];
@@ -807,10 +915,7 @@ impl NativeStore {
         usage: &mut [u64; 20],
         need: FactsNeed,
     ) -> Result<PreparedSourceOutcome<'_>, SnapshotError> {
-        self.authority(
-            context,
-            Some(&dirs.resolve(&pending.path)?.0),
-        )?;
+        self.authority(context, Some(&dirs.resolve(&pending.path)?.0))?;
         self.advance_prepared_source(pending, context, remaining, cancel, usage, need)
     }
 
@@ -899,8 +1004,16 @@ impl NativeStore {
             });
         let prepared = prepared.and_then(|(mut reservation, facts)| {
             let append = if need == FactsNeed::Index {
-                self.capture_compact_codex(&snapshot, context, cancel, remaining.deadline_unix_ms, &mut reservation)?
-            } else { None };
+                self.capture_compact_codex(
+                    &snapshot,
+                    context,
+                    cancel,
+                    remaining.deadline_unix_ms,
+                    &mut reservation,
+                )?
+            } else {
+                None
+            };
             Ok((reservation, facts, append))
         });
         {
@@ -921,17 +1034,25 @@ impl NativeStore {
                         .map(|(identity, _)| *identity)
                         .expect("raw codex cache exceeds bound");
                     #[cfg(test)]
-                    let before = (state.recent_codex_raw_bytes, state.latest.contains_key(&oldest), state.source_spines.contains_key(&oldest.file()));
+                    let before = (
+                        state.recent_codex_raw_bytes,
+                        state.latest.contains_key(&oldest),
+                        state.source_spines.contains_key(&oldest.file()),
+                    );
                     state.remove_recent_codex(&oldest);
                     state.remove_latest(&oldest);
                     #[cfg(test)]
                     self.observe_hydration(HydrationObservation::RawVictim {
-                        identity: oldest, before_bytes: before.0, after_bytes: state.recent_codex_raw_bytes,
-                        latest_before: before.1, spine_before: before.2,
-                        latest_after: state.latest.contains_key(&oldest), spine_after: state.source_spines.contains_key(&oldest.file()),
+                        identity: oldest,
+                        before_bytes: before.0,
+                        after_bytes: state.recent_codex_raw_bytes,
+                        latest_before: before.1,
+                        spine_before: before.2,
+                        latest_after: state.latest.contains_key(&oldest),
+                        spine_after: state.source_spines.contains_key(&oldest.file()),
                     });
                 }
-            } else if snapshot.provider == Provider::Codex {
+            } else if snapshot.provider == Provider::Codex && !self.agent_sources {
                 state.remove_recent_codex(&stamp.identity);
                 state.remove_latest(&stamp.identity);
             }
@@ -950,7 +1071,8 @@ impl NativeStore {
             }
         }
         drop(snapshot);
-        let result = self.publish_prepared_evidence(stamp, reservation, facts, append, context, need);
+        let result =
+            self.publish_prepared_evidence(stamp, reservation, facts, append, context, need);
         if result.is_ok() {
             self.lock_state().prepared_loads.remove(&stamp.identity);
         }
@@ -1046,8 +1168,8 @@ impl NativeStore {
             "admission": context["admission"],
             "authority": context["authority"],
         });
-        let canonical = crate::ids::canonical_json(&binding)
-            .map_err(|error| invalid(error.to_string()))?;
+        let canonical =
+            crate::ids::canonical_json(&binding).map_err(|error| invalid(error.to_string()))?;
         Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
     }
 
@@ -1060,8 +1182,16 @@ impl NativeStore {
         deadline: u64,
         absences: Option<&SidechainAbsences<'_>>,
     ) -> Result<bool, SnapshotError> {
-        Ok(self.validate_source_stamps(members, context, cancel, deadline)?
-            && self.validate_sidechain_dirs(sidechain_dirs, context, cancel, deadline, absences)?)
+        Ok(
+            self.validate_source_stamps(members, context, cancel, deadline)?
+                && self.validate_sidechain_dirs(
+                    sidechain_dirs,
+                    context,
+                    cancel,
+                    deadline,
+                    absences,
+                )?,
+        )
     }
 
     fn validate_source_stamps(
@@ -1101,7 +1231,9 @@ impl NativeStore {
         let mut dirs = ResolvedDirs::new(self, context);
         for (index, (path, stamp)) in sidechain_dirs.iter().enumerate() {
             cancel.check(deadline)?;
-            if absences.is_some_and(|proof| proof.contains(index)) { continue; }
+            if absences.is_some_and(|proof| proof.contains(index)) {
+                continue;
+            }
             #[cfg(test)]
             self.sidechain_path_probes.fetch_add(1, Ordering::Relaxed);
             #[cfg(test)]
@@ -1224,10 +1356,7 @@ impl NativeStore {
             self.extend_projection_reservation(
                 &mut reservation,
                 context,
-                PreparedGraph::key_charge(&graph_id)
-                    + PREPARED_GRAPH_BYTES
-                    + record
-                    + buffers,
+                PreparedGraph::key_charge(&graph_id) + PREPARED_GRAPH_BYTES + record + buffers,
             )?;
             let sources: Arc<[PreparedSourceRef]> = if copied {
                 #[cfg(test)]
@@ -1732,7 +1861,10 @@ impl NativeStore {
             ));
         }
         let record = charged_bytes(&graph_id, &graph)
-            + state.ledger.shared.unowned_bytes(graph.anchors_with(inputs));
+            + state
+                .ledger
+                .shared
+                .unowned_bytes(graph.anchors_with(inputs));
         let covered = record.min(reservation.bytes);
         let fresh = record - covered
             + state.ledger.shared.growth(graph.anchors_with(inputs))
@@ -1755,7 +1887,9 @@ impl NativeStore {
         reservation: &mut ProjectionReservation<'_>,
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         let mut state = self.lock_state();
-        if state.prepared_builds.len() + state.registered_builds.len() >= self.lease_cap(&build.context)? {
+        if state.prepared_builds.len() + state.registered_builds.len()
+            >= self.lease_cap(&build.context)?
+        {
             return Err(SnapshotError::new(
                 Status::LeaseLimit,
                 "prepared build admission exhausted",
@@ -1788,12 +1922,23 @@ impl NativeStore {
         cancel: &Cancellation,
         remaining: &mut WorkLimits,
     ) -> Result<bool, SnapshotError> {
-        let Some(certificate) = certificate else { return Ok(true); };
-        let ids = request["thread_ids"].as_array().ok_or_else(|| invalid("missing registered thread ids"))?;
-        let roots = request["roots"].as_array().ok_or_else(|| invalid("missing registered roots"))?;
-        match self.catalog_access(CatalogInput { ids, roots }, context, cancel, remaining,
-            &mut [0; 20], CatalogMode::Check(certificate))?
-        {
+        let Some(certificate) = certificate else {
+            return Ok(true);
+        };
+        let ids = request["thread_ids"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered thread ids"))?;
+        let roots = request["roots"]
+            .as_array()
+            .ok_or_else(|| invalid("missing registered roots"))?;
+        match self.catalog_access(
+            CatalogInput { ids, roots },
+            context,
+            cancel,
+            remaining,
+            &mut [0; 20],
+            CatalogMode::Check(certificate),
+        )? {
             CatalogResolution::Checked(valid) => Ok(valid),
             _ => unreachable!("catalog certificate validation"),
         }
@@ -2031,7 +2176,8 @@ impl NativeStore {
                     return Err(prepared_cache_entry_limit());
                 }
                 Err(error)
-                    if error.status == Status::Incomplete && error.reason == "source_read_limit" =>
+                    if error.status == Status::Incomplete
+                        && error.reason == "source_read_limit" =>
                 {
                     break 'warming;
                 }
@@ -2045,9 +2191,7 @@ impl NativeStore {
             };
             if stamp != source.stamp {
                 if let PreparedSourceOutcome::Pending(token) = &outcome {
-                    self.lock_state()
-                        .waiters
-                        .remove(token);
+                    self.lock_state().waiters.remove(token);
                 }
                 return Err(SnapshotError::new(
                     Status::Changed,
@@ -2079,9 +2223,7 @@ impl NativeStore {
                     }
                     PreparedSourceOutcome::Pending(token) => {
                         if rounds == 16 {
-                            self.lock_state()
-                                .waiters
-                                .remove(&token);
+                            self.lock_state().waiters.remove(&token);
                             break 'warming;
                         }
                         #[cfg(test)]
@@ -2105,21 +2247,18 @@ impl NativeStore {
                                 if error.status == Status::Incomplete
                                     && error.reason == "source_read_limit"
                                     || error.status == Status::SourceLimit
-                                        && error.reason == "cumulative preparation work budget exhausted"
+                                        && error.reason
+                                            == "cumulative preparation work budget exhausted"
                                     || error.status == Status::Deadline
                                         && (next > start
                                             || usage[1] > before_read
                                             || usage[3] > before_events) =>
                             {
-                                self.lock_state()
-                                    .waiters
-                                    .remove(&token);
+                                self.lock_state().waiters.remove(&token);
                                 break 'warming;
                             }
                             Err(error) => {
-                                self.lock_state()
-                                    .waiters
-                                    .remove(&token);
+                                self.lock_state().waiters.remove(&token);
                                 return Err(error);
                             }
                         };
@@ -2177,7 +2316,8 @@ impl NativeStore {
         }
         let disk = self.prepared_disk.stats();
         let (source_offset, source_size) = if let Some(source) = members.get(next) {
-            let load = self.lock_state()
+            let load = self
+                .lock_state()
                 .prepared_loads
                 .get(&source.stamp.identity)
                 .map(|(slot, _)| Arc::clone(slot));
@@ -2471,7 +2611,8 @@ impl NativeStore {
         }
         cancel.check(cursor.remaining.deadline_unix_ms)?;
         self.validate_prepared_root(&cursor.graph_id, context, &mut cursor.remaining, usage)?;
-        let graph = self.lock_state()
+        let graph = self
+            .lock_state()
             .prepared_graphs
             .get(&cursor.graph_id)
             .cloned()
@@ -2487,7 +2628,10 @@ impl NativeStore {
                     "prepared graph context differs",
                 ));
             }
-            (Arc::clone(&graph.sources), Arc::clone(&graph.sidechain_dirs))
+            (
+                Arc::clone(&graph.sources),
+                Arc::clone(&graph.sidechain_dirs),
+            )
         };
         let inputs = cursor.input_records.is_some();
         let total = sources.len();
@@ -2508,7 +2652,10 @@ impl NativeStore {
             ));
         }
         while (cursor.next < total
-            || cursor.input_records.as_ref().is_some_and(|records| !records.is_empty()))
+            || cursor
+                .input_records
+                .as_ref()
+                .is_some_and(|records| !records.is_empty()))
             && steps < page_steps
             && uncached_steps < 8
             && (!inputs || records.len() < page_items)
@@ -2523,7 +2670,11 @@ impl NativeStore {
                             "prepared input record exceeds page bound",
                         ));
                     }
-                    cursor.input_records.as_mut().expect("input records").push_front(record);
+                    cursor
+                        .input_records
+                        .as_mut()
+                        .expect("input records")
+                        .push_front(record);
                     break;
                 }
                 bytes += record_bytes;
@@ -2540,100 +2691,125 @@ impl NativeStore {
             }
             let outcome = match cursor.pending.take() {
                 Some(PendingQuerySource::Skills(mut work)) => {
-                if work.path != canonical || work.stamp != source.stamp {
-                    return Err(invalid("skill source cursor differs"));
-                }
-                match self.advance_skill_source(&mut work, context, &mut cursor.remaining, reservation, cancel, usage)? {
-                    SkillStep::Pending => {
-                        cursor.pending = Some(PendingQuerySource::Skills(work));
-                        steps += 1;
-                        uncached_steps += 1;
-                        continue;
+                    if work.path != canonical || work.stamp != source.stamp {
+                        return Err(invalid("skill source cursor differs"));
                     }
-                    SkillStep::Native => {
-                        let key = work.key;
-                        drop(work);
-                        match self.acquire_prepared_source(&canonical, source.stamp, key, context, &mut cursor.remaining,
-                            cancel, usage, cursor.need)? {
-                            (_, PreparedSourceOutcome::Pending(token)) => {
-                                cursor.pending = Some(PendingQuerySource::Native(PendingPreparedSource { token, path: source.path.clone(), stamp: source.stamp }));
-                                steps += 1;
-                                uncached_steps += 1;
-                                continue;
-                            }
-                            (_, PreparedSourceOutcome::Superseded) => continue,
-                            (_, ready) => ready,
-                        }
-                    }
-                    SkillStep::Ready(PreparedSourceOutcome::Superseded) => continue,
-                    SkillStep::Ready(ready) => ready,
-                }
-                }
-                Some(PendingQuerySource::Native(mut pending)) => {
-                if pending.path != source.path || pending.stamp != source.stamp {
-                    return Err(invalid("prepared query source cursor differs"));
-                }
-                match self.authority(context, Some(&canonical)).and_then(|()| {
-                    self.advance_prepared_source(
-                        &pending,
+                    match self.advance_skill_source(
+                        &mut work,
                         context,
                         &mut cursor.remaining,
+                        reservation,
+                        cancel,
+                        usage,
+                    )? {
+                        SkillStep::Pending => {
+                            cursor.pending = Some(PendingQuerySource::Skills(work));
+                            steps += 1;
+                            uncached_steps += 1;
+                            continue;
+                        }
+                        SkillStep::Native => {
+                            let key = work.key;
+                            drop(work);
+                            match self.acquire_prepared_source(
+                                &canonical,
+                                source.stamp,
+                                key,
+                                context,
+                                &mut cursor.remaining,
+                                cancel,
+                                usage,
+                                cursor.need,
+                            )? {
+                                (_, PreparedSourceOutcome::Pending(token)) => {
+                                    cursor.pending =
+                                        Some(PendingQuerySource::Native(PendingPreparedSource {
+                                            token,
+                                            path: source.path.clone(),
+                                            stamp: source.stamp,
+                                        }));
+                                    steps += 1;
+                                    uncached_steps += 1;
+                                    continue;
+                                }
+                                (_, PreparedSourceOutcome::Superseded) => continue,
+                                (_, ready) => ready,
+                            }
+                        }
+                        SkillStep::Ready(PreparedSourceOutcome::Superseded) => continue,
+                        SkillStep::Ready(ready) => ready,
+                    }
+                }
+                Some(PendingQuerySource::Native(mut pending)) => {
+                    if pending.path != source.path || pending.stamp != source.stamp {
+                        return Err(invalid("prepared query source cursor differs"));
+                    }
+                    match self.authority(context, Some(&canonical)).and_then(|()| {
+                        self.advance_prepared_source(
+                            &pending,
+                            context,
+                            &mut cursor.remaining,
+                            cancel,
+                            usage,
+                            cursor.need,
+                        )
+                    }) {
+                        Ok(PreparedSourceOutcome::Pending(next)) => {
+                            pending.token = next;
+                            cursor.pending = Some(PendingQuerySource::Native(pending));
+                            steps += 1;
+                            uncached_steps += 1;
+                            continue;
+                        }
+                        Ok(PreparedSourceOutcome::Superseded) => continue,
+                        Ok(ready) => ready,
+                        Err(error) => {
+                            self.lock_state().waiters.remove(&pending.token);
+                            return Err(error);
+                        }
+                    }
+                }
+                None => {
+                    match self.prepared_source(
+                        &canonical,
+                        &metadata,
+                        context,
+                        &mut cursor.remaining,
+                        PreparedCacheReads::Unmetered,
                         cancel,
                         usage,
                         cursor.need,
-                    )
-                }) {
-                    Ok(PreparedSourceOutcome::Pending(next)) => {
-                        pending.token = next;
-                        cursor.pending = Some(PendingQuerySource::Native(pending));
-                        steps += 1;
-                        uncached_steps += 1;
-                        continue;
+                    )? {
+                        (_, PreparedSourceOutcome::Pending(source_cursor)) => {
+                            #[cfg(test)]
+                            self.warm_copies.fetch_add(1, Ordering::Relaxed);
+                            cursor.pending =
+                                Some(PendingQuerySource::Native(PendingPreparedSource {
+                                    token: source_cursor,
+                                    path: source.path.clone(),
+                                    stamp: source.stamp,
+                                }));
+                            steps += 1;
+                            uncached_steps += 1;
+                            continue;
+                        }
+                        (
+                            _,
+                            PreparedSourceOutcome::SkillPending {
+                                work,
+                                reservation: mut owned,
+                            },
+                        ) => {
+                            reservation.bytes += owned.bytes;
+                            owned.bytes = 0;
+                            cursor.pending = Some(PendingQuerySource::Skills(work));
+                            steps += 1;
+                            uncached_steps += 1;
+                            continue;
+                        }
+                        (_, PreparedSourceOutcome::Superseded) => continue,
+                        (_, ready) => ready,
                     }
-                    Ok(PreparedSourceOutcome::Superseded) => continue,
-                    Ok(ready) => ready,
-                    Err(error) => {
-                        self.lock_state()
-                            .waiters
-                            .remove(&pending.token);
-                        return Err(error);
-                    }
-                }
-                }
-                None => {
-                match self.prepared_source(
-                    &canonical,
-                    &metadata,
-                    context,
-                    &mut cursor.remaining,
-                    PreparedCacheReads::Unmetered,
-                    cancel,
-                    usage,
-                    cursor.need,
-                )? {
-                    (_, PreparedSourceOutcome::Pending(source_cursor)) => {
-                        #[cfg(test)]
-                        self.warm_copies.fetch_add(1, Ordering::Relaxed);
-                        cursor.pending = Some(PendingQuerySource::Native(PendingPreparedSource {
-                            token: source_cursor,
-                            path: source.path.clone(),
-                            stamp: source.stamp,
-                        }));
-                        steps += 1;
-                        uncached_steps += 1;
-                        continue;
-                    }
-                    (_, PreparedSourceOutcome::SkillPending { work, reservation: mut owned }) => {
-                        reservation.bytes += owned.bytes;
-                        owned.bytes = 0;
-                        cursor.pending = Some(PendingQuerySource::Skills(work));
-                        steps += 1;
-                        uncached_steps += 1;
-                        continue;
-                    }
-                    (_, PreparedSourceOutcome::Superseded) => continue,
-                    (_, ready) => ready,
-                }
                 }
             };
             let PreparedSourceOutcome::Ready {
@@ -2653,14 +2829,16 @@ impl NativeStore {
             }
             let facts = held.facts();
             if inputs {
-                let bound = crate::snapshot_codec::predicate_input_records_bound(facts.index_inputs())?;
+                let bound =
+                    crate::snapshot_codec::predicate_input_records_bound(facts.index_inputs())?;
                 let queue = cursor.input_records.as_mut().expect("input records");
                 self.extend_projection_reservation(
                     reservation,
                     context,
                     deque_growth(queue, bound.records) + bound.bytes,
                 )?;
-                let records = crate::snapshot_codec::predicate_input_records(facts.index_inputs(), &bound)?;
+                let records =
+                    crate::snapshot_codec::predicate_input_records(facts.index_inputs(), &bound)?;
                 let predicted = deque_capacity_for(queue, records.len());
                 queue.extend(records);
                 assert_eq!(queue.capacity(), predicted);
@@ -2680,9 +2858,7 @@ impl NativeStore {
             steps += 1;
             uncached_steps += usize::from(!cached);
         }
-        if cursor.next == total
-            && cursor.input_records.as_ref().is_none_or(VecDeque::is_empty)
-        {
+        if cursor.next == total && cursor.input_records.as_ref().is_none_or(VecDeque::is_empty) {
             if !self.validate_source_stamps(
                 &sources,
                 context,
@@ -2694,8 +2870,7 @@ impl NativeStore {
                 cancel,
                 cursor.remaining.deadline_unix_ms,
                 None,
-            )?
-            {
+            )? {
                 return Err(SnapshotError::new(
                     Status::Changed,
                     "prepared graph sidechain membership changed",
@@ -2704,7 +2879,9 @@ impl NativeStore {
             let data = if inputs {
                 json!({"kind":"records","record_schema":"cc-transcript.predicate-inputs/1","records_json":records})
             } else {
-                cursor.observers.reply(false, true, output_limit, self.config.output)?
+                cursor
+                    .observers
+                    .reply(false, true, output_limit, self.config.output)?
             };
             encoded_size(&data, output_limit)?;
             return Ok(QueryPage::Complete(data));
@@ -2716,7 +2893,8 @@ impl NativeStore {
         };
         cancel.check(cursor.remaining.deadline_unix_ms)?;
         let encoded = encoded_size(&data, output_limit)?;
-        cursor.remaining.max_output_bytes = cursor.remaining.max_output_bytes.saturating_sub(encoded);
+        cursor.remaining.max_output_bytes =
+            cursor.remaining.max_output_bytes.saturating_sub(encoded);
         cursor.remaining.max_items = cursor.remaining.max_items.saturating_sub(
             data.get("records_json")
                 .and_then(Value::as_array)
@@ -2737,7 +2915,10 @@ impl NativeStore {
         let mut state = self.lock_state();
         cancel.check(cursor.remaining.deadline_unix_ms)?;
         if !state.prepared_graphs.contains_key(&cursor.graph_id) {
-            return Err(SnapshotError::new(Status::StaleCursor, "prepared graph released"));
+            return Err(SnapshotError::new(
+                Status::StaleCursor,
+                "prepared graph released",
+            ));
         }
         if state.prepared_queries.len() >= self.lease_cap(context)? {
             return Err(SnapshotError::new(
@@ -2747,8 +2928,9 @@ impl NativeStore {
         }
         let token = token.to_owned();
         let pledge = Delivery::cursor_pledge(&cursor.claimant, &token);
-        let additional =
-            state.admission(&token, &cursor, []) + state.prepared_queries.growth_for(&token) + pledge;
+        let additional = state.admission(&token, &cursor, [])
+            + state.prepared_queries.growth_for(&token)
+            + pledge;
         let covered = additional.min(reservation.bytes);
         self.admit_memory(&mut state, context, additional - covered)?;
         state.transient_bytes -= covered;
@@ -2756,7 +2938,11 @@ impl NativeStore {
         state.prepared_queries.reserve_for(&token);
         state.prepared_queries.insert(token.clone(), cursor);
         state.prepared_queries.pledge(&token, pledge);
-        Ok((data, Some(token), Some("prepared query page incomplete".to_owned())))
+        Ok((
+            data,
+            Some(token),
+            Some("prepared query page incomplete".to_owned()),
+        ))
     }
 
     fn query_graph(
@@ -2784,7 +2970,8 @@ impl NativeStore {
             .ok_or_else(|| SnapshotError::new(Status::StaleHandle, "prepared graph expired"))?;
         let mut bounds = limits(request)?;
         drop(shared);
-        let shared = self.checked_prepared_graph(token, handle, context, cancel, &mut bounds, usage)?;
+        let shared =
+            self.checked_prepared_graph(token, handle, context, cancel, &mut bounds, usage)?;
         let graph = shared.lock().expect("prepared graph");
         let query = request
             .get("query")
@@ -2906,7 +3093,8 @@ impl NativeStore {
         #[cfg(test)]
         self.prepared_query_records.fetch_add(1, Ordering::Relaxed);
         let input_records = if kind == "deep_predicate_inputs" {
-            let bound = crate::snapshot_codec::predicate_input_records_bound(root_facts.index_inputs())?;
+            let bound =
+                crate::snapshot_codec::predicate_input_records_bound(root_facts.index_inputs())?;
             self.extend_projection_reservation(&mut reservation, context, bound.bytes)?;
             let records = VecDeque::from(crate::snapshot_codec::predicate_input_records(
                 root_facts.index_inputs(),
@@ -2999,7 +3187,9 @@ impl NativeStore {
         };
         let count = pending.count_ones() as usize;
         let bytes = count * size_of::<(usize, Value)>()
-            + selected().map(|(_, query)| value_bytes(query)).sum::<usize>();
+            + selected()
+                .map(|(_, query)| value_bytes(query))
+                .sum::<usize>();
         if count > 0 && self.reserve_observers(reservation, context, bytes) {
             observers.pending = Vec::with_capacity(count);
             observers
@@ -3024,9 +3214,9 @@ impl NativeStore {
 
     fn admit_spare(&self, context: &Value, bytes: usize) -> bool {
         let mut state = self.lock_state();
-        let fits = self.memory_cap(context).is_ok_and(|cap| {
-            Self::retained_total(&mut state).saturating_add(bytes) <= cap
-        });
+        let fits = self
+            .memory_cap(context)
+            .is_ok_and(|cap| Self::retained_total(&mut state).saturating_add(bytes) <= cap);
         if fits {
             state.ledger.shared.work().admitted(bytes);
             state.transient_bytes += bytes;

@@ -88,6 +88,7 @@ jobs:
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib codex::review_continuation -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/codex.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib suffix_rollback -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/suffix-rollback.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib shared_allocation_discovery_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/allocation-discovery.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib codex_append_tests -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-raw.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib agent_codex_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-scenarios.log"
       - name: Upload Linux registered review continuation controls
@@ -257,6 +258,7 @@ jobs:
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib codex::review_continuation -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/codex.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib suffix_rollback -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/suffix-rollback.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib shared_allocation_discovery_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/allocation-discovery.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib codex_append_tests -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-raw.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib agent_codex_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-scenarios.log"
       - name: Upload macOS registered review continuation controls

@@ -336,6 +336,20 @@ class TranscriptStore:
         for (policy_id, version), predicate in (policies or {}).items():
             self.register_classifier(policy_id, version, predicate)
 
+    @classmethod
+    def new_agent(
+        cls,
+        config: Mapping[str, Any],
+        *,
+        policies: Mapping[tuple[str, str], Callable[[TranscriptEvent], bool]] | None = None,
+    ) -> TranscriptStore:
+        """Own append-only agent sources whose existing bytes remain immutable."""
+        store = cls.__new__(cls)
+        store._native = _native.NativeSnapshotStore.new_agent(_json(config))
+        for (policy_id, version), predicate in (policies or {}).items():
+            store.register_classifier(policy_id, version, predicate)
+        return store
+
     def register_tool_registry(self, specs: Sequence[Mapping[str, Any]], *, context: CallContext) -> str:
         return _call(self._native.register_tool_registry, _json(specs), _json(context))
 
@@ -407,6 +421,12 @@ class TranscriptStore:
         self, request: Mapping[str, Any], *, cancellation: CancellationToken, context: CallContext
     ) -> Mapping[str, Any]:
         return orjson.loads(_call(self._native.request, _json(request), _json(context), cancellation._native))
+
+    def request_agent(
+        self, request: Mapping[str, Any], *, cancellation: CancellationToken, context: CallContext
+    ) -> Mapping[str, Any]:
+        """Request an immutable-prefix agent source from this agent store."""
+        return orjson.loads(_call(self._native.request_agent, _json(request), _json(context), cancellation._native))
 
     def prepare_classifier(
         self,
