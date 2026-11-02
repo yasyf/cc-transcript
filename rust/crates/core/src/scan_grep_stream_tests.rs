@@ -483,6 +483,69 @@ fn prefiltered_scans_parse_only_candidates_and_match_the_prepared_path() {
 }
 
 #[test]
+fn surveyed_sources_count_without_a_second_read_and_match_the_unsurveyed_scan() {
+    let sources = [
+        Source::new(
+            &[
+                line(user("u0", None, json!("a"))),
+                String::new(),
+                "garbage".to_owned(),
+                line(user("u1", Some("u0"), json!("b"))),
+            ],
+            true,
+        ),
+        Source::new(&prefiltered(), true),
+        Source::new(&[line(user("u0", None, json!("a")))], false),
+        Source::new(&[line(user("u0", None, json!("c")))], true),
+    ];
+    let paths: Vec<PathBuf> = sources.iter().map(|source| source.0.clone()).collect();
+    let scan = |survey: bool| {
+        let store = NativeStore::new(&json!({})).unwrap();
+        let mut budget = ScanBudget::new(&store, limits());
+        let mut grep = reducer(&[("needle", None)], options(), &mut budget);
+        if survey {
+            grep.survey(paths.clone(), budget.limits.deadline_unix_ms);
+        }
+        let mut emitted = Vec::new();
+        for path in &paths {
+            let control = grep.scan_stream(
+                path,
+                true,
+                None,
+                &mut budget,
+                &Cancellation::default(),
+                |event, budget, cancel| {
+                    let _staging = event.preflight_render(budget, cancel)?;
+                    emitted.push(Emitted::of(&event));
+                    Ok(())
+                },
+            );
+            assert!(matches!(control, Ok(Some(ScanControl::Continue))));
+        }
+        (grep.counts().to_vec(), emitted, budget.progress.clone())
+    };
+    let (counts, emitted, plain) = scan(false);
+    let (surveyed_counts, surveyed_emitted, surveyed) = scan(true);
+    assert_eq!(counts, vec![2]);
+    assert_eq!((surveyed_counts, surveyed_emitted), (counts, emitted));
+    assert_eq!((plain.surveyed_sources, surveyed.surveyed_sources), (0, 2));
+    assert_eq!(
+        (
+            surveyed.source_bytes,
+            surveyed.examined_events,
+            surveyed.parsed_events,
+            surveyed.source_opens
+        ),
+        (
+            plain.source_bytes,
+            plain.examined_events,
+            plain.parsed_events,
+            plain.source_opens
+        )
+    );
+}
+
+#[test]
 fn quota_stops_reading_before_the_rest_of_the_file() {
     let mut lines = vec![
         line(user("u0", None, json!("a"))),

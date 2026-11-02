@@ -76,6 +76,7 @@ pub struct GrepReducer<'store> {
     haystacks_built: usize,
     sources_indexed: usize,
     coverage_complete: bool,
+    surveyor: Option<stream::Surveyor>,
     _staging: StagingReservation<'store>,
 }
 
@@ -302,6 +303,7 @@ impl<'store> GrepReducer<'store> {
             haystacks_built: 0,
             sources_indexed: 0,
             coverage_complete: true,
+            surveyor: None,
             _staging: staging,
         })
     }

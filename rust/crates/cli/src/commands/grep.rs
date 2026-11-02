@@ -411,6 +411,9 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         emitter: Emitter::new(args.scan_json, timeout_ms, &mut session.budget, &cancel)?,
         files: 0,
     };
+    if reducer.streams() {
+        reducer.survey(plan.sources(), session.budget.limits.deadline_unix_ms);
+    }
     let mut outcome = session.each_source(&plan, |session, path| {
         if reducer.streams() {
             if let Some(control) = reducer.scan_stream(
