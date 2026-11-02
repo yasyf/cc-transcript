@@ -79,6 +79,3 @@ wheelhouse/
 
 # Bench corpus (regenerate: scripts/gen_corpus.py)
 .fixtures/
-
-# Wheel scripts the release builds per target (the snapshot owner binary)
-/cc_transcript._native.data/

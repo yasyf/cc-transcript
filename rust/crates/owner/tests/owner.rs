@@ -56,10 +56,12 @@ impl Owner {
             output,
             next: 0,
         };
-        owner.send(&json!({"protocol":1,"op":"hello","build":"test","snapshot_config":{
+        owner.send(
+            &json!({"protocol":1,"op":"hello","build":"test","snapshot_config":{
             "max_read_bytes_per_step":8192,"max_events_per_step":128,"max_entry_bytes":8192,
             "max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,
-            "max_leases":16,"reserved_hook_leases":1}}));
+            "max_leases":16,"reserved_hook_leases":1}}),
+        );
         assert_eq!(
             owner.receive_raw(),
             br#"{"protocol":1,"op":"hello","build":"test"}"#
@@ -106,7 +108,8 @@ impl Owner {
             "deadline_unix_ms":now_ms()+30_000,"limits":limits()}));
         while response["status"].as_str() == Some("incomplete") {
             let cursor = response["cursor"].as_str().unwrap().to_owned();
-            response = self.call(json!({"schema":CORE,"id":"resume","operation":"resume","cursor":cursor}));
+            response = self
+                .call(json!({"schema":CORE,"id":"resume","operation":"resume","cursor":cursor}));
         }
         assert_eq!(response["status"].as_str(), Some("ok"), "{response}");
         response["data"]["description"]["handle"].clone()
@@ -210,9 +213,11 @@ fn review_events_page_only_events_past_the_watermark() {
 #[test]
 fn unsupported_domain_operation_fails_with_pythonic_wire_bytes() {
     let mut owner = Owner::start();
-    let raw = owner.call_raw(json!({"schema":HOST,"id":"review","operation":"prepare_review",
+    let raw = owner.call_raw(
+        json!({"schema":HOST,"id":"review","operation":"prepare_review",
         "deadline_unix_ms":now_ms()+30_000,"limits":limits(),
-        "policy":{"id":"captain-review","version":"1"}}));
+        "policy":{"id":"captain-review","version":"1"}}),
+    );
     let usage = [
         "activity_lifts",
         "append_parses",
