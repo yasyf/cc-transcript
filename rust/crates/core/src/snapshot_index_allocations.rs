@@ -21,6 +21,25 @@ struct RegistryState {
 }
 
 impl RegistryState {
+    fn bytes(&self) -> usize {
+        (arc_bytes::<Registry>() + MUTEX_STORAGE_BYTES)
+            .saturating_add(
+                self.queue
+                    .capacity()
+                    .saturating_mul(size_of::<(usize, Weak<AllocationOwner>)>()),
+            )
+            .saturating_add(
+                self.owners_capacity
+                    .saturating_mul(4 * (size_of::<(usize, RegistryOwner)>() + size_of::<usize>())),
+            )
+            .saturating_add(
+                self.queue
+                    .len()
+                    .saturating_add(self.owners.len())
+                    .saturating_mul(arc_bytes::<AllocationOwner>()),
+            )
+    }
+
     fn unqueue(&mut self, id: usize) {
         if let Some(at) = self
             .owners
@@ -62,26 +81,7 @@ impl RegistryWitness {
 impl Registry {
     fn allocation(self: &Arc<Self>) -> (usize, usize) {
         let state = self.state.lock().expect("allocation registry");
-        let bytes = (arc_bytes::<Registry>() + MUTEX_STORAGE_BYTES)
-            .saturating_add(
-                state
-                    .queue
-                    .capacity()
-                    .saturating_mul(size_of::<(usize, Weak<AllocationOwner>)>()),
-            )
-            .saturating_add(
-                state
-                    .owners_capacity
-                    .saturating_mul(4 * (size_of::<(usize, RegistryOwner)>() + size_of::<usize>())),
-            )
-            .saturating_add(
-                state
-                    .queue
-                    .len()
-                    .saturating_add(state.owners.len())
-                    .saturating_mul(arc_bytes::<AllocationOwner>()),
-            );
-        (Arc::as_ptr(self) as usize, bytes)
+        (Arc::as_ptr(self) as usize, state.bytes())
     }
 }
 
@@ -303,28 +303,29 @@ impl AllocationSet {
                 .saturating_mul(64 * width)
                 .min(bound),
         );
-        let registry = (arc_bytes::<Registry>() + MUTEX_STORAGE_BYTES)
-            .saturating_add(
-                state
-                    .queue
-                    .capacity()
-                    .saturating_add(inserts)
-                    .saturating_mul(2 * size_of::<(usize, Weak<AllocationOwner>)>()),
-            )
-            .saturating_add(
-                state
-                    .owners_capacity
-                    .saturating_add(inserts)
-                    .saturating_mul(8 * (size_of::<(usize, RegistryOwner)>() + size_of::<usize>())),
-            )
-            .saturating_add(
-                state
-                    .queue
-                    .len()
-                    .saturating_add(state.owners.len())
-                    .saturating_add(inserts.saturating_mul(2))
-                    .saturating_mul(arc_bytes::<AllocationOwner>()),
-            );
+        let queue = if state.queue.len().saturating_add(inserts) > state.queue.capacity() {
+            state
+                .queue
+                .capacity()
+                .saturating_add(inserts)
+                .saturating_mul(2 * size_of::<(usize, Weak<AllocationOwner>)>())
+        } else {
+            0
+        };
+        let table = if state.owners.len().saturating_add(inserts) > state.owners.capacity() {
+            state
+                .owners_capacity
+                .saturating_add(inserts)
+                .saturating_mul(8 * (size_of::<(usize, RegistryOwner)>() + size_of::<usize>()))
+        } else {
+            0
+        };
+        let registry = state
+            .bytes()
+            .saturating_sub(self.registry.admitted_bytes.load(Ordering::Acquire))
+            .saturating_add(queue)
+            .saturating_add(table)
+            .saturating_add(inserts.saturating_mul(2 * arc_bytes::<AllocationOwner>()));
         let pending = state
             .queue
             .len()
