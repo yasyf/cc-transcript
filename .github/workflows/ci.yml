@@ -36,6 +36,10 @@ jobs:
       - name: Format check (rustfmt)
         run: cargo fmt --check
 
+      - name: Diag agent_codex baseline
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p cc-transcript-core --no-default-features --lib agent_codex_ -- --test-threads=2
+
       - name: Test the snapshot owner binary
         run: cargo test --locked -p cc-transcript-owner
 
