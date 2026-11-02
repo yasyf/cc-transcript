@@ -89,10 +89,10 @@ fn shared_publication_admission_counts_raw_allocations_once_and_reuses_source() 
         .renew_scope_for_work(handle, &owner, now_ms() + 30_000)
         .unwrap()
         .snapshot;
-    let Entry::User(user) = &snapshot.chunks[0].entries[0] else {
+    let Entry::User(result_user) = &snapshot.chunks[0].entries[0] else {
         panic!("result entry changed")
     };
-    assert_eq!(user.tool_results().next().unwrap().content, payload);
+    assert_eq!(result_user.tool_results().next().unwrap().content, payload);
     assert_eq!(snapshot.activity.entry_count(), 1);
     for _ in 0..2 {
         let (repeated, read) = finish_shared_publication_fixture(
@@ -250,10 +250,10 @@ fn shared_publication_admission_reuses_219mb_source_with_other_generations() {
         .pin(&first["data"]["description"]["handle"], &owner)
         .unwrap();
     assert_eq!(snapshot.event_count, count);
-    let Entry::User(user) = snapshot.entry(count - 1) else {
+    let Entry::User(result_user) = snapshot.entry(count - 1) else {
         panic!("result entry changed")
     };
-    assert_eq!(user.tool_results().next().unwrap().content, payload);
+    assert_eq!(result_user.tool_results().next().unwrap().content, payload);
     for _ in 0..2 {
         let (repeated, read) = finish_shared_publication_fixture(
             &store,
