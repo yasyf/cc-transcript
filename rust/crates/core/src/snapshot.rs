@@ -2500,6 +2500,7 @@ impl StoreState {
             }
         }
         record.pending_indexes = Vec::new();
+        record.index_registry = snapshot.activity.registry_metadata_allocation();
         let credited = self
             .ledger
             .shared
@@ -2702,6 +2703,7 @@ impl StoreState {
                     .acquire_index_owner((owner.id, owner.bytes));
             }
         }
+        let registry = carried.activity.registry_metadata_allocation();
         let credited = self
             .ledger
             .shared
