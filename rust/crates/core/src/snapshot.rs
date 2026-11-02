@@ -4928,6 +4928,7 @@ impl NativeStore {
         let max_stage_bytes = entry_bytes(&source)
             .saturating_mul(4)
             .saturating_add(source.event_count.saturating_mul(512))
+            .saturating_add(source.activity.accounted_bytes().saturating_mul(2))
             .saturating_add(16 * 1024)
             .min(self.config.retained);
         let mut reservation = self.reserve_projection(
@@ -22091,6 +22092,80 @@ mod tests {
             .pin(&complete["description"]["handle"], &owner)
             .is_ok());
     }
+    #[test]
+    fn classifier_staging_admits_a_foreground_transcript_of_tool_turns() {
+        let at = "2026-01-02T03:04:05Z";
+        let line = |value: Value| format!("{}\n", sonic_rs::to_string(&value).unwrap());
+        let mut contents = String::new();
+        for turn in 0..120 {
+            contents += &line(
+                json!({"type":"user","uuid":format!("p{turn}"),"sessionId":"s","timestamp":at,
+                "message":{"role":"user","content":format!("prompt {turn} alpha")}}),
+            );
+            contents += &line(
+                json!({"type":"assistant","uuid":format!("a{turn}"),"sessionId":"s","timestamp":at,
+                "message":{"role":"assistant","model":"m","content":[{"type":"text","text":format!("reply {turn}")},
+                    {"type":"tool_use","id":format!("read-{turn}"),"name":"Read","input":{"file_path":format!("src/mod{turn}.py")}}]}}),
+            );
+            contents += &line(
+                json!({"type":"user","uuid":format!("r{turn}"),"sessionId":"s","timestamp":at,
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("read-{turn}"),"content":format!("result-alpha {}", "x".repeat(4096))}]}}),
+            );
+            contents += &line(
+                json!({"type":"assistant","uuid":format!("b{turn}"),"sessionId":"s","timestamp":at,
+                "message":{"role":"assistant","model":"m","content":[
+                    {"type":"tool_use","id":format!("bash-{turn}"),"name":"Bash","input":{"command":"git push origin HEAD"}},
+                    {"type":"tool_use","id":format!("grep-{turn}"),"name":"Grep","input":{"pattern":"alpha"}}]}}),
+            );
+            contents += &line(
+                json!({"type":"user","uuid":format!("s{turn}"),"sessionId":"s","timestamp":at,
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("bash-{turn}"),"content":"pushed"}]}}),
+            );
+            contents += &line(
+                json!({"type":"user","uuid":format!("g{turn}"),"sessionId":"s","timestamp":at,
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("grep-{turn}"),"content":"no matches","is_error":true}]}}),
+            );
+        }
+        let source = Source::new(&contents);
+        let store = NativeStore::new(&json!({"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let owner = context("a");
+        let request = json!({"schema":SCHEMA,"id":"request","operation":"acquire","path":source.path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},
+            "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":8*1024*1024,"max_source_read_bytes":8*1024*1024,"max_events":4096,"max_items":4096,"max_output_bytes":8*1024*1024,"max_discovery_entries":1000,"max_sources":100}});
+        let root = finish(
+            &store,
+            store.request(&request, &owner, &Cancellation::default()),
+            &owner,
+        );
+        let mut page = store
+            .prepare_classifier(
+                handle(&root),
+                &json!({"id":"application","version":"1"}),
+                &owner,
+                &Cancellation::default(),
+                limits(&request).unwrap(),
+            )
+            .unwrap();
+        while page["complete"].as_bool() != Some(true) {
+            let labels = page["records_json"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|record| record.as_str().unwrap().contains("prompt "))
+                .collect::<Vec<_>>();
+            page = store
+                .submit_classifier(
+                    page["cursor"].as_str().unwrap(),
+                    &labels,
+                    &owner,
+                    &Cancellation::default(),
+                )
+                .unwrap();
+        }
+        let derived = store.pin(&page["description"]["handle"], &owner).unwrap();
+        assert!(derived.id.starts_with("labels:"));
+        assert_eq!(derived.event_count, 720);
+    }
+
     #[test]
     fn label_publication_transfers_quota_and_lease_failure_rolls_back_generation() {
         let source = Source::new(&format!("{}\n", user("a")));

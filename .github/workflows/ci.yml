@@ -88,6 +88,9 @@ jobs:
           cargo test -p cc-transcript-core --no-default-features --lib -- request_projection_ --nocapture
           uv run --no-sync pytest tests/test_request_body_projection.py -q -s
 
+      - name: Test foreground classifier staging admission on Linux
+        run: cargo test --locked -p cc-transcript-core --no-default-features --lib classifier_staging_ -- --nocapture
+
       - name: Test registered review continuation on Linux
         env:
           CARGO_BUILD_JOBS: "2"
