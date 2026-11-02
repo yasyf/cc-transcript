@@ -44,6 +44,7 @@ pub mod snapshot;
 pub mod snapshot_activity;
 pub mod snapshot_codec;
 mod snapshot_index_allocations;
+pub mod snapshot_input;
 pub mod snapshot_labels;
 pub mod snapshot_ledger;
 pub mod snapshot_memory;

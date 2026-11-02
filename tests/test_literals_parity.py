@@ -35,7 +35,13 @@ PACKAGE = ROOT / "cc_transcript"
 def test_python_mirrors_read_from_native() -> None:
     from cc_transcript import _native, command, filterspec
     from cc_transcript.corrections import CORRECTIONS_DDL
-    from cc_transcript.filterspec import AGENT_INJECTION_GROUPS, INTERRUPT_MARKER_GROUPS, SENTIMENT_JUNK_GROUPS, group_pattern
+    from cc_transcript.filterspec import (
+        AGENT_INJECTION_GROUPS,
+        INTERRUPT_MARKER_GROUPS,
+        SENTIMENT_JUNK_GROUPS,
+        STRUCTURAL_NOISE_GROUPS,
+        group_pattern,
+    )
     from cc_transcript.mining import confidence, signals, sourcekind, spec
     from cc_transcript.mining.store import FEEDBACK_DDL
 
@@ -81,6 +87,7 @@ def test_python_mirrors_read_from_native() -> None:
     patterns = {
         "protocol.INTERRUPT_MARKER_PATTERN": INTERRUPT_MARKER_GROUPS,
         "protocol.AGENT_INJECTION_PATTERN": AGENT_INJECTION_GROUPS,
+        "protocol.STRUCTURAL_NOISE_PATTERN": STRUCTURAL_NOISE_GROUPS,
         "protocol.SENTIMENT_JUNK_PATTERN": SENTIMENT_JUNK_GROUPS,
     }
     for key, groups in patterns.items():

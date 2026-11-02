@@ -11,12 +11,13 @@ concurrency:
 
 jobs:
   build:
-    uses: yasyf/homebrew-tap/.github/workflows/release-pypi-build.yml@41f8de6765b3b833ef333b0b98f5683f0e46685b
+    uses: yasyf/homebrew-tap/.github/workflows/release-pypi-build.yml@eda4a470054f17c3f3554def7d27b3425b6e5cbe
     secrets: inherit
     with:
       dist-name: cc-transcript
       python-version: "3.13"
       maturin: true
+      maturin-scripts: cc-transcript-owner
 
   # PyPI Trusted Publishing must run in THIS repo's workflow — it authenticates via the OIDC
   # job_workflow_ref claim, which inside a reusable workflow points at homebrew-tap, not here

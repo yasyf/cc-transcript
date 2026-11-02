@@ -249,6 +249,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-transcript-owner"
+version = "0.9.0"
+dependencies = [
+ "cc-transcript-core",
+ "chrono",
+ "crossbeam-channel",
+ "jsonschema",
+ "libc",
+ "serde_json",
+ "sha2",
+ "sonic-rs",
+ "tempfile",
+]
+
+[[package]]
 name = "cc-transcript-py"
 version = "0.9.0"
 dependencies = [

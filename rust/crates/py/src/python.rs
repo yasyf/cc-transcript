@@ -453,6 +453,10 @@ fn embedded_literals(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         protocol::AGENT_INJECTION_PATTERN,
     )?;
     dict.set_item(
+        "protocol.STRUCTURAL_NOISE_PATTERN",
+        protocol::STRUCTURAL_NOISE_PATTERN,
+    )?;
+    dict.set_item(
         "protocol.TASK_NOTIFICATION_MARKER",
         protocol::TASK_NOTIFICATION_MARKER,
     )?;
