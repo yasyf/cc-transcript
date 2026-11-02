@@ -65,10 +65,12 @@ def test_registered_scope_preserves_words_capture_and_warm_zero(tmp_path: Path) 
         assert owner_event.text == "preserve owner words"
         anchor = EventRef(SessionId("s"), EventUuid("u0"))
         assert snapshot.capture([anchor])[0].trigger is not None
-        assert len(snapshot.activity(CLASSIFIER, anchors=[anchor]).turns) == 1
-        return {"revision": snapshot.description["source_revision"], "signals": snapshot.mine_json(SPEC, ()), "usage": dict(snapshot.usage)}
+        assert len(snapshot.activity(CLASSIFIER, anchors=[anchor], lookback_turns=0, lookahead_turns=0).turns) == 1
+        context_turns = len(snapshot.activity(CLASSIFIER, anchors=[anchor]).turns)
+        return {"revision": snapshot.description["source_revision"], "signals": snapshot.mine_json(SPEC, ()), "usage": dict(snapshot.usage), "context_turns": context_turns}
 
     first = run(store, path, prepare)
+    assert first["context_turns"] == 1
     for _ in range(3):
         warm = run(store, path, prepare)
         assert warm["signals"] == first["signals"]
@@ -82,7 +84,9 @@ def test_registered_scope_preserves_words_capture_and_warm_zero(tmp_path: Path) 
     assert frozen["revision"] == first["revision"]
     assert frozen["signals"] == first["signals"]
     assert frozen["usage"]["events_parsed"] == 0
+    assert frozen["context_turns"] == 1
     current = run(store, path, prepare)
+    assert current["context_turns"] == 2
     assert len(current["signals"]) == 2
     assert current["revision"] != first["revision"]
 
