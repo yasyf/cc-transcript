@@ -1516,7 +1516,7 @@ enum GraphYield {
 struct ClassifierStage {
     activity: ActivityIndex,
     indexed: usize,
-    carried: HashSet<usize>,
+    carried_metadata: Option<usize>,
     committed: Option<ActivityIndex>,
     result: Option<Arc<TranscriptSnapshot>>,
 }
@@ -1528,7 +1528,8 @@ impl ClassifierStage {
         });
         Self {
             indexed: activity.entry_count(),
-            carried: seed.map_or_else(HashSet::new, |seed| seed.allocation_ids().collect()),
+            carried_metadata: seed
+                .and_then(|seed| seed.activity.shared_membership_metadata().map(|(id, _)| id)),
             committed: None,
             activity,
             result: None,
@@ -1536,14 +1537,16 @@ impl ClassifierStage {
     }
 
     fn accounted_bytes(&self) -> usize {
-        owned_index_bytes(
-            self.activity.heap_allocations().chain(
-                self.committed
-                    .iter()
-                    .flat_map(ActivityIndex::heap_allocations),
-            ),
-            &self.carried,
-        ) + self.carried.capacity() * size_of::<usize>()
+        let current = self.activity.shared_membership_metadata().map(|(id, _)| id);
+        self.activity.staged_heap_bytes(self.carried_metadata)
+            + self.committed.as_ref().map_or(0, |committed| {
+                committed
+                    .shared_membership_metadata()
+                    .map_or(0, |(id, bytes)| {
+                        usize::from(Some(id) != current && Some(id) != self.carried_metadata)
+                            * bytes
+                    })
+            })
     }
 }
 
@@ -21826,6 +21829,56 @@ mod tests {
             json!({"id":"outer","status":"incomplete","data":{"metadata":{}},"cursor":cursor});
         assert!(store.discard_response(&wrapped, &owner).unwrap());
         assert!(!store.discard_response(&wrapped, &owner).unwrap());
+    }
+
+    #[test]
+    fn shared_allocation_discovery_seeded_classifier_accounting_does_not_walk_the_prefix() {
+        for count in [32, 10000] {
+            let entries = (0..count)
+                .map(|event| {
+                    crate::parse::parse_entry(
+                        sonic_rs::from_str(&user(&format!("seed-{event}"))).unwrap(),
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let refs = entries.iter().collect::<Vec<_>>();
+            let prior = Arc::new(ActivityIndex::new(&refs, None));
+            prior.prepare_shared_ownership();
+            let queue = Arc::new(ReleaseQueue::default());
+            for owner in prior.pending_allocations() {
+                owner.arm(&queue, LedgerEvent::Chunk(owner.id));
+            }
+            let (registry, bytes) = prior.registry_metadata_allocation();
+            prior.arm_registry(&queue, LedgerEvent::IndexRegistry(registry), bytes);
+            let carried = crate::snapshot::CarriedClassification {
+                prefix: Vec::new(),
+                event_count: count,
+                activity: Arc::clone(&prior),
+                touched: std::sync::atomic::AtomicU64::new(0),
+            };
+            crate::snapshot_activity::reset_allocation_discovery_visits();
+            let mut stage = crate::snapshot::ClassifierStage::seeded(Some(&carried));
+            assert_eq!(stage.accounted_bytes(), 0);
+            let appended =
+                crate::parse::parse_entry(sonic_rs::from_str(&user("new-tail")).unwrap()).unwrap();
+            stage.activity = std::mem::take(&mut stage.activity).append_tail(&[&appended], None);
+            stage.committed = Some(stage.activity.clone());
+            assert!(stage.accounted_bytes() > 0);
+            assert_eq!(
+                crate::snapshot_activity::allocation_discovery_visits(),
+                0,
+                "N={count}"
+            );
+            assert!(stage.activity.pending_allocation_count() < 32, "N={count}");
+            stage.activity.audited_allocations(true);
+            let all = refs.into_iter().chain([&appended]).collect::<Vec<_>>();
+            let selected = (0..stage.activity.turn_count()).collect::<Vec<_>>();
+            assert_eq!(
+                format!("{:?}", stage.activity.project("s", &all, &selected)),
+                format!("{:?}", crate::activity::lift_session_refs("s", &all, None))
+            );
+        }
     }
 
     #[test]

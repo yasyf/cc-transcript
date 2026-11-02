@@ -239,6 +239,16 @@ pub struct ActivityIndex {
 #[cfg(test)]
 thread_local! { static ALLOCATION_DISCOVERY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
+#[cfg(test)]
+pub(crate) fn reset_allocation_discovery_visits() {
+    ALLOCATION_DISCOVERY_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_discovery_visits() -> usize {
+    ALLOCATION_DISCOVERY_VISITS.with(std::cell::Cell::get)
+}
+
 fn record_allocation_discovery() {
     #[cfg(test)]
     ALLOCATION_DISCOVERY_VISITS.with(|count| count.set(count.get() + 1));
@@ -398,6 +408,24 @@ impl ActivityIndex {
                 .expect("shared allocation owners")
                 .insert(Arc::as_ptr(undo) as usize, undo.owned_bytes());
         }
+    }
+
+    pub(crate) fn shared_membership_metadata(&self) -> Option<(usize, usize)> {
+        self.allocation_owners
+            .get()
+            .map(AllocationSet::metadata_allocation)
+    }
+
+    pub(crate) fn staged_heap_bytes(&self, carried_metadata: Option<usize>) -> usize {
+        self.allocation_owners.get().map_or_else(
+            || self.unshared_heap_bytes_since(None),
+            |owners| {
+                let (id, bytes) = owners.metadata_allocation();
+                owners.pending_bytes()
+                    + owners.registry_pending_bytes()
+                    + usize::from(carried_metadata != Some(id)) * bytes
+            },
+        )
     }
 
     pub(crate) fn prepare_shared_ownership(&self) {
@@ -566,6 +594,7 @@ impl ActivityIndex {
                 .timestamp_millis()
         });
         self.last_model_event = last_model;
+        Arc::make_mut(&mut self.undo).truncate(first);
         if first < prior_allocations.entries {
             let uuids = entries[first..prior_allocations.entries]
                 .iter()
@@ -579,7 +608,6 @@ impl ActivityIndex {
             self.refresh_allocation_owners(&prior_allocations, first, &uuids, &results);
         }
         self.work = ActivityWork::default();
-        Arc::make_mut(&mut self.undo).truncate(first);
     }
 
     pub fn new(entries: &[&Entry], openers: Option<&[bool]>) -> Self {
@@ -1115,10 +1143,10 @@ impl ActivityIndex {
     pub fn call_at(&self, event: usize, block_ordinal: usize) -> Option<&ToolCall> {
         let calls = &self.turns.get(self.turn_of_event(event)?)?.calls;
         let index = calls
-            .binary_search_by(|call| {
+            .binary_search_by_key(&(event, block_ordinal), |call| {
                 #[cfg(test)]
                 CALL_LOOKUP_STEPS.with(|steps| steps.set(steps.get() + 1));
-                (call.event, call.ordinal).cmp(&(event, block_ordinal))
+                (call.event, call.ordinal)
             })
             .ok()?;
         Some(&calls[index].call)
