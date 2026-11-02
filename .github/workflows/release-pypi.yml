@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build:
-    uses: yasyf/homebrew-tap/.github/workflows/release-pypi-build.yml@eda4a470054f17c3f3554def7d27b3425b6e5cbe
+    uses: yasyf/homebrew-tap/.github/workflows/release-pypi-build.yml@ffd3219eb8cced5ddc53ba3e2a8088e3d6522d6d
     secrets: inherit
     with:
       dist-name: cc-transcript
