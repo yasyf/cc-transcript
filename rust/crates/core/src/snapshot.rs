@@ -1617,6 +1617,20 @@ impl CarriedClassification {
             .map(|(id, _)| id)
     }
 
+    fn publication_anchors<'a>(
+        &'a self,
+        pending: &'a [Arc<AllocationOwner>],
+        registry: (usize, usize),
+    ) -> impl Iterator<Item = Anchor> + 'a {
+        self.anchors()
+            .chain(
+                pending
+                    .iter()
+                    .map(|owner| Anchor::indexes((owner.id, owner.bytes))),
+            )
+            .chain(std::iter::once(Anchor::indexes(registry)))
+    }
+
     fn anchors(&self) -> impl Iterator<Item = Anchor> {
         std::iter::once(Anchor::indexes((
             self as *const Self as usize,
@@ -2661,10 +2675,14 @@ impl StoreState {
         &mut self,
         lineage: (SourceIdentity, String),
         carried: Arc<CarriedClassification>,
+        pending: Vec<Arc<AllocationOwner>>,
+        registry: (usize, usize),
     ) {
         self.carried_classifications.reserve_for(&lineage);
         self.carried_expiry.reserve(1);
-        self.ledger.shared.reserve(carried.anchors());
+        self.ledger
+            .shared
+            .reserve(carried.publication_anchors(&pending, registry));
         if let Some(previous) = self.carried_classifications.get(&lineage).cloned() {
             self.detach_carried_owner(&lineage, &previous);
             for anchor in previous.anchors() {
@@ -2674,6 +2692,25 @@ impl StoreState {
         for anchor in carried.anchors() {
             self.ledger.shared.acquire(anchor);
         }
+        for owner in pending {
+            if owner.arm(
+                &self.ledger.queue,
+                LedgerEvent::IndexAllocation(owner.id, owner.registry_id()),
+            ) {
+                self.ledger
+                    .shared
+                    .acquire_index_owner((owner.id, owner.bytes));
+            }
+        }
+        let credited = self
+            .ledger
+            .shared
+            .upsert_index_registry(registry, carried.activity.registry_witness());
+        carried.activity.arm_registry(
+            &self.ledger.queue,
+            LedgerEvent::IndexRegistry(registry.0),
+            credited,
+        );
         self.carried_expiry
             .push(carried_deadline(&carried), lineage.clone());
         self.attach_carried_owner(&lineage, &carried);
@@ -4702,7 +4739,7 @@ impl NativeStore {
     fn publish_label_generation(
         &self,
         snapshot: Arc<TranscriptSnapshot>,
-        generation: GenerationRecord,
+        mut generation: GenerationRecord,
         classifier: Value,
         seed: Option<&CarriedClassification>,
         carried: Option<((SourceIdentity, String), CarriedClassification)>,
@@ -4710,6 +4747,24 @@ impl NativeStore {
         context: &Value,
         reservation: &mut ProjectionReservation<'_>,
     ) -> Result<Value, SnapshotError> {
+        if let Some((_, candidate)) = &carried {
+            self.extend_projection_reservation(
+                reservation,
+                context,
+                candidate.activity.pending_allocation_reservation(),
+            )?;
+        }
+        let carried = carried.map(|(lineage, candidate)| {
+            let candidate = Arc::new(candidate);
+            let pending = candidate.activity.pending_allocations();
+            let mut registry = candidate.activity.registry_metadata_allocation();
+            if registry.0 == generation.index_registry.0 {
+                let bytes = registry.1.max(generation.index_registry.1);
+                registry.1 = bytes;
+                generation.index_registry.1 = bytes;
+            }
+            (lineage, candidate, pending, registry)
+        });
         let shared: HashSet<_> = snapshot
             .chunks
             .iter()
@@ -4717,7 +4772,12 @@ impl NativeStore {
             .collect();
         let seeded: HashSet<_> = seed
             .into_iter()
-            .flat_map(CarriedClassification::allocation_ids)
+            .flat_map(|seed| {
+                seed.activity
+                    .shared_allocations()
+                    .into_iter()
+                    .map(|(id, _)| id)
+            })
             .collect();
         let retained = generation
             .entries
@@ -4742,16 +4802,22 @@ impl NativeStore {
             .lease(&state, source_handle, context)?
             .absolute_deadline;
         let key = snapshot_key(&snapshot);
-        let carried = carried
-            .filter(|(lineage, candidate)| state.carries(lineage, candidate))
-            .map(|(lineage, candidate)| (lineage, Arc::new(candidate)));
-        let published: HashSet<_> = generation.anchors().map(|anchor| anchor.id).collect();
+        let carried =
+            carried.filter(|(lineage, candidate, _, _)| state.carries(lineage, candidate));
+        let published: HashSet<_> = generation
+            .publication_anchors()
+            .map(|anchor| anchor.id)
+            .collect();
         let anchors = || {
-            generation.publication_anchors().chain(
-                carried
-                    .iter()
-                    .flat_map(|(_, candidate)| candidate.anchors()),
-            )
+            generation
+                .publication_anchors()
+                .chain(
+                    carried
+                        .iter()
+                        .flat_map(|(_, candidate, pending, registry)| {
+                            candidate.publication_anchors(pending, *registry)
+                        }),
+                )
         };
         let pledge = pledge + state.leases.growth(1);
         let retained = retained
@@ -4766,15 +4832,22 @@ impl NativeStore {
                 .ledger
                 .shared
                 .registry_growth_bytes(generation.index_registry)
-            + carried.as_ref().map_or(0, |(lineage, candidate)| {
-                charged_bytes(lineage, candidate)
-                    + state.carried_growth(lineage, candidate)
-                    + state.ledger.shared.unowned_bytes(
-                        candidate
-                            .anchors()
-                            .filter(|anchor| !published.contains(&anchor.id)),
-                    )
-            });
+            + carried
+                .as_ref()
+                .map_or(0, |(lineage, candidate, pending, registry)| {
+                    charged_bytes(lineage, candidate)
+                        + state.carried_growth(lineage, candidate)
+                        + state.ledger.shared.unowned_bytes(
+                            candidate
+                                .publication_anchors(pending, *registry)
+                                .filter(|anchor| !published.contains(&anchor.id)),
+                        )
+                        + if registry.0 == generation.index_registry.0 {
+                            0
+                        } else {
+                            state.ledger.shared.registry_growth_bytes(*registry)
+                        }
+                });
         if retained > reservation.bytes {
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
@@ -4798,8 +4871,8 @@ impl NativeStore {
                 return Err(error);
             }
         };
-        if let Some((lineage, carried)) = carried {
-            state.insert_carried(lineage, carried);
+        if let Some((lineage, carried, pending, registry)) = carried {
+            state.insert_carried(lineage, carried, pending, registry);
         }
         state.transient_bytes -= retained - pledge;
         reservation.bytes -= retained;
@@ -5410,16 +5483,34 @@ impl NativeStore {
             self.admit_memory(&mut state, context, bytes)?;
             state.add_classifier_charge(&slot, bytes);
         }
-        let generation = GenerationRecord::new(&derived, registry);
+        let mut generation = GenerationRecord::new(&derived, registry);
         let carried = CarriedClassification::of(&derived, stage.committed.clone()).map(Arc::new);
+        if let Some(candidate) = &carried {
+            let bytes = candidate.activity.pending_allocation_reservation();
+            let mut state = self.lock_state();
+            self.admit_memory(&mut state, context, bytes)?;
+            state.add_classifier_charge(&slot, bytes);
+        }
+        let carried = carried.map(|candidate| {
+            let pending = candidate.activity.pending_allocations();
+            let mut registry = candidate.activity.registry_metadata_allocation();
+            if registry.0 == generation.index_registry.0 {
+                let bytes = registry.1.max(generation.index_registry.1);
+                registry.1 = bytes;
+                generation.index_registry.1 = bytes;
+            }
+            (candidate, pending, registry)
+        });
         {
             let mut state = self.lock_state();
-            let carried = carried.filter(|candidate| state.carries(&lineage, candidate));
+            let carried = carried.filter(|(candidate, _, _)| state.carries(&lineage, candidate));
             let generation_key = snapshot_key(&derived);
             let anchors = || {
                 generation
                     .publication_anchors()
-                    .chain(carried.iter().flat_map(|candidate| candidate.anchors()))
+                    .chain(carried.iter().flat_map(|(candidate, pending, registry)| {
+                        candidate.publication_anchors(pending, *registry)
+                    }))
             };
             let additional = state.admission(&generation_key, &generation, anchors())
                 + state
@@ -5428,8 +5519,14 @@ impl NativeStore {
                     .registry_growth_bytes(generation.index_registry)
                 + state.generations.growth_for(&generation_key)
                 + state.classified_growth(&key, &derived)
-                + carried.as_ref().map_or(0, |candidate| {
-                    charged_bytes(&lineage, candidate) + state.carried_growth(&lineage, candidate)
+                + carried.as_ref().map_or(0, |(candidate, _, registry)| {
+                    charged_bytes(&lineage, candidate)
+                        + state.carried_growth(&lineage, candidate)
+                        + if registry.0 == generation.index_registry.0 {
+                            0
+                        } else {
+                            state.ledger.shared.registry_growth_bytes(*registry)
+                        }
                 });
             self.admit_memory(
                 &mut state,
@@ -5439,8 +5536,8 @@ impl NativeStore {
             state.ledger.shared.reserve(anchors());
             state.set_classifier_charge(&slot, 0);
             state.register_generation(&derived, generation);
-            if let Some(candidate) = carried {
-                state.insert_carried(lineage, candidate);
+            if let Some((candidate, pending, registry)) = carried {
+                state.insert_carried(lineage, candidate, pending, registry);
             }
             state.insert_classified(key, Arc::clone(&derived));
         }
@@ -14429,18 +14526,32 @@ mod tests {
         let store = agent_store();
         let owner = context("a");
         let batches = parity_classifier(&store, "parity");
+        let assert_carried_owners_published = || {
+            let state = store.lock_state();
+            assert!(!state.carried_classifications.is_empty());
+            for carried in state.carried_classifications.values() {
+                assert!(carried.activity.pending_allocations().is_empty());
+                assert_eq!(carried.activity.pending_allocation_bytes(), 0);
+            }
+        };
         let provisional = classified(&store, &source.path, "parity", &owner);
+        assert_carried_owners_published();
+        store.assert_conserved();
         assert!(provisional.provisional_tail);
         assert_eq!(provisional.event_count, 3);
         assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3]);
         source.append(&format!("\n{}", users(3..5)));
         let sealed = classified(&store, &source.path, "parity", &owner);
+        assert_carried_owners_published();
+        store.assert_conserved();
         assert!(!sealed.provisional_tail);
         assert_eq!(sealed.event_count, 5);
         assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 2..4, 4..5]);
         assert_parity_turns(&sealed);
         source.append(users(5..6).trim_end());
         let reopened = classified(&store, &source.path, "parity", &owner);
+        assert_carried_owners_published();
+        store.assert_conserved();
         assert!(reopened.provisional_tail);
         assert_eq!(*batches.lock().unwrap(), vec![0..2, 2..3, 2..4, 4..5, 5..6]);
         assert_parity_turns(&reopened);
@@ -22563,9 +22674,12 @@ mod tests {
             assert_eq!(state.carried_expiry.len(), 1);
             assert_eq!(state.carried_expiry.key_bytes(), ticket);
         }
-        store
-            .lock_state()
-            .insert_carried(lineage.clone(), Arc::clone(&carried));
+        store.lock_state().insert_carried(
+            lineage.clone(),
+            Arc::clone(&carried),
+            carried.activity.pending_allocations(),
+            carried.activity.registry_metadata_allocation(),
+        );
         store.assert_conserved();
         let heap_two = {
             let state = store.lock_state();
@@ -22575,9 +22689,12 @@ mod tests {
         };
         let two_tickets = store.retained_accounted_bytes();
         assert_eq!(two_tickets, one_ticket + ticket);
-        store
-            .lock_state()
-            .insert_carried(lineage.clone(), Arc::clone(&carried));
+        store.lock_state().insert_carried(
+            lineage.clone(),
+            Arc::clone(&carried),
+            carried.activity.pending_allocations(),
+            carried.activity.registry_metadata_allocation(),
+        );
         store.assert_conserved();
         let heap_one = {
             let state = store.lock_state();

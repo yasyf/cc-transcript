@@ -34,8 +34,7 @@ def run(store: TranscriptStore, path: Path, handler: Callable[[TranscriptSnapsho
     )
 
 
-def test_registered_controller_warm_usage_without_handler_projections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CC_TRANSCRIPT_REVIEW_BINDING_DIAGNOSTICS", "1")
+def test_registered_controller_warm_usage_without_handler_projections(tmp_path: Path) -> None:
     path = tmp_path / "warm.jsonl"
     path.write_bytes(event(0, "owner words"))
     store = TranscriptStore({})
@@ -52,8 +51,7 @@ def test_registered_controller_warm_usage_without_handler_projections(tmp_path: 
         assert warm["revision"] == first["revision"]
 
 
-def test_registered_scope_preserves_words_capture_and_warm_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CC_TRANSCRIPT_REVIEW_BINDING_DIAGNOSTICS", "1")
+def test_registered_scope_preserves_words_capture_and_warm_zero(tmp_path: Path) -> None:
     path = tmp_path / "s.jsonl"
     path.write_bytes(event(0, "preserve owner words"))
     store = TranscriptStore({})

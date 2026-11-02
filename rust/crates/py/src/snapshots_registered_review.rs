@@ -16,7 +16,7 @@ fn format_identity(formats: &[(String, Py<PyAny>, Py<PyAny>, bool)]) -> String {
             "extract":format!("{:p}",extract.as_ptr()),"bounded":bounded})
         })
         .collect();
-    json!(rows).to_string()
+    cc_transcript_core::ids::canonical_json(&json!(rows)).expect("callable format identity")
 }
 
 fn run_registered_review(
@@ -39,8 +39,10 @@ fn run_registered_review(
         )));
     }
     let formats = format_identity(&callable_formats);
-    let controller =
-        json!({"marker":format!("{:p}",prose_marker.as_ptr()),"formats":formats}).to_string();
+    let controller = cc_transcript_core::ids::canonical_json(
+        &json!({"marker":format!("{:p}",prose_marker.as_ptr()),"formats":formats}),
+    )
+    .expect("registered controller identity");
     let (policy, context, limits, expected_revision, mut spec) = py
         .detach(|| {
             let policy = parse(policy_json, MAX_INPUT_BYTES)?;

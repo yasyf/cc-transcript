@@ -78,9 +78,6 @@ impl NativeStore {
         });
         let canonical = crate::ids::canonical_json(&binding)
             .map_err(|error| invalid(format!("registered review binding: {error}")))?;
-        if std::env::var_os("CC_TRANSCRIPT_REVIEW_BINDING_DIAGNOSTICS").is_some() {
-            eprintln!("registered_review_binding={canonical}");
-        }
         Ok(Sha256::digest(canonical.as_bytes()).into())
     }
 }
