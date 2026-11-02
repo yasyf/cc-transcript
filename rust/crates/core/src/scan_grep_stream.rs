@@ -2,7 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
 use std::path::Path;
 
-use sonic_rs::json;
+use memchr::memmem;
+use sonic_rs::{json, JsonValueTrait};
 
 use super::{incomplete, GrepEvent, GrepReducer, Searched};
 use crate::gateway::{sniff_provider, Provider};
@@ -28,6 +29,7 @@ struct ToolName {
 struct StreamSlot<'store> {
     index: usize,
     line: Option<(LineSpan, u64)>,
+    span: Option<LineSpan>,
     entry: Option<Entry>,
     projected: Option<Projected>,
     charge: usize,
@@ -72,6 +74,7 @@ struct GrepStream<'store> {
     proof: Option<Prefix>,
     frozen: bool,
     tail: Option<(LineSpan, u64)>,
+    raw: bool,
 }
 
 impl StreamSlot<'_> {
@@ -153,6 +156,48 @@ fn charge_of(entry: &Entry) -> usize {
         .saturating_add(charge.opaque_dom_accounted_bytes)
 }
 
+fn json_space(byte: &u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+fn object_line(bytes: &[u8]) -> bool {
+    let start = bytes.iter().take_while(|byte| json_space(byte)).count();
+    bytes.get(start) == Some(&b'{')
+        && sonic_rs::get_from_slice(bytes, &[] as &[&str]).is_ok_and(|value| {
+            bytes[start + value.as_raw_str().len()..]
+                .iter()
+                .all(json_space)
+        })
+}
+
+fn joined_results(bytes: &[u8]) -> bool {
+    memmem::find(bytes, b"\"tool_result\"").is_some()
+        && memmem::find_iter(bytes, b"\"text\"").nth(3).is_some()
+}
+
+fn declared_tools(bytes: &[u8]) -> Vec<(String, String)> {
+    let assistant = sonic_rs::get_from_slice(bytes, &["type"])
+        .is_ok_and(|kind| kind.as_str() == Some("assistant"));
+    let Some(content) = assistant
+        .then(|| sonic_rs::get_from_slice(bytes, &["message", "content"]).ok())
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    sonic_rs::to_array_iter(content.as_raw_str())
+        .flatten()
+        .filter_map(|block| {
+            let block = block.as_raw_str();
+            let field = |key: &str| sonic_rs::get_from_str(block, &[key]).ok();
+            (field("type")?.as_str()? == "tool_use").then_some(())?;
+            Some((
+                field("id")?.as_str()?.to_owned(),
+                field("name")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
 fn saves(error: &SnapshotError) -> bool {
     matches!(
         error.status,
@@ -171,6 +216,13 @@ impl<'store> GrepReducer<'store> {
             matched_items: self.matched_items,
             coverage_complete: self.coverage_complete,
         }
+    }
+
+    fn candidate(&self, bytes: &[u8]) -> bool {
+        self.prefilter
+            .as_ref()
+            .is_none_or(|prefilter| prefilter.is_match(bytes))
+            || joined_results(bytes)
     }
 
     fn needs(&self) -> Vec<[Need; 2]> {
@@ -271,6 +323,7 @@ impl<'store> GrepReducer<'store> {
             proof: None,
             frozen: false,
             tail: None,
+            raw: checkpoints.is_none() && self.prefilter.is_some(),
         };
         let build_lock = match (checkpoints, &keys) {
             (Some(store), Some((file_key, _))) if store.indexes(stream.size) => {
@@ -481,16 +534,22 @@ impl<'store> GrepReducer<'store> {
                     return Ok(None);
                 }
             }
-            let sum = digest(bytes);
-            if !line.terminated {
-                stream.tail = Some((line, sum));
-            }
-            if let Some(entry) = parse(bytes, budget, cancel)? {
-                let projected = match (&mut stream.builder, line.terminated) {
-                    (Some(builder), true) => builder.add(line, sum, &entry, budget, cancel)?,
-                    _ => None,
-                };
-                stream.push(line, sum, entry, projected, budget, cancel)?;
+            if stream.raw && line.terminated && !self.candidate(bytes) {
+                let names =
+                    stream.render_names || !self.options.errors && self.tool_names.is_some();
+                stream.skip(line, bytes, names, budget, cancel)?;
+            } else {
+                let sum = digest(bytes);
+                if !line.terminated {
+                    stream.tail = Some((line, sum));
+                }
+                if let Some(entry) = parse(bytes, budget, cancel)? {
+                    let projected = match (&mut stream.builder, line.terminated) {
+                        (Some(builder), true) => builder.add(line, sum, &entry, budget, cancel)?,
+                        _ => None,
+                    };
+                    stream.push(line, sum, entry, projected, budget, cancel)?;
+                }
             }
             if line.terminated {
                 stream.commit(line, source, budget, cancel)?;
@@ -577,6 +636,7 @@ impl<'store> GrepReducer<'store> {
             stream.queue.push_back(StreamSlot {
                 index: queued.index,
                 line: Some((span.into(), span.digest)),
+                span: None,
                 entry: Some(entry),
                 projected: None,
                 charge,
@@ -722,15 +782,25 @@ impl<'store> GrepStream<'store> {
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
-        let tail = self.tail.map_or(0, |(line, _)| line.len);
-        if self.frozen || self.prefix.end() as usize + tail > budget.validation_remaining() {
-            return Err(incomplete(
-                "source grew during the scan and its prefix exceeds the validation cap",
-            ));
-        }
-        let intact = source
-            .validate_prefix(&self.prefix.segments(), self.prefix.span(), budget, cancel)?
-            .is_some()
+        let prefix = if self.raw {
+            let fence = LineSpan {
+                offset: self.committed - self.fence.len() as u64,
+                len: self.fence.len(),
+                terminated: false,
+            };
+            source.revalidate_span(&fence, budget, cancel)? == self.fence
+        } else {
+            let tail = self.tail.map_or(0, |(line, _)| line.len);
+            if self.frozen || self.prefix.end() as usize + tail > budget.validation_remaining() {
+                return Err(incomplete(
+                    "source grew during the scan and its prefix exceeds the validation cap",
+                ));
+            }
+            source
+                .validate_prefix(&self.prefix.segments(), self.prefix.span(), budget, cancel)?
+                .is_some()
+        };
+        let intact = prefix
             && match self.tail {
                 Some((line, sum)) => digest(&source.revalidate_span(&line, budget, cancel)?) == sum,
                 None => true,
@@ -802,7 +872,7 @@ impl<'store> GrepStream<'store> {
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
-        let extends = line.offset >= self.prefix.end() && !self.frozen;
+        let extends = !self.raw && line.offset >= self.prefix.end() && !self.frozen;
         if let Some(open) = self.prefix.unread().filter(|_| extends) {
             if open.len > budget.validation_remaining() {
                 self.frozen = true;
@@ -908,6 +978,7 @@ impl<'store> GrepStream<'store> {
         self.queue.push_back(StreamSlot {
             index,
             line: None,
+            span: None,
             entry: None,
             projected,
             charge,
@@ -938,41 +1009,18 @@ impl<'store> GrepStream<'store> {
             };
             budget.charge_projection(bytes.saturating_add(1), 0, cancel)?;
         }
-        let mut names_bytes = 0usize;
-        for tool in entry.tool_uses().filter(|_| !self.names_final) {
-            match self.names.get(tool.id.as_str()) {
-                Some(slot) if slot.name == tool.name => {}
-                Some(slot) if slot.referenced => {
-                    self.poisoned = true;
-                    return Err(incomplete(
-                        "tool_use id redefined with a different name after use",
-                    ));
-                }
-                Some(_) => names_bytes = names_bytes.saturating_add(tool.name.len()),
-                None => {
-                    names_bytes = names_bytes
-                        .saturating_add(tool.id.len())
-                        .saturating_add(tool.name.len())
-                        .saturating_add(size_of::<(String, ToolName)>())
-                }
-            }
-        }
         let charge = charge_of(&entry);
         let staging =
             budget.reserve_staging(charge.saturating_add(size_of::<StreamSlot>()), cancel)?;
-        budget.extend_staging(&mut self.staging, names_bytes, cancel)?;
-        for tool in entry.tool_uses().filter(|_| !self.names_final) {
-            self.names
-                .entry(tool.id.clone())
-                .and_modify(|slot| slot.name.clone_from(&tool.name))
-                .or_insert_with(|| ToolName {
-                    name: tool.name.clone(),
-                    referenced: false,
-                });
-        }
+        let tools: Vec<_> = entry
+            .tool_uses()
+            .map(|tool| (tool.id.as_str(), tool.name.as_str()))
+            .collect();
+        self.declare(&tools, budget, cancel)?;
         self.queue.push_back(StreamSlot {
             index: self.parsed,
             line: Some((line, digest)),
+            span: None,
             entry: Some(entry),
             projected,
             charge,
@@ -980,6 +1028,82 @@ impl<'store> GrepStream<'store> {
             staging,
         });
         self.parsed += 1;
+        Ok(())
+    }
+
+    fn skip(
+        &mut self,
+        line: LineSpan,
+        bytes: &[u8],
+        names: bool,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        if !object_line(bytes) {
+            return Ok(());
+        }
+        budget.charge_projection(0, 1, cancel)?;
+        if names && memmem::find(bytes, b"\"tool_use\"").is_some() {
+            let declared = declared_tools(bytes);
+            let tools: Vec<_> = declared
+                .iter()
+                .map(|(id, name)| (id.as_str(), name.as_str()))
+                .collect();
+            self.declare(&tools, budget, cancel)?;
+        }
+        let staging = budget.reserve_staging(size_of::<StreamSlot>(), cancel)?;
+        self.queue.push_back(StreamSlot {
+            index: self.parsed,
+            line: None,
+            span: Some(line),
+            entry: None,
+            projected: None,
+            charge: 0,
+            pattern_ids: None,
+            staging,
+        });
+        self.parsed += 1;
+        Ok(())
+    }
+
+    fn declare(
+        &mut self,
+        tools: &[(&str, &str)],
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        if self.names_final {
+            return Ok(());
+        }
+        let mut bytes = 0usize;
+        for &(id, name) in tools {
+            match self.names.get(id) {
+                Some(slot) if slot.name == name => {}
+                Some(slot) if slot.referenced => {
+                    self.poisoned = true;
+                    return Err(incomplete(
+                        "tool_use id redefined with a different name after use",
+                    ));
+                }
+                Some(_) => bytes = bytes.saturating_add(name.len()),
+                None => {
+                    bytes = bytes
+                        .saturating_add(id.len())
+                        .saturating_add(name.len())
+                        .saturating_add(size_of::<(String, ToolName)>())
+                }
+            }
+        }
+        budget.extend_staging(&mut self.staging, bytes, cancel)?;
+        for &(id, name) in tools {
+            self.names
+                .entry(id.to_owned())
+                .and_modify(|slot| name.clone_into(&mut slot.name))
+                .or_insert_with(|| ToolName {
+                    name: name.to_owned(),
+                    referenced: false,
+                });
+        }
         Ok(())
     }
 
@@ -1040,16 +1164,34 @@ impl<'store> GrepStream<'store> {
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
-        let reader = self
-            .index
-            .as_ref()
-            .expect("unparsed slots come from an index");
-        let (line, sum) = reader.row(self.queue[0].index, budget, cancel)?;
-        let bytes = source.read_span(&line, budget, cancel)?;
-        if digest(&bytes) != sum {
-            return Err(reader.damage());
-        }
-        let entry = parse(&bytes, budget, cancel)?.ok_or_else(|| reader.damage())?;
+        let (line, sum, bytes) = match self.queue[0].span {
+            Some(line) => {
+                let bytes = source.read_span(&line, budget, cancel)?;
+                (line, digest(&bytes), bytes)
+            }
+            None => {
+                let reader = self
+                    .index
+                    .as_ref()
+                    .expect("unparsed slots come from an index or a skipped line");
+                let (line, sum) = reader.row(self.queue[0].index, budget, cancel)?;
+                let bytes = source.read_span(&line, budget, cancel)?;
+                if digest(&bytes) != sum {
+                    return Err(reader.damage());
+                }
+                (line, sum, bytes)
+            }
+        };
+        let entry = match parse(&bytes, budget, cancel)? {
+            Some(entry) => entry,
+            None if self.queue[0].span.is_some() => {
+                return Err(SnapshotError::new(
+                    Status::Changed,
+                    "skipped line no longer parses as an event",
+                ))
+            }
+            None => return Err(self.index.as_ref().expect("indexed slot").damage()),
+        };
         let charge = charge_of(&entry);
         let slot = &mut self.queue[0];
         budget.extend_staging(&mut slot.staging, charge, cancel)?;

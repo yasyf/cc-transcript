@@ -408,6 +408,80 @@ fn streamed_grep_matches_the_prepared_snapshot_path() {
     }
 }
 
+fn prefiltered() -> Vec<String> {
+    vec![
+        line(user("u0", None, json!("start"))),
+        line(assistant(
+            "a0",
+            "u0",
+            json!([tool("t0", "Edit", json!({"file_path":"/a"}))]),
+        )),
+        line(result("u1", "a0", "t0", "edited needle")),
+        line(user(
+            "u2",
+            Some("u1"),
+            json!([{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"split nee"},{"type":"text","text":"dle"}],"is_error":false}]),
+        )),
+        r#"{"type":"user","uuid":"cut""#.to_owned(),
+        "  ".to_owned(),
+        line(user("u3", Some("u2"), json!("filler"))),
+        line(assistant(
+            "a1",
+            "u3",
+            json!([tool("t1", "Bash", json!({"command":"ls"}))]),
+        )),
+        line(user("u4", Some("a1"), json!("tail"))),
+    ]
+}
+
+#[test]
+fn prefiltered_scans_parse_only_candidates_and_match_the_prepared_path() {
+    let source = Source::new(&prefiltered(), true);
+    let options_for = |case: usize| match case {
+        0 => options(),
+        1 => GrepOptions {
+            context: 1,
+            ..options()
+        },
+        2 => tool_filter("Bash"),
+        _ => tool_filter("Edit"),
+    };
+    let cases = [("needle", 2), ("needle", 4), ("needle", 2), ("edited", 2)];
+    for (case, (pattern, parsed)) in cases.into_iter().enumerate() {
+        for render_names in [true, false] {
+            let mut expected = prepared(&source.0, &[(pattern, None)], options_for(case));
+            let (actual, _, progress) = streamed(
+                &source.0,
+                &[(pattern, None)],
+                options_for(case),
+                render_names,
+                limits(),
+            );
+            let mut actual = actual.unwrap();
+            if !render_names {
+                for emitted in expected.emitted.iter_mut().chain(&mut actual.emitted) {
+                    emitted.names.clear();
+                }
+            }
+            assert_eq!(actual, expected, "case {case}, render names {render_names}");
+            assert_eq!(
+                progress.parsed_events, parsed,
+                "case {case}, render names {render_names}"
+            );
+        }
+    }
+    let expected = prepared(&source.0, &[("needle", None)], options());
+    assert_eq!(expected.counts, vec![2]);
+    assert_eq!(
+        expected
+            .emitted
+            .iter()
+            .map(|event| event.index)
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+}
+
 #[test]
 fn quota_stops_reading_before_the_rest_of_the_file() {
     let mut lines = vec![
@@ -429,8 +503,8 @@ fn quota_stops_reading_before_the_rest_of_the_file() {
     assert_eq!(run.emitted.len(), 1);
     assert!(std::fs::metadata(&source.0).unwrap().len() > 4_000_000);
     assert_eq!(progress.source_bytes, 64 * 1024);
-    assert_eq!(progress.parsed_events, 4);
-    assert_eq!(progress.examined_events, 4);
+    assert_eq!(progress.parsed_events, 1);
+    assert_eq!(progress.examined_events, 5);
     assert_eq!(progress.preparation_reserved_events, 0);
 }
 
@@ -452,7 +526,7 @@ fn complete_scan_charges_exact_bytes_lines_and_events() {
         progress.source_bytes as u64,
         std::fs::metadata(&source.0).unwrap().len()
     );
-    assert_eq!(progress.parsed_events, 5);
+    assert_eq!(progress.parsed_events, 2);
     assert_eq!(progress.examined_events, 3 + 2);
     assert_eq!(progress.source_opens, 1);
 }
@@ -994,14 +1068,26 @@ fn a_rewrite_racing_a_scan_fails_that_scan() {
 }
 
 #[test]
-fn an_append_racing_a_scan_revalidates_its_prefix_in_that_scan() {
-    let source = Source::new(&sparse(100, &[50]), true);
-    let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
-    let (result, counts, progress) = racing(&source, &json!({}), None, None);
-    result.unwrap();
-    assert_eq!(counts, vec![1]);
-    assert_eq!(progress.source_bytes, pinned);
-    assert_eq!(progress.validated_bytes, pinned);
+fn an_append_racing_a_prefiltered_scan_rechecks_only_its_fence() {
+    for config in [json!({}), json!({"max_scan_validate_bytes": 1000})] {
+        let source = Source::new(&sparse(100, &[50]), true);
+        let pinned = std::fs::metadata(&source.0).unwrap().len() as usize;
+        let (result, counts, progress) = racing(&source, &config, None, None);
+        result.unwrap();
+        assert_eq!(counts, vec![1], "{config:?}");
+        assert_eq!(progress.source_bytes, pinned, "{config:?}");
+        assert_eq!(progress.validated_bytes, 64, "{config:?}");
+        assert_eq!(progress.parsed_events, 1, "{config:?}");
+    }
+}
+
+#[test]
+fn a_fence_rewrite_racing_a_prefiltered_scan_fails_that_scan() {
+    let source = Source::new(&sparse(100, &[99]), true);
+    let pinned = std::fs::metadata(&source.0).unwrap().len();
+    let (result, _, progress) = racing(&source, &json!({}), None, Some(pinned - 20));
+    assert_eq!(result.err().unwrap().status, Status::Changed);
+    assert_eq!(progress.validated_bytes, 64);
 }
 
 fn rewrite_between_validation_blocks(source: &Source, replaced: bool) {

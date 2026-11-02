@@ -3,6 +3,8 @@ use std::mem::size_of;
 use std::ops::Range;
 
 use regex::{Regex, RegexBuilder};
+use regex_syntax::hir::literal::{ExtractKind, Extractor};
+use regex_syntax::ParserBuilder;
 
 use crate::activity::{result_index, tool_result_metadata};
 use crate::filter::event_kind;
@@ -65,6 +67,7 @@ struct CompiledPattern {
 
 pub struct GrepReducer<'store> {
     patterns: Vec<CompiledPattern>,
+    prefilter: Option<regex::bytes::Regex>,
     counts: Vec<usize>,
     options: GrepOptions,
     tool_names: Option<HashSet<String>>,
@@ -150,6 +153,56 @@ fn entry_bytes(snapshot: &TranscriptSnapshot, index: usize) -> usize {
         .saturating_add(charge.opaque_dom_accounted_bytes)
 }
 
+fn verbatim(byte: u8, ignore_case: bool) -> bool {
+    (byte.is_ascii_alphanumeric() || b"_-.@#$%&*;?!~^|'`()<>".contains(&byte))
+        && !(ignore_case && matches!(byte.to_ascii_lowercase(), b'k' | b's'))
+}
+
+fn needle(literal: &[u8], ignore_case: bool) -> Option<String> {
+    literal
+        .split(|byte| !verbatim(*byte, ignore_case))
+        .filter(|run| {
+            run.iter()
+                .any(|byte| byte.is_ascii_alphabetic() && !matches!(byte, b'e' | b'E'))
+        })
+        .max_by_key(|run| run.len())
+        .map(|run| regex::escape(std::str::from_utf8(run).expect("verbatim bytes are ascii")))
+}
+
+fn prefilter(
+    patterns: &[GrepPatternSpec],
+    ignore_case: bool,
+    limit: usize,
+) -> Option<regex::bytes::Regex> {
+    let mut needles = Vec::new();
+    for pattern in patterns {
+        let hir = ParserBuilder::new()
+            .nest_limit(64)
+            .build()
+            .parse(&pattern.pattern)
+            .expect("compiled patterns parse");
+        needles.extend(
+            [ExtractKind::Prefix, ExtractKind::Suffix]
+                .into_iter()
+                .find_map(|kind| {
+                    Extractor::new()
+                        .kind(kind)
+                        .extract(&hir)
+                        .literals()?
+                        .iter()
+                        .map(|literal| needle(literal.as_bytes(), ignore_case))
+                        .collect::<Option<Vec<_>>>()
+                })?,
+        );
+    }
+    regex::bytes::RegexBuilder::new(&needles.join("|"))
+        .case_insensitive(ignore_case)
+        .size_limit(limit)
+        .dfa_size_limit(limit)
+        .build()
+        .ok()
+}
+
 impl<'store> GrepReducer<'store> {
     pub fn new(
         patterns: Vec<GrepPatternSpec>,
@@ -197,7 +250,7 @@ impl<'store> GrepReducer<'store> {
         }
         budget.extend_staging(&mut staging, compiled_budget, cancel)?;
         let mut compiled = Vec::with_capacity(patterns.len());
-        for pattern in patterns {
+        for pattern in &patterns {
             budget.checkpoint(cancel)?;
             let regex = RegexBuilder::new(&pattern.pattern)
                 .case_insensitive(options.ignore_case)
@@ -217,6 +270,7 @@ impl<'store> GrepReducer<'store> {
                 max_matches: pattern.max_matches.filter(|cap| *cap != 0),
             });
         }
+        let prefilter = prefilter(&patterns, options.ignore_case, compiled_budget / 4);
         let tool_names = if let Some(spec) = &options.tool {
             let registry_bytes = registry
                 .accounted_allocations()
@@ -240,6 +294,7 @@ impl<'store> GrepReducer<'store> {
         Ok(Self {
             counts: vec![0; compiled.len()],
             patterns: compiled,
+            prefilter,
             options,
             tool_names,
             registry,
@@ -481,6 +536,10 @@ impl<'store> GrepReducer<'store> {
 
     pub fn streams(&self) -> bool {
         !self.options.errors && !self.options.with_result
+    }
+
+    pub fn prefilters(&self) -> bool {
+        self.prefilter.is_some()
     }
 
     fn matches(
@@ -837,6 +896,48 @@ mod tests {
             &Cancellation::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn prefilters_hold_a_verbatim_run_of_every_literal() {
+        let filter = |pattern: &str, ignore_case| {
+            prefilter(
+                &[GrepPatternSpec {
+                    id: 0,
+                    pattern: pattern.into(),
+                    max_matches: None,
+                }],
+                ignore_case,
+                1 << 20,
+            )
+        };
+        let matches = |pattern, ignore_case, line: &str| {
+            filter(pattern, ignore_case)
+                .unwrap()
+                .is_match(line.as_bytes())
+        };
+        assert!(matches("zoomable", false, r#"{"text":"a zoomable map"}"#));
+        assert!(!matches("zoomable", false, r#"{"text":"a zoomed map"}"#));
+        assert!(matches(
+            "geometric-repack-monorepo",
+            true,
+            r#"{"command":"git GEOMETRIC-REPACK-MONOREPO"}"#
+        ));
+        assert!(matches("kelvin", true, r#"{"text":"\u212Aelvin"}"#));
+        assert!(matches(
+            "caf\\x{e9} said",
+            false,
+            r#"{"text":"caf\u00e9 said"}"#
+        ));
+        assert!(matches("C:\\\\temp", false, r#"{"text":"C:\\temp"}"#));
+        assert!(matches(
+            "src/lib.rs",
+            false,
+            r#"{"file_path":"src\/lib.rs"}"#
+        ));
+        for pattern in [r"\d+", "e+", ".*", "foo|", "日本", "1e5"] {
+            assert!(filter(pattern, false).is_none(), "{pattern}");
+        }
     }
 
     #[test]

@@ -446,6 +446,11 @@ impl<'a> ScanSession<'a> {
         if roots.is_empty() {
             return Ok((Vec::new(), 0));
         }
+        crate::discovery::warm_metadata(
+            &roots,
+            self.budget.remaining().max_discovery_entries,
+            self.budget.limits.deadline_unix_ms,
+        );
         let mut request = self.bounded_request("discover");
         request.insert(
             "roots",
