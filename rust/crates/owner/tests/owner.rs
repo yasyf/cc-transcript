@@ -121,11 +121,22 @@ impl Owner {
         response["data"]["description"]["handle"].clone()
     }
 
-    fn review_events(&mut self, handle: &Value, watermark: Value, context_events: u64) -> Value {
-        let response = self.call(json!({"schema":HOST,"id":"events","operation":"review_events",
-            "deadline_unix_ms":now_ms()+30_000,"limits":limits(),
-            "view":{"handle":handle,"classifier":{"id":"native","version":"1"},"selectors":[],"attachments":[]},
-            "watermark":watermark,"context_events":context_events}));
+    fn review_events_at(
+        &mut self,
+        path: &Path,
+        revision: Value,
+        watermark: Value,
+        context_events: u64,
+    ) -> Value {
+        self.call(
+            json!({"schema":HOST,"id":"events","operation":"review_events",
+            "deadline_unix_ms":now_ms()+30_000,"limits":limits(),"path":path,
+            "source_revision":revision,"watermark":watermark,"context_events":context_events}),
+        )
+    }
+
+    fn review_events(&mut self, path: &Path, watermark: Value, context_events: u64) -> Value {
+        let response = self.review_events_at(path, json!(null), watermark, context_events);
         assert_eq!(response["status"], "ok", "{response}");
         response["data"].clone()
     }
@@ -184,21 +195,22 @@ fn review_events_page_only_events_past_the_watermark() {
     let path = directory.path().join("session.jsonl");
     std::fs::write(&path, user("u0") + &user("u1") + &user("u2")).unwrap();
     let mut owner = Owner::start();
-    let handle = owner.acquire(&path);
-    let first = owner.review_events(&handle, json!(null), 8);
+    let first = owner.review_events(&path, json!(null), 8);
     assert_eq!(positions(&first), [0, 1, 2]);
     assert_eq!(
         bounds(&first),
         (json!(0), json!(0), json!(true), json!(false))
     );
     let watermark = first["watermark"].clone();
-    let idle = owner.review_events(&handle, watermark.clone(), 0);
+    let revision = first["source_revision"].clone();
+    let idle = owner.review_events(&path, watermark.clone(), 0);
     assert!(positions(&idle).is_empty());
     assert_eq!(
         bounds(&idle),
         (json!(3), json!(3), json!(true), json!(false))
     );
     assert_eq!(idle["watermark"], watermark);
+    assert_eq!(idle["source_revision"], revision);
 
     OpenOptions::new()
         .append(true)
@@ -206,20 +218,45 @@ fn review_events_page_only_events_past_the_watermark() {
         .unwrap()
         .write_all((user("u3") + &user("u4")).as_bytes())
         .unwrap();
-    let handle = owner.acquire(&path);
-    let appended = owner.review_events(&handle, watermark, 1);
+    let appended = owner.review_events_at(&path, revision.clone(), watermark, 1);
+    assert_eq!(appended["status"], "ok", "{appended}");
+    let appended = appended["data"].clone();
     assert_eq!(positions(&appended), [2, 3, 4]);
     assert_eq!(
         bounds(&appended),
         (json!(2), json!(3), json!(true), json!(false))
     );
+    assert_ne!(appended["source_revision"], revision);
 
-    let foreign = owner.review_events(&handle, json!("v1:0:0:0:0:3:ffffffffffffffff"), 1);
+    let foreign = owner.review_events(&path, json!("v2:0:0:0:0:3"), 1);
     assert_eq!(positions(&foreign), [0, 1, 2, 3, 4]);
     assert_eq!(
         bounds(&foreign),
         (json!(0), json!(0), json!(true), json!(true))
     );
+}
+
+#[test]
+fn review_events_refuse_a_revision_the_source_no_longer_extends() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("session.jsonl");
+    std::fs::write(&path, user("u0") + &user("u1")).unwrap();
+    let mut owner = Owner::start();
+    let first = owner.review_events(&path, json!(null), 0);
+    let replaced = directory.path().join("replacement.jsonl");
+    std::fs::write(&replaced, user("v0")).unwrap();
+    std::fs::rename(&replaced, &path).unwrap();
+    let changed = owner.review_events_at(
+        &path,
+        first["source_revision"].clone(),
+        first["watermark"].clone(),
+        0,
+    );
+    assert_eq!(changed["status"], "changed", "{changed}");
+    assert_eq!(changed["reason"], "review source revision changed");
+    let restarted = owner.review_events(&path, first["watermark"].clone(), 0);
+    assert_eq!(positions(&restarted), [0]);
+    assert_eq!(restarted["reset"], json!(true));
 }
 
 #[test]
@@ -234,17 +271,16 @@ fn a_page_spent_on_context_never_moves_the_watermark_back() {
     )
     .unwrap();
     let mut owner = Owner::start();
-    let handle = owner.acquire(&path);
-    let first = owner.review_events(&handle, json!(null), 0);
+    let first = owner.review_events(&path, json!(null), 0);
     assert_eq!(positions(&first), (0..256).collect::<Vec<_>>());
     assert_eq!(
         bounds(&first),
         (json!(0), json!(0), json!(false), json!(false))
     );
-    let replayed = owner.review_events(&handle, first["watermark"].clone(), 256);
+    let replayed = owner.review_events(&path, first["watermark"].clone(), 256);
     assert_eq!(positions(&replayed), (0..256).collect::<Vec<_>>());
     assert_eq!(replayed["watermark"], first["watermark"]);
-    let rest = owner.review_events(&handle, replayed["watermark"].clone(), 0);
+    let rest = owner.review_events(&path, replayed["watermark"].clone(), 0);
     assert_eq!(positions(&rest), (256..300).collect::<Vec<_>>());
     assert_eq!(
         bounds(&rest),

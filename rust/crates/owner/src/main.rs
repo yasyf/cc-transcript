@@ -83,7 +83,7 @@ fn serve() -> Result<(), ProtocolError> {
     if std::env::var_os("CC_TRANSCRIPT_PARSE_THREADS").is_none() {
         std::env::set_var("CC_TRANSCRIPT_PARSE_THREADS", "4");
     }
-    let store = NativeStore::new(&config).map_err(|error| invalid(error.reason))?;
+    let store = NativeStore::new_agent(&config).map_err(|error| invalid(error.reason))?;
     let owner = owner::Owner::new(store).map_err(|error| invalid(error.reason))?;
     service::Service::new(owner, output).run(&mut input)
 }
