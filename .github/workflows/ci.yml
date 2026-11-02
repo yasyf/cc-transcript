@@ -73,11 +73,23 @@ jobs:
           cargo test -p cc-transcript-core --no-default-features --lib -- request_projection_ --nocapture
           uv run --no-sync pytest tests/test_request_body_projection.py -q -s
 
-      - name: Test owned native mining kernel
+      - name: Test registered review continuation on Linux
         env:
           CARGO_BUILD_JOBS: "2"
-          RUST_TEST_THREADS: "2"
-        run: cargo test --locked -p cc-transcript-core --no-default-features --lib mining::tests -- --nocapture --test-threads=2
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/registered-review-evidence"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib mining::tests -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/mining.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib registered_review_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/reader.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_review:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/dependencies.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
+      - name: Upload Linux registered review continuation controls
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: registered-review-continuation-linux
+          path: ${{ runner.temp }}/registered-review-evidence/
+          if-no-files-found: error
 
       - name: Test native Python bridge
         env:
@@ -226,6 +238,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test owned transcript catalog operation counts on macOS
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
+      - name: Test registered review continuation on macOS
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/registered-review-evidence"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib mining::tests -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/mining.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib registered_review_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/reader.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_review:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/dependencies.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
+      - name: Upload macOS registered review continuation controls
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: registered-review-continuation-macos
+          path: ${{ runner.temp }}/registered-review-evidence/
+          if-no-files-found: error
+
       - name: Test shared publication admission and unchanged source reuse on macOS
         env:
           CARGO_BUILD_JOBS: "2"

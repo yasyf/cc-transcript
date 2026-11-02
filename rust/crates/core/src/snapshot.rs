@@ -1801,6 +1801,7 @@ enum CacheOwner {
     Generation(usize),
     Carried(usize),
     Catalog(usize),
+    Review([u8; 32]),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -2198,6 +2199,7 @@ pub(crate) struct StoreState {
     prepared_queries: Ledgered<String, PreparedQueryCursor>,
     expired_prepared_queries: Ledgered<String, (String, u64)>,
     prepared_facts: Ledgered<PreparedDiskKey, CachedPreparedFacts>,
+    review_inputs: Ledgered<[u8; 32], RegisteredReviewInput>,
     warm_memberships: Ledgered<String, Arc<MembershipSlot>>,
     deliveries: Ledgered<Arc<str>, Delivery>,
     deliveries_expiry: DeadlineIndex<Arc<str>>,
@@ -2280,6 +2282,7 @@ impl StoreState {
             prepared_queries: Ledgered::new(work.clone()),
             expired_prepared_queries: Ledgered::new(work.clone()),
             prepared_facts: Ledgered::new(work.clone()),
+            review_inputs: Ledgered::new(work.clone()),
             warm_memberships: Ledgered::new(work.clone()),
             deliveries: Ledgered::new(work.clone()),
             deliveries_expiry: DeadlineIndex::new(work.clone()),
@@ -5480,6 +5483,7 @@ impl NativeStore {
                 + state.prepared_builds.charged()
                 + state.expired_prepared_queries.charged()
                 + state.prepared_facts.charged()
+                + state.review_inputs.charged()
                 + state.ledger.shared.facts(),
             metadata: state.deliveries.charged()
                 + state.registries.charged()
@@ -5635,6 +5639,7 @@ impl NativeStore {
                 "prepared_builds",
                 "expired_prepared_queries",
                 "prepared_facts",
+                "review_inputs",
             ]) + Self::audit_prepared_fact_bytes(state),
             metadata: walked(&[
                 "deliveries",
@@ -5659,8 +5664,22 @@ impl NativeStore {
     }
 
     #[cfg(test)]
-    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 25] {
+    fn walked_records(state: &StoreState) -> [(&'static str, usize, usize); 26] {
         [
+            (
+                "review_inputs",
+                state.review_inputs.charged(),
+                state.review_inputs.audit_with(|_, input| {
+                    input.charge() - input.mining.accounted_bytes() + input.mining.audited_bytes()
+                        - input.activity.accounted_bytes()
+                        + input
+                            .activity
+                            .audited_allocations(false)
+                            .iter()
+                            .map(|(_, bytes)| bytes)
+                            .sum::<usize>()
+                }),
+            ),
             (
                 "catalog_owners",
                 state.catalog_owners.charged(),
@@ -6480,6 +6499,7 @@ impl NativeStore {
             + state.prepared_queries.capacity_bytes()
             + state.expired_prepared_queries.capacity_bytes()
             + state.prepared_facts.capacity_bytes()
+            + state.review_inputs.capacity_bytes()
             + state.labels.capacity_bytes()
             + state.discoveries.capacity_bytes()
             + state.checkpoints.capacity_bytes()
@@ -12324,6 +12344,8 @@ include!("snapshot_cache.rs");
 include!("snapshot_root_warm.rs");
 include!("snapshot_codex_append.rs");
 include!("snapshot_compact_codex.rs");
+include!("snapshot_review_source.rs");
+include!("snapshot_review_reader.rs");
 include!("snapshot_spine.rs");
 include!("snapshot_raw_scope.rs");
 include!("snapshot_direct_tail.rs");
@@ -12398,6 +12420,7 @@ mod tests {
     include!("snapshot_skill_demand_controls.rs");
     include!("snapshot_skill_demand_tests.rs");
     include!("snapshot_compact_codex_tests.rs");
+    include!("snapshot_registered_review_tests.rs");
     include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");

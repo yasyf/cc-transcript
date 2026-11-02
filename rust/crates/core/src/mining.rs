@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use regex::Regex;
+use sha2::{Digest, Sha256};
 use sonic_rs::{Index, JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::filter::compile_group_array;
@@ -27,6 +28,11 @@ use crate::types::{
     UserEntry,
 };
 use crate::value::{field, field_bool, field_str};
+
+#[path = "mining_index.rs"]
+mod index;
+
+pub use index::ReviewMiningIndex;
 
 #[derive(Clone)]
 enum ConfStage {
@@ -181,6 +187,7 @@ struct CompiledStructuredFormat {
 
 pub trait CallableReviewFormat: Send + Sync {
     fn name(&self) -> &str;
+    fn fingerprint(&self) -> [u8; 32];
     fn bounded(&self) -> bool;
     fn visit(
         &self,
@@ -199,6 +206,8 @@ struct CompiledReviewSpec {
 }
 
 pub struct CompiledMiningSpec {
+    config_fingerprint: [u8; 32],
+    fingerprint: [u8; 32],
     detectors: HashSet<String>,
     reentry_lookback: usize,
     edit_tools: HashSet<String>,
@@ -395,10 +404,23 @@ fn compile_review_spec(review: &Value) -> Result<CompiledReviewSpec, String> {
     })
 }
 
+impl CompiledMiningSpec {
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+}
+
+fn spec_fingerprint(root: &Value) -> Result<[u8; 32], String> {
+    let canonical = crate::ids::canonical_json(root).map_err(|error| error.to_string())?;
+    Ok(Sha256::digest(canonical.as_bytes()).into())
+}
+
 pub fn compile_spec(spec_json: &str) -> Result<CompiledMiningSpec, String> {
     let root: Value =
         sonic_rs::from_str(spec_json).map_err(|e| format!("invalid mining spec json: {e}"))?;
     Ok(CompiledMiningSpec {
+        config_fingerprint: spec_fingerprint(&root)?,
+        fingerprint: spec_fingerprint(&root)?,
         detectors: str_set(&root, "detectors"),
         reentry_lookback: field(&root, "reentry_lookback")
             .and_then(JsonValueTrait::as_u64)
@@ -424,6 +446,15 @@ pub fn set_callable_formats(
     spec: &mut CompiledMiningSpec,
     formats: Vec<Arc<dyn CallableReviewFormat>>,
 ) {
+    let mut fingerprint = Sha256::new();
+    fingerprint.update(spec.config_fingerprint);
+    for format in &formats {
+        fingerprint.update(format.name().len().to_le_bytes());
+        fingerprint.update(format.name().as_bytes());
+        fingerprint.update(format.fingerprint());
+        fingerprint.update([u8::from(format.bounded())]);
+    }
+    spec.fingerprint = fingerprint.finalize().into();
     spec.review.callable_formats = formats;
 }
 
@@ -589,8 +620,45 @@ impl MiningBudget {
     }
 }
 
+enum EventRows<'a> {
+    Full(Vec<&'a Entry>),
+    Indexed {
+        index: &'a ReviewMiningIndex,
+        overrides: &'a HashMap<usize, &'a Entry>,
+    },
+}
+
+enum EventIndices<'a> {
+    Full(std::ops::Range<usize>),
+    Indexed(std::collections::btree_set::Iter<'a, usize>),
+}
+
+impl Iterator for EventIndices<'_> {
+    type Item = usize;
+    fn next(&mut self) -> Option<usize> {
+        match self {
+            Self::Full(indices) => indices.next(),
+            Self::Indexed(indices) => indices.next().copied(),
+        }
+    }
+}
+
+enum ToolUseIndex<'a> {
+    Full(HashMap<&'a str, &'a ToolUseBlock>),
+    Indexed(&'a HashMap<String, ToolUseBlock>),
+}
+
+impl<'a> ToolUseIndex<'a> {
+    fn get(&self, id: &str) -> Option<&'a ToolUseBlock> {
+        match self {
+            Self::Full(uses) => uses.get(id).copied(),
+            Self::Indexed(uses) => uses.get(id),
+        }
+    }
+}
+
 struct Events<'a> {
-    entries: Vec<&'a Entry>,
+    entries: EventRows<'a>,
     texts: Vec<String>,
     budget: Option<MiningBudget>,
 }
@@ -604,15 +672,53 @@ impl<'a> Events<'a> {
                 _ => String::new(),
             })
             .collect();
-        Events {
-            entries,
+        Self {
+            entries: EventRows::Full(entries),
             texts,
             budget: None,
         }
     }
 
+    fn index(&self) -> Option<&'a ReviewMiningIndex> {
+        match self.entries {
+            EventRows::Indexed { index, .. } => Some(index),
+            EventRows::Full(_) => None,
+        }
+    }
+
+    fn entry(&self, index: usize) -> &'a Entry {
+        match &self.entries {
+            EventRows::Full(entries) => entries[index],
+            EventRows::Indexed {
+                index: corpus,
+                overrides,
+            } => overrides
+                .get(&index)
+                .copied()
+                .unwrap_or(&corpus.entries[index]),
+        }
+    }
+
+    fn iter_entries(&self) -> impl Iterator<Item = (usize, &'a Entry)> + '_ {
+        let indices = match self.index() {
+            Some(index) => EventIndices::Indexed(index.pending.iter()),
+            None => EventIndices::Full(0..self.len()),
+        };
+        indices.map(|index| (index, self.entry(index)))
+    }
+
+    fn text(&self, index: usize) -> &str {
+        match self.index() {
+            Some(corpus) => corpus.text(index),
+            None => &self.texts[index],
+        }
+    }
+
     fn len(&self) -> usize {
-        self.entries.len()
+        match &self.entries {
+            EventRows::Full(entries) => entries.len(),
+            EventRows::Indexed { index, .. } => index.entries.len(),
+        }
     }
 
     fn check(&self) -> MiningResult<()> {
@@ -632,29 +738,69 @@ impl<'a> Events<'a> {
     }
 
     fn nearest_assistant_index(&self, index: usize) -> Option<i64> {
+        if let Some(corpus) = self.index() {
+            return corpus
+                .assistants
+                .range(..index)
+                .next_back()
+                .map(|index| *index as i64);
+        }
         (0..index)
             .rev()
-            .find(|&i| matches!(self.entries[i], Entry::Assistant(_)))
+            .find(|&i| matches!(self.entry(i), Entry::Assistant(_)))
             .map(|i| i as i64)
     }
 
     fn next_user_message(&self, index: usize) -> Option<(usize, &UserEntry)> {
-        (index..self.len()).find_map(|i| match &self.entries[i] {
-            Entry::User(user) if !self.texts[i].trim().is_empty() => Some((i, user)),
+        if let Some(corpus) = self.index() {
+            let index = *corpus.users.range(index..).next()?;
+            let Entry::User(user) = self.entry(index) else {
+                unreachable!()
+            };
+            return Some((index, user));
+        }
+        (index..self.len()).find_map(|i| match self.entry(i) {
+            Entry::User(user) if !self.text(i).trim().is_empty() => Some((i, user)),
             _ => None,
         })
     }
 
     fn last_edit_index(&self, index: usize, spec: &CompiledMiningSpec) -> Option<i64> {
         let lo = index.saturating_sub(spec.reentry_lookback);
+        if let Some(corpus) = self.index() {
+            return corpus
+                .edits
+                .range(lo..index)
+                .next_back()
+                .map(|index| *index as i64);
+        }
         (lo..index)
             .rev()
             .find(|&i| {
-                self.entries[i]
+                self.entry(i)
                     .tool_uses()
-                    .any(|tu| matches_names(&tu.name, &spec.edit_tools))
+                    .any(|tool| matches_names(&tool.name, &spec.edit_tools))
             })
             .map(|i| i as i64)
+    }
+
+    fn embedded(&self, event: usize, ordinal: usize, result: &ToolResultBlock) -> Option<String> {
+        match &self.entries {
+            EventRows::Indexed { index, overrides } if !overrides.contains_key(&event) => {
+                index.result_facts[&event][ordinal].embedded.clone()
+            }
+            _ => embedded_user_text(&result.content),
+        }
+    }
+
+    fn interrupted(&self, event: usize, user: &UserEntry) -> bool {
+        match &self.entries {
+            EventRows::Indexed { index, overrides } if !overrides.contains_key(&event) => index
+                .result_facts
+                .get(&event)
+                .is_some_and(|facts| facts.iter().any(|fact| fact.interrupt)),
+            _ => marker_in(user),
+        }
     }
 }
 
@@ -685,10 +831,18 @@ struct ScoredText {
 }
 
 fn correction_text(events: &Events<'_>, mut index: usize, structural: &Regex) -> Option<String> {
+    if let Some(corpus) = events.index() {
+        let target = corpus
+            .dependencies
+            .followup(index)
+            .expect("indexed correction anchor")
+            .correction?;
+        return Some(events.text(target).to_owned());
+    }
     while let Some((i, _)) = events.next_user_message(index + 1) {
-        let text = &events.texts[i];
+        let text = events.text(i);
         if !is_bare_interrupt_marker(text) && !structural.is_match(text) {
-            return Some(text.clone());
+            return Some(text.to_owned());
         }
         index = i;
     }
@@ -696,10 +850,18 @@ fn correction_text(events: &Events<'_>, mut index: usize, structural: &Regex) ->
 }
 
 fn first_followup(events: &Events<'_>, mut index: usize) -> Option<String> {
+    if let Some(corpus) = events.index() {
+        let target = corpus
+            .dependencies
+            .followup(index)
+            .expect("indexed followup anchor")
+            .first?;
+        return Some(events.text(target).to_owned());
+    }
     while let Some((i, _)) = events.next_user_message(index + 1) {
         index = i;
-        if !is_bare_interrupt_marker(&events.texts[index]) {
-            return Some(events.texts[index].clone());
+        if !is_bare_interrupt_marker(events.text(index)) {
+            return Some(events.text(index).to_owned());
         }
     }
     None
@@ -734,9 +896,10 @@ fn denial_correction(
     }
 }
 
-fn denial_results(user: &UserEntry) -> impl Iterator<Item = &ToolResultBlock> {
+fn denial_results(user: &UserEntry) -> impl Iterator<Item = (usize, &ToolResultBlock)> {
     user.tool_results()
-        .filter(|b| b.denial_kind.as_deref() == Some(DENIAL_KIND_USER_REJECTED))
+        .enumerate()
+        .filter(|(_, block)| block.denial_kind.as_deref() == Some(DENIAL_KIND_USER_REJECTED))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -794,10 +957,10 @@ fn iter_user_message(
     spec: &CompiledMiningSpec,
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
-    for (index, entry) in events.entries.iter().enumerate() {
+    for (index, entry) in events.iter_entries() {
         events.check()?;
         let Entry::User(user) = entry else { continue };
-        let text = &events.texts[index];
+        let text = events.text(index);
         if text.trim().is_empty() || is_bare_interrupt_marker(text) {
             continue;
         }
@@ -823,20 +986,20 @@ fn iter_user_message(
 fn iter_plan_rejection(
     events: &Events<'_>,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<&str, &ToolUseBlock>,
+    uses: &ToolUseIndex<'_>,
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
-    for (index, entry) in events.entries.iter().enumerate() {
+    for (index, entry) in events.iter_entries() {
         events.check()?;
         let Entry::User(user) = entry else { continue };
-        for result in denial_results(user) {
+        for (ordinal, result) in denial_results(user) {
             let Some(use_block) = uses.get(result.tool_use_id.as_str()) else {
                 continue;
             };
             if !matches_names(&use_block.name, &spec.plan_tools) {
                 continue;
             }
-            let Some(text) = embedded_user_text(&result.content) else {
+            let Some(text) = events.embedded(index, ordinal, result) else {
                 continue;
             };
             let trigger = events.nearest_assistant_index(index);
@@ -865,24 +1028,38 @@ fn iter_plan_reentry(
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
     let mut seen: HashSet<&str> = HashSet::new();
-    for (index, entry) in events.entries.iter().enumerate() {
+    for (index, entry) in events.iter_entries() {
         events.check()?;
         let Entry::Mode(mode) = entry else { continue };
         if mode.value != "plan" {
             continue;
         }
-        let Some((user_index, user)) = events.next_user_message(index) else {
+        let next = match events.index() {
+            Some(corpus) => corpus.dependencies.plan_user(index).map(|target| {
+                let Entry::User(user) = events.entry(target) else {
+                    unreachable!()
+                };
+                (target, user)
+            }),
+            None => events.next_user_message(index),
+        };
+        let Some((user_index, user)) = next else {
             continue;
         };
         let uuid = user.meta.uuid.as_str();
-        if seen.contains(uuid) || is_bare_interrupt_marker(&events.texts[user_index]) {
+        if seen.contains(uuid)
+            || events
+                .index()
+                .is_some_and(|corpus| corpus.plan_seen.contains(uuid))
+            || is_bare_interrupt_marker(events.text(user_index))
+        {
             continue;
         }
         let Some(edit) = events.last_edit_index(user_index, spec) else {
             continue;
         };
         seen.insert(uuid);
-        let text = &events.texts[user_index];
+        let text = events.text(user_index);
         let trigger = events.nearest_assistant_index(user_index);
         let sig = calibrated(&spec.calibrated, text, "reentry_after_edit");
         out.push(build_signal(
@@ -905,21 +1082,21 @@ fn iter_plan_reentry(
 fn iter_tool_denial(
     events: &Events<'_>,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<&str, &ToolUseBlock>,
+    uses: &ToolUseIndex<'_>,
     structural: &Regex,
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
-    for (index, entry) in events.entries.iter().enumerate() {
+    for (index, entry) in events.iter_entries() {
         events.check()?;
         let Entry::User(user) = entry else { continue };
-        for block in denial_results(user) {
-            let paired = uses.get(block.tool_use_id.as_str()).copied();
+        for (ordinal, block) in denial_results(user) {
+            let paired = uses.get(block.tool_use_id.as_str());
             if paired.is_some_and(|use_block| {
                 matches_names(&use_block.name, &spec.denial_excluded_tools)
             }) {
                 continue;
             }
-            let embedded = embedded_user_text(&block.content);
+            let embedded = events.embedded(index, ordinal, block);
             let Some(scored) = denial_correction(events, index, embedded, spec, structural) else {
                 continue;
             };
@@ -958,10 +1135,10 @@ fn iter_interrupt(
     structural: &Regex,
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
-    for (index, entry) in events.entries.iter().enumerate() {
+    for (index, entry) in events.iter_entries() {
         events.check()?;
         let Entry::User(user) = entry else { continue };
-        if !marker_in(user) {
+        if !events.interrupted(index, user) {
             continue;
         }
         let Some(scored) = marker_correction(events, index, structural) else {
@@ -1016,10 +1193,10 @@ fn review_scan_texts<'a>(
     user: &'a UserEntry,
     index: usize,
     spec: &'a CompiledMiningSpec,
-    uses: &'a HashMap<&'a str, &'a ToolUseBlock>,
+    uses: &'a ToolUseIndex<'a>,
 ) -> impl Iterator<Item = ScanText<'a>> + 'a {
     let surfaces = &spec.review.surfaces;
-    let text = events.texts[index].as_str();
+    let text = events.text(index);
     let typed = (surfaces.contains("typed") && !text.trim().is_empty()).then(|| ScanText {
         text,
         provenance: "typed",
@@ -1233,10 +1410,10 @@ fn visit_review_comments(
 fn iter_review_comment(
     events: &Events<'_>,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<&str, &ToolUseBlock>,
+    uses: &ToolUseIndex<'_>,
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
-    for (index, entry) in events.entries.iter().enumerate() {
+    for (index, entry) in events.iter_entries() {
         events.check()?;
         let Entry::User(user) = entry else { continue };
         for scan in review_scan_texts(events, user, index, spec, uses) {
@@ -1440,10 +1617,10 @@ fn resolve_pick(answer: Option<&str>, labels: &[String]) -> (Vec<String>, bool) 
 fn iter_ask_user_question(
     events: &Events<'_>,
     spec: &CompiledMiningSpec,
-    uses: &HashMap<&str, &ToolUseBlock>,
+    uses: &ToolUseIndex<'_>,
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
-    for (index, entry) in events.entries.iter().enumerate() {
+    for (index, entry) in events.iter_entries() {
         events.check()?;
         let Entry::User(user) = entry else { continue };
         for block in user.tool_results() {
@@ -1632,7 +1809,7 @@ pub fn prepare_snapshot<'a>(
         usage: Cell::new(*usage),
     };
     let events = Events {
-        entries,
+        entries: EventRows::Full(entries),
         texts,
         budget: Some(budget),
     };
@@ -1656,12 +1833,71 @@ pub fn mine_prepared_into(
     result
 }
 
+fn mine_indexed(
+    index: &ReviewMiningIndex,
+    spec: &CompiledMiningSpec,
+    overrides: &HashMap<usize, &Entry>,
+    limits: WorkLimits,
+    cancel: &Cancellation,
+    usage: &mut MiningUsage,
+) -> MiningResult<Vec<MiningSignal>> {
+    let mut events = Events {
+        entries: EventRows::Indexed { index, overrides },
+        texts: Vec::new(),
+        budget: None,
+    };
+    for (_, entry) in events.iter_entries() {
+        cancel.check(limits.deadline_unix_ms)?;
+        if usage.events == limits.max_events {
+            return Err(SnapshotError::new(
+                Status::EntryLimit,
+                "mining input event budget exceeded",
+            )
+            .into());
+        }
+        let charge = crate::snapshot_memory::entry_charge(entry);
+        let bytes = charge.owned_capacity_bytes
+            + charge.opaque_dom_accounted_bytes
+            + size_of::<Entry>()
+            + size_of::<&Entry>();
+        if bytes > limits.max_read_bytes.saturating_sub(usage.input_bytes) {
+            return Err(SnapshotError::new(
+                Status::SourceLimit,
+                "mining input byte budget exceeded",
+            )
+            .into());
+        }
+        usage.events += 1;
+        usage.input_bytes += bytes;
+    }
+    events.budget = Some(MiningBudget {
+        limits,
+        cancel: cancel.clone(),
+        usage: Cell::new(*usage),
+    });
+    let mut rows = Vec::new();
+    let result = mine_events_impl(&events, spec, &mut rows).and_then(|()| events.check());
+    *usage = events
+        .budget
+        .as_ref()
+        .expect("indexed mining budget")
+        .usage
+        .get();
+    result?;
+    Ok(rows)
+}
+
 fn mine_events_impl(
     events: &Events<'_>,
     spec: &CompiledMiningSpec,
     out: &mut dyn SignalSink,
 ) -> MiningResult<()> {
-    let uses = tool_use_index(events.entries.iter().copied());
+    let uses = match events.index() {
+        Some(index) => ToolUseIndex::Indexed(&index.uses),
+        None => ToolUseIndex::Full(tool_use_index(
+            (0..events.len()).map(|index| events.entry(index)),
+        )),
+    };
     let structural = structural_re(spec);
     if spec.detectors.contains(DETECTOR_TRANSCRIPT_MESSAGE) {
         iter_user_message(events, spec, out)?;
@@ -1699,6 +1935,8 @@ mod tests {
             }],
         };
         CompiledMiningSpec {
+            config_fingerprint: [0; 32],
+            fingerprint: [0; 32],
             detectors: detectors.iter().map(|name| (*name).to_owned()).collect(),
             reentry_lookback: 40,
             edit_tools: HashSet::new(),
@@ -1716,11 +1954,281 @@ mod tests {
         }
     }
 
+    fn index_limits() -> WorkLimits {
+        WorkLimits {
+            max_read_bytes: 64 * 1024 * 1024,
+            max_source_read_bytes: 64 * 1024 * 1024,
+            max_events: 100000,
+            max_items: 100000,
+            max_output_bytes: 64 * 1024 * 1024,
+            max_discovery_entries: 1,
+            max_sources: 1,
+            deadline_unix_ms: u64::MAX,
+        }
+    }
+
+    fn parsed_entry(value: Value) -> Entry {
+        crate::parse::parse_bytes(&sonic_rs::to_vec(&value).unwrap(), |_| true)
+            .unwrap()
+            .pop()
+            .unwrap()
+    }
+
+    fn user_entry(uuid: &str, text: &str) -> Entry {
+        parsed_entry(sonic_rs::json!({
+            "type":"user", "sessionId":"s", "uuid":uuid, "timestamp":"2026-11-02T00:00:00Z",
+            "message":{"role":"user", "content":text}
+        }))
+    }
+
+    fn tool_entry(uuid: &str, id: &str, name: &str, input: Value) -> Entry {
+        parsed_entry(sonic_rs::json!({
+            "type":"assistant", "sessionId":"s", "uuid":uuid, "timestamp":"2026-11-02T00:00:00Z",
+            "message":{"role":"assistant", "model":"m", "content":[{"type":"tool_use", "id":id, "name":name, "input":input}]}
+        }))
+    }
+
+    fn indexed_equals_reference(
+        index: &ReviewMiningIndex,
+        entries: &[Entry],
+        spec: &CompiledMiningSpec,
+    ) {
+        let reference = mine_entries(entries.iter().collect(), spec).unwrap();
+        let indexed = index.signals().unwrap().collect::<Vec<_>>();
+        assert_eq!(
+            sonic_rs::to_string(&indexed).unwrap(),
+            sonic_rs::to_string(&reference).unwrap()
+        );
+    }
+
+    #[test]
+    fn indexed_plan_row_survives_unrelated_tool_result_rebinding_at_its_user_anchor() {
+        let mut spec = mining_spec(&[DETECTOR_PLAN_REENTRY]);
+        spec.edit_tools.insert("Edit".into());
+        let mut index = ReviewMiningIndex::new(&spec).unwrap();
+        let mut entries = vec![
+            tool_entry("edit", "edit", "Edit", sonic_rs::json!({})),
+            Entry::Mode(crate::types::ModeEntry {
+                session_id: "s".into(),
+                channel: crate::types::ModeChannel::Mode,
+                value: "plan".into(),
+            }),
+            parsed_entry(sonic_rs::json!({
+                "type":"user", "sessionId":"s", "uuid":"user", "timestamp":"2026-11-02T00:00:01Z",
+                "message":{"role":"user", "content":[{"type":"text", "text":"please reenter planning"},{"type":"tool_result", "tool_use_id":"x", "content":"irrelevant"}]}
+            })),
+        ];
+        index
+            .append(&entries.iter().collect::<Vec<_>>(), &spec)
+            .unwrap();
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut MiningUsage::default(),
+            )
+            .unwrap();
+        assert_eq!(index.signals().unwrap().count(), 1);
+        indexed_equals_reference(&index, &entries, &spec);
+        entries.push(tool_entry("later", "x", "Read", sonic_rs::json!({})));
+        index.append(&[&entries[3]], &spec).unwrap();
+        let mut usage = MiningUsage::default();
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut usage,
+            )
+            .unwrap();
+        assert_eq!(usage.events, 2);
+        indexed_equals_reference(&index, &entries, &spec);
+    }
+
+    #[test]
+    fn indexed_mining_preserves_distant_followups_and_unchanged_zero_input_work() {
+        let mut spec = mining_spec(&[
+            DETECTOR_TRANSCRIPT_MESSAGE,
+            DETECTOR_DENIAL,
+            DETECTOR_INTERRUPT,
+        ]);
+        spec.denial_excluded_tools.insert("ExitPlanMode".into());
+        let mut index = ReviewMiningIndex::new(&spec).unwrap();
+        let mut entries = vec![
+            tool_entry("assistant", "edit", "Edit", sonic_rs::json!({})),
+            parsed_entry(sonic_rs::json!({
+                "type":"user", "sessionId":"s", "uuid":"marker", "timestamp":"2026-11-02T00:00:00Z",
+                "toolDenialKind":"user-rejected", "message":{"role":"user", "content":[{
+                    "type":"tool_result", "tool_use_id":"late", "is_error":true,
+                    "content":"[Request interrupted by user]"
+                }]}
+            })),
+        ];
+        index
+            .append(&entries.iter().collect::<Vec<_>>(), &spec)
+            .unwrap();
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut MiningUsage::default(),
+            )
+            .unwrap();
+        indexed_equals_reference(&index, &entries, &spec);
+        let start = entries.len();
+        entries.extend((0..4096).map(|number| {
+            user_entry(
+                &format!("structural-{number}"),
+                "[Request interrupted by user] structural followup",
+            )
+        }));
+        index
+            .append(&entries[start..].iter().collect::<Vec<_>>(), &spec)
+            .unwrap();
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut MiningUsage::default(),
+            )
+            .unwrap();
+        indexed_equals_reference(&index, &entries, &spec);
+        let start = entries.len();
+        entries.push(user_entry(
+            "correction",
+            "please preserve these exact canonical words",
+        ));
+        index
+            .append(&entries[start..].iter().collect::<Vec<_>>(), &spec)
+            .unwrap();
+        let mut usage = MiningUsage::default();
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut usage,
+            )
+            .unwrap();
+        assert_eq!(usage.events, 2);
+        indexed_equals_reference(&index, &entries, &spec);
+        let start = entries.len();
+        entries.push(tool_entry(
+            "late-use",
+            "late",
+            "ExitPlanMode",
+            sonic_rs::json!({}),
+        ));
+        index
+            .append(&entries[start..].iter().collect::<Vec<_>>(), &spec)
+            .unwrap();
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut usage,
+            )
+            .unwrap();
+        assert_eq!(usage.events, 2);
+        indexed_equals_reference(&index, &entries, &spec);
+        index.append(&[], &spec).unwrap();
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut usage,
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                usage.events,
+                usage.input_bytes,
+                usage.items,
+                usage.output_bytes
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn indexed_question_payloads_are_sparse_required_and_rebound_with_latest_questions() {
+        let spec = mining_spec(&[DETECTOR_ASK_USER_QUESTION]);
+        let mut index = ReviewMiningIndex::new(&spec).unwrap();
+        let mut entries = vec![parsed_entry(sonic_rs::json!({
+            "type":"user", "sessionId":"s", "uuid":"answer", "timestamp":"2026-11-02T00:00:00Z",
+            "message":{"role":"user", "content":[{"type":"tool_result", "tool_use_id":"q", "content":"answered"}]},
+            "toolUseResult":{"answers":{"Which?":"1"}}
+        }))];
+        index.append(&[&entries[0]], &spec).unwrap();
+        assert!(index.required_payloads(&spec).unwrap().is_empty());
+        index
+            .process(
+                &spec,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut MiningUsage::default(),
+            )
+            .unwrap();
+        indexed_equals_reference(&index, &entries, &spec);
+        for (uuid, header, label) in [("first", "first", "A"), ("second", "second", "B")] {
+            entries.push(tool_entry(uuid, "q", "AskUserQuestion", sonic_rs::json!({
+                "questions":[{"question":"Which?", "header":header, "options":[{"label":label}]}]
+            })));
+            index.append(&[entries.last().unwrap()], &spec).unwrap();
+            assert_eq!(index.required_payloads(&spec).unwrap(), [0]);
+            assert!(index
+                .process(
+                    &spec,
+                    &HashMap::new(),
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut MiningUsage::default()
+                )
+                .is_err());
+            assert!(index.signals().is_err());
+            let payloads = HashMap::from([(0, &entries[0])]);
+            let mut usage = MiningUsage::default();
+            index
+                .process(
+                    &spec,
+                    &payloads,
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut usage,
+                )
+                .unwrap();
+            assert_eq!(usage.events, 2);
+            indexed_equals_reference(&index, &entries, &spec);
+        }
+        let Entry::User(user) = &index.entries[0] else {
+            unreachable!()
+        };
+        let result = user.tool_results().next().unwrap();
+        assert!(result.content.is_empty());
+        assert!(result.tool_use_result.is_none());
+    }
+
     struct CountFormat(Arc<std::sync::atomic::AtomicUsize>);
 
     impl CallableReviewFormat for CountFormat {
         fn name(&self) -> &str {
             "count"
+        }
+        fn fingerprint(&self) -> [u8; 32] {
+            [0; 32]
         }
         fn bounded(&self) -> bool {
             true
@@ -1738,6 +2246,70 @@ mod tests {
     }
 
     struct StopSink;
+
+    struct IdentityFormat(u8);
+
+    impl CallableReviewFormat for IdentityFormat {
+        fn name(&self) -> &str {
+            "identity"
+        }
+        fn fingerprint(&self) -> [u8; 32] {
+            [self.0; 32]
+        }
+        fn bounded(&self) -> bool {
+            true
+        }
+        fn visit(
+            &self,
+            _text: &str,
+            _bounded: bool,
+            _preflight: &dyn Fn(usize) -> MiningResult<()>,
+            _emit: &mut dyn FnMut(ReviewComment) -> MiningResult<()>,
+        ) -> MiningResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn indexed_mining_borrows_equivalent_policy_and_rejects_callback_replacement_before_mutation() {
+        let mut first = mining_spec(&[DETECTOR_TRANSCRIPT_MESSAGE]);
+        let mut equivalent = mining_spec(&[DETECTOR_TRANSCRIPT_MESSAGE]);
+        let mut replacement = mining_spec(&[DETECTOR_TRANSCRIPT_MESSAGE]);
+        set_callable_formats(&mut first, vec![Arc::new(IdentityFormat(1))]);
+        set_callable_formats(&mut equivalent, vec![Arc::new(IdentityFormat(1))]);
+        set_callable_formats(&mut replacement, vec![Arc::new(IdentityFormat(2))]);
+        assert_eq!(first.fingerprint(), equivalent.fingerprint());
+        assert_ne!(first.fingerprint(), replacement.fingerprint());
+        let entry = user_entry("user", "preserve this historical candidate");
+        let mut index = ReviewMiningIndex::new(&first).unwrap();
+        index.append(&[&entry], &first).unwrap();
+        let mut usage = MiningUsage::default();
+        index
+            .process(
+                &equivalent,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut usage,
+            )
+            .unwrap();
+        let before = sonic_rs::to_string(&index.signals().unwrap().collect::<Vec<_>>()).unwrap();
+        assert!(index.append(&[], &replacement).is_err());
+        assert!(index
+            .process(
+                &replacement,
+                &HashMap::new(),
+                index_limits(),
+                &Cancellation::default(),
+                &mut usage
+            )
+            .is_err());
+        assert_eq!(index.event_count(), 1);
+        assert_eq!(
+            sonic_rs::to_string(&index.signals().unwrap().collect::<Vec<_>>()).unwrap(),
+            before
+        );
+    }
 
     impl SignalSink for StopSink {
         fn push(&mut self, _signal: MiningSignal) -> MiningResult<()> {

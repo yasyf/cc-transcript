@@ -9,7 +9,7 @@ const TEXT_SEPARATOR: &str = " ";
 
 /// Envelope metadata shared by the conversational entry kinds (user, assistant,
 /// system). Mode and Other entries carry no envelope on disk.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntryMeta {
     pub uuid: String,
@@ -290,7 +290,7 @@ pub struct SystemEntry {
     pub detail: SystemDetail,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ModeChannel {
     Mode,
