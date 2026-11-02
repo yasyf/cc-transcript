@@ -9839,7 +9839,9 @@ impl NativeStore {
                         load.fence = fence;
                     }
                     if self.agent_sources {
-                        load.file.seek(SeekFrom::Start(load.offset)).map_err(io_error)?;
+                        load.file
+                            .seek(SeekFrom::Start(load.offset))
+                            .map_err(io_error)?;
                     }
                     load.prefix_checked = true;
                 } else {
