@@ -7237,8 +7237,8 @@ impl NativeStore {
     fn request_inner(&self, request: &Value, context: &Value, cancel: &Cancellation) -> Value {
         let mut usage = [0u64; 20];
         let id = request.get("id").cloned().unwrap_or(json!("invalid"));
-        let _reply_reservation = if request.get("operation").and_then(Value::as_str)
-            == Some("release")
+        let _reply_reservation = if self.agent_sources
+            || request.get("operation").and_then(Value::as_str) == Some("release")
         {
             None
         } else {
@@ -8948,17 +8948,38 @@ impl NativeStore {
         }
         let mut lease = None;
         let stepped = if load.result.is_none() {
-            let read_bound = self.config.read_step.min(
+            let mut read_bound = self.config.read_step.min(
                 waiter
                     .limits
                     .max_source_read_bytes
                     .saturating_sub(waiter.used_source_bytes),
             );
+            if self.agent_sources {
+                let start = if !load.prefix_checked {
+                    load.previous.as_ref().map_or(load.offset, |previous| {
+                        if previous.stamp.identity.window_base == slot.stamp.identity.window_base {
+                            if previous.provider == Provider::Codex {
+                                previous.stamp.size
+                            } else {
+                                previous.committed_bytes
+                            }
+                        } else {
+                            load.offset
+                        }
+                    })
+                } else {
+                    load.offset
+                };
+                read_bound = read_bound.min(slot.stamp.size.saturating_sub(start) as usize);
+            }
             let events_bound = self
                 .config
                 .event_step
                 .min(waiter.limits.max_events.saturating_sub(waiter.used_events));
-            if read_bound == 0 && load.offset < slot.stamp.size {
+            if read_bound == 0
+                && load.offset < slot.stamp.size
+                && (!self.agent_sources || load.previous.is_none() || load.prefix_checked)
+            {
                 self.lock_state().waiters.remove(token);
                 return Err(source_read_limit());
             }
@@ -9695,7 +9716,7 @@ impl NativeStore {
                 "open source changed during preparation",
             ));
         }
-        if !load.origin_complete {
+        if !self.agent_sources && !load.origin_complete {
             let fence_size = (slot.stamp.size as usize).min(64);
             let count = fence_size
                 .saturating_sub(load.origin_fence.len())
@@ -9731,35 +9752,37 @@ impl NativeStore {
                 let (prior_end, prior_fence) = self
                     .source_prefix_fence(previous)
                     .expect("cached source prefix");
-                let count = prior_fence
-                    .len()
-                    .saturating_sub(load.prefix_fence.len())
-                    .min(read_bound);
-                if count == 0 && prior_fence.len() > load.prefix_fence.len() {
-                    return Err(source_read_limit());
-                }
-                load.file
-                    .seek(SeekFrom::Start(
-                        prior_end - prior_fence.len() as u64 + load.prefix_fence.len() as u64,
-                    ))
-                    .map_err(io_error)?;
-                let start = load.prefix_fence.len();
-                load.prefix_fence.resize(start + count, 0);
-                self.before_source_read();
-                load.file
-                    .read_exact(&mut load.prefix_fence[start..])
-                    .map_err(io_error)?;
-                usage[1] += count as u64;
-                #[cfg(test)]
-                self.observe_hydration(HydrationObservation::Read {
-                    stamp: slot.stamp,
-                    bytes: count as u64,
-                });
-                if load.prefix_fence.len() < prior_fence.len() {
-                    return Ok(());
+                if !self.agent_sources {
+                    let count = prior_fence
+                        .len()
+                        .saturating_sub(load.prefix_fence.len())
+                        .min(read_bound);
+                    if count == 0 && prior_fence.len() > load.prefix_fence.len() {
+                        return Err(source_read_limit());
+                    }
+                    load.file
+                        .seek(SeekFrom::Start(
+                            prior_end - prior_fence.len() as u64 + load.prefix_fence.len() as u64,
+                        ))
+                        .map_err(io_error)?;
+                    let start = load.prefix_fence.len();
+                    load.prefix_fence.resize(start + count, 0);
+                    self.before_source_read();
+                    load.file
+                        .read_exact(&mut load.prefix_fence[start..])
+                        .map_err(io_error)?;
+                    usage[1] += count as u64;
+                    #[cfg(test)]
+                    self.observe_hydration(HydrationObservation::Read {
+                        stamp: slot.stamp,
+                        bytes: count as u64,
+                    });
+                    if load.prefix_fence.len() < prior_fence.len() {
+                        return Ok(());
+                    }
                 }
                 let fence = std::mem::take(&mut load.prefix_fence);
-                if fence == prior_fence {
+                if self.agent_sources || fence == prior_fence {
                     if previous.stamp.identity.window_base != slot.stamp.identity.window_base {
                         load.file
                             .seek(SeekFrom::Start(load.offset))
@@ -9814,6 +9837,9 @@ impl NativeStore {
                             load.indexed = previous.event_count;
                         }
                         load.fence = fence;
+                    }
+                    if self.agent_sources {
+                        load.file.seek(SeekFrom::Start(load.offset)).map_err(io_error)?;
                     }
                     load.prefix_checked = true;
                 } else {
@@ -10212,7 +10238,7 @@ impl NativeStore {
         if load.indexed < load.count {
             return Ok(());
         }
-        if !load.sealed {
+        if !self.agent_sources && !load.sealed {
             let fence_size = load.origin_fence.len();
             let remaining = read_bound.saturating_sub((usage[1] - read_start) as usize);
             let count = fence_size
@@ -12852,6 +12878,7 @@ mod tests {
     use std::io::Write;
 
     include!("snapshot_admission_report_tests.rs");
+    include!("snapshot_reply_resume_tests.rs");
 
     struct Source {
         directory: PathBuf,
@@ -22127,13 +22154,13 @@ mod tests {
             );
         }
         let source = Source::new(&contents);
-        let store = NativeStore::new(&json!({"max_read_bytes_per_step":2*1024*1024,"max_entry_bytes":64*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let store = NativeStore::new_agent(&json!({"max_read_bytes_per_step":2*1024*1024,"max_entry_bytes":64*1024,"max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let owner = context("a");
         let request = json!({"schema":SCHEMA,"id":"request","operation":"acquire","path":source.path.to_string_lossy().as_ref(),"classifier":{"id":"native","version":"1"},
             "deadline_unix_ms":now_ms()+30_000,"limits":{"max_read_bytes":8*1024*1024,"max_source_read_bytes":8*1024*1024,"max_events":4096,"max_items":4096,"max_output_bytes":8*1024*1024,"max_discovery_entries":1000,"max_sources":100}});
         let root = finish(
             &store,
-            store.request(&request, &owner, &Cancellation::default()),
+            store.request_agent(&request, &owner, &Cancellation::default()),
             &owner,
         );
         let mut page = store
