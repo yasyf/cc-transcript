@@ -300,6 +300,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test owned transcript catalog operation counts on macOS
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
+      - name: Test the FSEvents transcript index on macOS
+        run: cargo test --locked -p cc-transcript-cli --lib -- index::
       - name: Test registered review continuation on macOS
         env:
           CARGO_BUILD_JOBS: "2"

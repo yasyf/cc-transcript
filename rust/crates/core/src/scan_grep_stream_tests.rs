@@ -1674,6 +1674,7 @@ fn early_stop_after_a_name_lookup_reports_the_resolved_prefix() {
             project: None,
             contains: None,
             source_limit: None,
+            listed: None,
         },
         |session, path| {
             Ok(grep

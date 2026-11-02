@@ -119,11 +119,12 @@ fn claude_rows(root: &Path, discovery: &DiscoveryOpts) -> Result<Vec<ListRow>, C
         discovery.contains.as_deref(),
     )
     .into_iter()
-    .map(|(path, mtime)| {
-        let size = std::fs::metadata(&path)
-            .map_err(|e| click_error(&format!("{}: {e}", path.display())))?
-            .len();
-        Ok(ListRow::Claude { path, mtime, size })
+    .map(|transcript| {
+        Ok(ListRow::Claude {
+            path: transcript.path,
+            mtime: transcript.mtime,
+            size: transcript.size,
+        })
     })
     .collect()
 }

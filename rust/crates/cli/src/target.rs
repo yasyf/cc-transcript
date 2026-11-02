@@ -4,12 +4,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cc_transcript_core::discovery::{find_in, mtime_secs};
+use cc_transcript_core::discovery::mtime_secs;
 use cc_transcript_core::gateway::parse_transcript_bytes;
 use cc_transcript_core::render::display_path;
 use cc_transcript_core::types::Entry;
 use rayon::prelude::*;
 
+use crate::index::{transcripts, Transcript};
 use crate::output::{click_error, eline, CliExit};
 
 // Python Path.home(): HOME env, then the pwd database (std::env::home_dir does both).
@@ -27,28 +28,43 @@ pub struct Targets {
     pub total: usize,
 }
 
-/// Newest-first discovery under `root` (cli.py discover): find_in order, project
-/// filtered, stable-sorted by mtime descending.
-pub fn discover(root: &Path, project: Option<&str>, contains: Option<&str>) -> Vec<(PathBuf, f64)> {
-    let roots = if let Some(project) = project {
-        fs::read_dir(root)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                    .filter(|entry| entry.file_name().to_string_lossy().contains(project))
-                    .map(|entry| entry.path())
-                    .collect()
-            })
-            .unwrap_or_default()
-    } else {
-        vec![root.to_path_buf()]
-    };
-    let mut found: Vec<(PathBuf, f64)> = roots
-        .iter()
-        .flat_map(|root| find_in(root, contains, None, None))
+/// Newest-first transcripts under `root` (cli.py discover), project and name
+/// filtered, with ties in path order.
+pub fn discover(root: &Path, project: Option<&str>, contains: Option<&str>) -> Vec<Transcript> {
+    let mut found: Vec<Transcript> = transcripts(root)
+        .into_iter()
+        .filter(|transcript| {
+            let relative = transcript
+                .path
+                .strip_prefix(root)
+                .expect("indexed transcripts sit under their root");
+            project.is_none_or(|project| {
+                relative.parent().is_some_and(|parent| {
+                    parent
+                        .components()
+                        .next()
+                        .is_some_and(|first| first.as_os_str().to_string_lossy().contains(project))
+                })
+            }) && contains
+                .filter(|needle| !needle.is_empty())
+                .is_none_or(|needle| {
+                    relative
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().contains(needle))
+                })
+        })
         .collect();
-    found.sort_by(|a, b| b.1.partial_cmp(&a.1).expect("mtimes are finite"));
+    found.sort_by(|a, b| {
+        b.mtime
+            .partial_cmp(&a.mtime)
+            .expect("mtimes are finite")
+            .then_with(|| {
+                a.path
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .cmp(b.path.as_os_str().as_encoded_bytes())
+            })
+    });
     found
 }
 
@@ -73,7 +89,10 @@ pub fn resolve_targets(
             total,
         });
     }
-    let matched = discover(root, project, contains);
+    let matched: Vec<(PathBuf, f64)> = discover(root, project, contains)
+        .into_iter()
+        .map(|transcript| (transcript.path, transcript.mtime))
+        .collect();
     let matched: Vec<(PathBuf, f64)> = match min_mtime {
         Some(floor) => matched
             .into_iter()
@@ -259,6 +278,6 @@ mod tests {
         let found = discover(root.path(), Some("wanted"), None);
 
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].0, wanted.join("match.jsonl"));
+        assert_eq!(found[0].path, wanted.join("match.jsonl"));
     }
 }
