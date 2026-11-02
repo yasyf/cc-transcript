@@ -3116,7 +3116,7 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
     let ClassifierStage {
         activity,
         indexed: _,
-        carried,
+        carried_metadata: _,
         committed,
         result: _,
     } = &*stage;
@@ -3129,6 +3129,7 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
+    let registry = activity.registry_metadata_allocation().0;
     let mut seen = HashSet::new();
     activity
         .audited_heap_allocations()
@@ -3138,10 +3139,10 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
                 .iter()
                 .flat_map(ActivityIndex::audited_heap_allocations),
         )
-        .filter(|(id, _)| !seed.contains(id) && seen.insert(*id))
+        .filter(|(id, _)| *id != registry && !seed.contains(id) && seen.insert(*id))
         .map(|(_, bytes)| bytes)
         .sum::<usize>()
-        + carried.capacity() * size_of::<usize>()
+        + activity.registry_pending_bytes()
 }
 
 fn append_reservation_mirror(

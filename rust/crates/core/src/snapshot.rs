@@ -21956,7 +21956,7 @@ mod tests {
             let refs = entries.iter().collect::<Vec<_>>();
             let prior = Arc::new(ActivityIndex::new(&refs, None));
             prior.prepare_shared_ownership();
-            let queue = Arc::new(ReleaseQueue::default());
+            let queue = Arc::new(crate::snapshot_ledger::ReleaseQueue::default());
             for owner in prior.pending_allocations() {
                 owner.arm(&queue, LedgerEvent::Chunk(owner.id));
             }

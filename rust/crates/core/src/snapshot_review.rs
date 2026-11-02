@@ -519,7 +519,11 @@ mod tests {
             assert_eq!(index.plan_users, cold.plan_users);
             assert_eq!(
                 index.undo_bytes,
-                index.undo.iter().map(ReviewUndo::owned_bytes).sum()
+                index
+                    .undo
+                    .iter()
+                    .map(ReviewUndo::owned_bytes)
+                    .sum::<usize>()
             );
             let cached = index.accounted_bytes();
             index.accounted.store(0, Ordering::Relaxed);
