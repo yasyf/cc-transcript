@@ -73,6 +73,12 @@ jobs:
           cargo test -p cc-transcript-core --no-default-features --lib -- request_projection_ --nocapture
           uv run --no-sync pytest tests/test_request_body_projection.py -q -s
 
+      - name: Test owned native mining kernel
+        env:
+          CARGO_BUILD_JOBS: "2"
+          RUST_TEST_THREADS: "2"
+        run: cargo test --locked -p cc-transcript-core --no-default-features --lib mining::tests -- --nocapture --test-threads=2
+
       - name: Test native Python bridge
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
