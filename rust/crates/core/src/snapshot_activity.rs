@@ -109,6 +109,22 @@ pub(crate) struct ActivityShape {
 }
 
 impl ActivityShape {
+    fn remove(&mut self, other: Self) {
+        self.calls -= other.calls;
+        self.call_name_bytes -= other.call_name_bytes;
+        self.paths -= other.paths;
+        self.path_bytes -= other.path_bytes;
+        self.edits -= other.edits;
+        self.edit_path_bytes -= other.edit_path_bytes;
+        self.commands -= other.commands;
+        self.command_bytes -= other.command_bytes;
+        self.skills -= other.skills;
+        self.skill_bytes -= other.skill_bytes;
+        self.prose_bytes -= other.prose_bytes;
+        self.tool_name_slots -= other.tool_name_slots;
+        self.tool_name_bytes -= other.tool_name_bytes;
+    }
+
     fn include_entry(&mut self, entry: &Entry) {
         match entry {
             Entry::User(user) => {
@@ -173,6 +189,103 @@ impl ActivityIndex {
     pub(crate) const EMPTY_ALLOCATION_BYTES: usize = arc_bytes::<Vec<Arc<CachedTurn>>>()
         + arc_bytes::<HashMap<String, usize>>()
         + arc_bytes::<HashMap<String, ResultPosition>>();
+
+    pub(crate) fn truncate(
+        &mut self,
+        first: usize,
+        entries: &[Arc<crate::snapshot::ChunkRows>],
+        last_result: impl Fn(&str) -> Option<usize>,
+        first_meta: Option<usize>,
+        last_meta: Option<usize>,
+        last_model: Option<usize>,
+    ) {
+        assert!(first <= self.entries);
+        assert_eq!(Arc::strong_count(&self.turns), 1);
+        assert_eq!(Arc::strong_count(&self.uuids), 1);
+        assert_eq!(Arc::strong_count(&self.results), 1);
+        let mut removed = ActivityShape::default();
+        for rows in &entries[first..self.entries] {
+            removed.include_entry(&rows[0]);
+        }
+        let touched = self.turns.partition_point(|turn| turn.bounds.end <= first);
+        for turn in &self.turns[touched..] {
+            let at = turn.calls.partition_point(|call| call.event < first);
+            for call in &turn.calls[at..] {
+                removed.include_call(&call.call, &call.edits);
+            }
+        }
+        self.shape.remove(removed);
+        let uuids = Arc::get_mut(&mut self.uuids).expect("owned review UUID index");
+        let results = Arc::get_mut(&mut self.results).expect("owned review result index");
+        for rows in &entries[first..self.entries] {
+            let entry = &rows[0];
+            if let Some(meta) = entry.meta() {
+                if uuids.get(&meta.uuid).is_some_and(|event| *event >= first) {
+                    let (key, _) = uuids.remove_entry(&meta.uuid).expect("suffix UUID");
+                    self.uuid_key_bytes -= key.capacity();
+                    self.uuid_key_lens -= key.len();
+                }
+            }
+            if let Entry::User(user) = entry {
+                for result in user.tool_results() {
+                    if !results
+                        .get(&result.tool_use_id)
+                        .is_some_and(|position| position.event >= first)
+                    {
+                        continue;
+                    }
+                    if let Some(event) = last_result(&result.tool_use_id) {
+                        let Entry::User(user) = &entries[event][0] else {
+                            unreachable!()
+                        };
+                        let (ordinal, block) = user.blocks().iter().enumerate().filter(|(_, block)| matches!(block, ContentBlock::ToolResult(previous) if previous.tool_use_id == result.tool_use_id)).last().expect("retained result position");
+                        results.insert(
+                            result.tool_use_id.clone(),
+                            ResultPosition {
+                                event,
+                                ordinal,
+                                charge: block_charge(block),
+                            },
+                        );
+                    } else {
+                        let (key, _) = results
+                            .remove_entry(&result.tool_use_id)
+                            .expect("suffix result");
+                        self.result_key_bytes -= key.capacity();
+                        self.result_key_lens -= key.len();
+                    }
+                }
+            }
+        }
+        let keep = self.turns.partition_point(|turn| turn.bounds.start < first);
+        let turns = Arc::get_mut(&mut self.turns).expect("owned review turns");
+        turns.truncate(keep);
+        if let Some(turn) = turns.last_mut() {
+            if turn.bounds.end > first {
+                let turn = Arc::get_mut(turn).expect("owned review turn");
+                let keep = turn.calls.partition_point(|call| call.event < first);
+                let removed = turn.calls[keep..]
+                    .iter()
+                    .map(|call| arc_control_bytes::<CachedCall>() + call.accounted_bytes)
+                    .sum::<usize>();
+                turn.calls.truncate(keep);
+                turn.prefix_call_bytes -= removed;
+                turn.bounds.end = first;
+                turn.started = turn.started.filter(|event| *event < first);
+                turn.ended = last_meta.filter(|event| *event >= turn.bounds.start);
+            }
+        }
+        self.entries = first;
+        self.started_unix_ms = first_meta.map(|event| {
+            entries[event][0]
+                .meta()
+                .expect("metadata source")
+                .timestamp
+                .timestamp_millis()
+        });
+        self.last_model_event = last_model;
+        self.work = ActivityWork::default();
+    }
 
     pub fn new(entries: &[&Entry], openers: Option<&[bool]>) -> Self {
         Self::default().append_tail(entries, openers)
@@ -1404,6 +1517,54 @@ mod tests {
         let projected = index.project("s", entries, &(0..index.turn_count()).collect::<Vec<_>>());
         let expected = lift_session_refs("s", entries, flags);
         assert_eq!(format!("{projected:?}"), format!("{expected:?}"));
+    }
+
+    #[test]
+    fn activity_suffix_rollback_matches_cold_at_every_cut() {
+        let entries = [
+            user("u", "first"),
+            tools(),
+            results(),
+            user("v", "second"),
+            tools(),
+            results(),
+        ];
+        let rows = entries
+            .into_iter()
+            .map(|entry| Arc::new(crate::snapshot::ChunkRows::new(vec![entry])))
+            .collect::<Vec<_>>();
+        let refs = rows.iter().map(|rows| &rows[0]).collect::<Vec<_>>();
+        for first in 0..=rows.len() {
+            let mut index = ActivityIndex::new(&refs, None);
+            let latest_result = |id: &str| {
+                refs[..first]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(event, entry)| match entry {
+                        Entry::User(user)
+                            if user.tool_results().any(|result| result.tool_use_id == id) =>
+                        {
+                            Some(event)
+                        }
+                        _ => None,
+                    })
+                    .last()
+            };
+            let first_meta = (0..first).find(|event| refs[*event].meta().is_some());
+            let last_meta = (0..first).rfind(|event| refs[*event].meta().is_some());
+            let last_model = (0..first).rfind(|event| matches!(refs[*event], Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL));
+            index.truncate(
+                first,
+                &rows,
+                latest_result,
+                first_meta,
+                last_meta,
+                last_model,
+            );
+            parity(&index, &refs[..first], None);
+            index = index.append_tail(&refs[first..], None);
+            parity(&index, &refs, None);
+        }
     }
 
     #[test]

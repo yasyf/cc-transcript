@@ -30,6 +30,9 @@ pub struct SourceFactsIndex {
     token: String,
     prefixes: Vec<usize>,
     seen: HashSet<String>,
+    cwd_events: Vec<usize>,
+    events: usize,
+    first_user_event: Option<usize>,
     first_user_seen: bool,
     facts: SourceFacts,
     #[serde(skip)]
@@ -43,13 +46,17 @@ pub struct SourceFactsIndex {
 
 impl SourceFactsIndex {
     pub(crate) fn append_bound(&self, entry: &Entry) -> usize {
-        use crate::snapshot_ledger::{set_growth, vec_growth};
+        use crate::snapshot_ledger::{set_reallocation_bound, vec_reallocation_bound};
         entry
             .meta()
             .and_then(|meta| meta.cwd.as_ref())
             .filter(|cwd| !self.seen.contains(*cwd))
             .map_or(0, |cwd| {
-                set_growth(&self.seen, 1) + vec_growth(&self.facts.cwds, 1) + cwd.len() * 4 + 256
+                set_reallocation_bound(&self.seen, 1)
+                    + vec_reallocation_bound(&self.facts.cwds, 1)
+                    + vec_reallocation_bound(&self.cwd_events, 1)
+                    + cwd.len() * 4
+                    + 256
             })
     }
 
@@ -58,6 +65,9 @@ impl SourceFactsIndex {
             token: token.to_owned(),
             prefixes: prefixes(token.as_bytes()),
             seen: HashSet::new(),
+            cwd_events: Vec::new(),
+            events: 0,
+            first_user_event: None,
             first_user_seen: false,
             facts: SourceFacts::default(),
             accounted: AtomicUsize::new(0),
@@ -65,6 +75,36 @@ impl SourceFactsIndex {
             #[cfg(test)]
             size_audits: AtomicUsize::new(0),
         }
+    }
+
+    pub fn truncate(&mut self, first: usize) -> Result<(), SnapshotError> {
+        if first > self.events {
+            return Err(SnapshotError::new(
+                Status::InvalidRequest,
+                "source facts truncation exceeds committed events",
+            ));
+        }
+        let mut accounted = self.accounted_bytes();
+        let mut false_encoded = self.false_encoded_bytes()?;
+        let old_seen_capacity = self.seen.capacity();
+        while self.cwd_events.last().is_some_and(|event| *event >= first) {
+            let cwd = self.facts.cwds.pop().expect("suffix CWD");
+            self.cwd_events.pop().expect("CWD source event");
+            let key = self.seen.take(&cwd).expect("indexed CWD");
+            accounted -= cwd.capacity() + key.capacity();
+            false_encoded -= snapshot_codec::encoded_size(&cwd, usize::MAX)?
+                + usize::from(!self.facts.cwds.is_empty());
+        }
+        if self.first_user_event.is_some_and(|event| event >= first) {
+            self.first_user_event = None;
+            self.first_user_seen = false;
+            self.facts.first_user_contains = false;
+        }
+        accounted -= (old_seen_capacity - self.seen.capacity()) * size_of::<String>();
+        self.events = first;
+        self.accounted.store(accounted, Ordering::Relaxed);
+        self.false_encoded.store(false_encoded, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn facts(&self) -> &SourceFacts {
@@ -80,6 +120,7 @@ impl SourceFactsIndex {
             + self.token.capacity()
             + self.prefixes.capacity() * size_of::<usize>()
             + self.seen.capacity() * size_of::<String>()
+            + self.cwd_events.capacity() * size_of::<usize>()
             + self.seen.iter().map(String::capacity).sum::<usize>()
             + self.facts.cwds.capacity() * size_of::<String>()
             + self.facts.cwds.iter().map(String::capacity).sum::<usize>();
@@ -112,9 +153,13 @@ impl SourceFactsIndex {
         output(usage, limits, false_encoded, 1)?;
         let mut cwds = Vec::new();
         let mut seen = HashSet::new();
+        let mut events = self.events;
+        let mut first_user_event = self.first_user_event;
         let mut first_user_seen = self.first_user_seen;
         let mut first_user_contains = self.facts.first_user_contains;
         for entry in entries {
+            let index = events;
+            events += 1;
             cancel.check(limits.deadline_unix_ms)?;
             read(usage, limits, size_of::<usize>(), 1)?;
             if let Some(cwd) = entry.meta().and_then(|meta| meta.cwd.as_deref()) {
@@ -127,12 +172,13 @@ impl SourceFactsIndex {
                     .saturating_add(usize::from(!self.facts.cwds.is_empty() || !cwds.is_empty()));
                     output(usage, limits, bytes, 0)?;
                     false_encoded += bytes;
-                    cwds.push(cwd);
+                    cwds.push((cwd, index));
                 }
             }
             if !first_user_seen {
                 if let Entry::User(user) = entry {
                     first_user_seen = true;
+                    first_user_event = Some(index);
                     if self.token.is_empty() {
                         continue;
                     }
@@ -152,15 +198,20 @@ impl SourceFactsIndex {
         let mut accounted = self.accounted_bytes();
         let old_seen_capacity = self.seen.capacity();
         let old_cwds_capacity = self.facts.cwds.capacity();
-        for cwd in cwds {
+        let old_events_capacity = self.cwd_events.capacity();
+        for (cwd, index) in cwds {
             let key = cwd.to_owned();
             let value = cwd.to_owned();
             accounted += key.capacity() + value.capacity();
             self.seen.insert(key);
+            self.cwd_events.push(index);
             self.facts.cwds.push(value);
         }
         accounted += (self.seen.capacity() - old_seen_capacity) * size_of::<String>()
+            + (self.cwd_events.capacity() - old_events_capacity) * size_of::<usize>()
             + (self.facts.cwds.capacity() - old_cwds_capacity) * size_of::<String>();
+        self.events = events;
+        self.first_user_event = first_user_event;
         self.first_user_seen = first_user_seen;
         self.facts.first_user_contains = first_user_contains;
         self.accounted.store(accounted, Ordering::Relaxed);
@@ -493,7 +544,7 @@ pub fn staging_bytes(limits: &WorkLimits, token_bytes: usize) -> usize {
             limits
                 .max_events
                 .min(limits.max_output_bytes)
-                .saturating_mul(64),
+                .saturating_mul(64 + 4 * size_of::<usize>()),
         )
         .saturating_add(token_bytes.saturating_mul(size_of::<usize>() + 1))
         .saturating_add(8192)
@@ -526,6 +577,91 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap()
+    }
+
+    #[test]
+    fn source_facts_suffix_rollback_cached_charge_matches_large_unique_table_audit() {
+        let entries = (0..64)
+            .map(|event| {
+                user(
+                    &format!("u{event}"),
+                    "owner words",
+                    &format!("/unique/source/{event}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        for first in [0, 1, 31, 63, 64] {
+            let mut index = SourceFactsIndex::new("owner");
+            index
+                .append(
+                    entries.iter(),
+                    &limits(),
+                    &Cancellation::default(),
+                    &mut TextUsage::default(),
+                )
+                .unwrap();
+            index.truncate(first).unwrap();
+            let cached = index.accounted_bytes();
+            index.accounted.store(0, Ordering::Relaxed);
+            assert_eq!(cached, index.accounted_bytes(), "cut={first}");
+        }
+    }
+
+    #[test]
+    fn source_facts_suffix_rollback_matches_cold_at_every_cut() {
+        let entries = [
+            user("a", "reviewer-marker", "/a"),
+            user("b", "later", "/b"),
+            user("c", "again", "/a"),
+            user("d", "last", "/c"),
+        ];
+        for first in 0..=entries.len() {
+            let cancel = Cancellation::default();
+            let mut index = SourceFactsIndex::new("reviewer-marker");
+            index
+                .append(
+                    entries.iter(),
+                    &limits(),
+                    &cancel,
+                    &mut TextUsage::default(),
+                )
+                .unwrap();
+            index.truncate(first).unwrap();
+            let mut cold = SourceFactsIndex::new("reviewer-marker");
+            cold.append(
+                entries[..first].iter(),
+                &limits(),
+                &cancel,
+                &mut TextUsage::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                sonic_rs::to_vec(index.facts()).unwrap(),
+                sonic_rs::to_vec(cold.facts()).unwrap()
+            );
+            assert_eq!(
+                index.false_encoded_bytes().unwrap(),
+                cold.false_encoded_bytes().unwrap()
+            );
+            let truncate_charge = index.accounted_bytes();
+            index.accounted.store(0, Ordering::Relaxed);
+            let audited = index.accounted_bytes();
+            assert_eq!(truncate_charge, audited);
+            index
+                .append(
+                    entries[first..].iter(),
+                    &limits(),
+                    &cancel,
+                    &mut TextUsage::default(),
+                )
+                .unwrap();
+            let charged = index.accounted_bytes();
+            index.accounted.store(0, Ordering::Relaxed);
+            assert_eq!(charged, index.accounted_bytes());
+            assert!(audited <= charged);
+            assert_eq!(index.facts().cwds, ["/a", "/b", "/c"]);
+            assert!(index.facts().first_user_contains);
+        }
     }
 
     #[test]

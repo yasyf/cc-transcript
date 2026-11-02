@@ -155,6 +155,71 @@ pub(crate) fn deque_growth<T>(deque: &VecDeque<T>, additional: usize) -> usize {
     (deque_capacity_for(deque, additional) - deque.capacity()) * size_of::<T>()
 }
 
+pub(crate) fn vec_reallocation_bound<T>(values: &Vec<T>, additional: usize) -> usize {
+    let successor = vec_capacity_for(values, additional);
+    usize::from(successor > values.capacity()) * successor * size_of::<T>()
+}
+
+pub(crate) fn map_reallocation_bound<K, V>(values: &HashMap<K, V>, additional: usize) -> usize {
+    let successor = map_capacity_for(values, additional);
+    usize::from(successor > values.capacity()) * successor * size_of::<(K, V)>()
+}
+
+pub(crate) fn set_reallocation_bound<T>(values: &HashSet<T>, additional: usize) -> usize {
+    let successor = set_capacity_for(values, additional);
+    usize::from(successor > values.capacity()) * successor * size_of::<T>()
+}
+
+pub(crate) fn deque_reallocation_bound<T>(values: &VecDeque<T>, additional: usize) -> usize {
+    let successor = deque_capacity_for(values, additional);
+    usize::from(successor > values.capacity()) * successor * size_of::<T>()
+}
+
+#[cfg(test)]
+mod registered_review_reallocation_tests {
+    use super::*;
+
+    #[test]
+    fn registered_review_reallocation_admits_successor_metadata_without_charging_old_payloads() {
+        let mut values = Vec::with_capacity(8);
+        while values.len() < values.capacity() {
+            values.push("old payload".to_owned());
+        }
+        assert_eq!(vec_reallocation_bound(&values, 0), 0);
+        assert_eq!(
+            vec_reallocation_bound(&values, 1),
+            vec_capacity_for(&values, 1) * size_of::<String>()
+        );
+        let mut map = HashMap::with_capacity(7);
+        while map.len() < map.capacity() {
+            map.insert(map.len(), String::new());
+        }
+        assert_eq!(map_reallocation_bound(&map, 0), 0);
+        assert_eq!(
+            map_reallocation_bound(&map, 1),
+            map_capacity_for(&map, 1) * size_of::<(usize, String)>()
+        );
+        let mut set = HashSet::with_capacity(7);
+        while set.len() < set.capacity() {
+            set.insert(set.len());
+        }
+        assert_eq!(set_reallocation_bound(&set, 0), 0);
+        assert_eq!(
+            set_reallocation_bound(&set, 1),
+            set_capacity_for(&set, 1) * size_of::<usize>()
+        );
+        let mut deque = VecDeque::with_capacity(8);
+        while deque.len() < deque.capacity() {
+            deque.push_back(0usize);
+        }
+        assert_eq!(deque_reallocation_bound(&deque, 0), 0);
+        assert_eq!(
+            deque_reallocation_bound(&deque, 1),
+            deque_capacity_for(&deque, 1) * size_of::<usize>()
+        );
+    }
+}
+
 const fn arc_layout_bytes(value: Layout) -> usize {
     match Layout::new::<[usize; 2]>().extend(value) {
         Ok((layout, _)) => layout.pad_to_align().size(),

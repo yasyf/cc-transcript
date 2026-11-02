@@ -1,3 +1,8 @@
+use crate::snapshot_ledger::{
+    deque_reallocation_bound, map_reallocation_bound, set_reallocation_bound,
+    vec_reallocation_bound,
+};
+
 pub struct RegisteredReviewInput {
     pub checkpoint: RegisteredReviewCheckpoint,
     pub mining: crate::mining::ReviewMiningIndex,
@@ -17,6 +22,8 @@ pub struct RegisteredReviewInput {
     pending_codex: Range<usize>,
     canonical_path: PathBuf,
     session_id: String,
+    meta_events: Vec<usize>,
+    model_events: Vec<usize>,
     retained_entries: usize,
     pending_line: Vec<u8>,
     scan_complete: bool,
@@ -52,6 +59,7 @@ impl RegisteredReviewInput {
             + self.entries.capacity() * size_of::<Arc<ChunkRows>>()
             + self.canonical_path.as_os_str().len()
             + self.session_id.capacity()
+            + (self.meta_events.capacity() + self.model_events.capacity()) * size_of::<usize>()
             + self.retained_entries
             + self.pending_line.capacity()
             + self.first_user_token.capacity()
@@ -405,10 +413,12 @@ impl NativeStore {
         let charge = entry_charge(&entry);
         let heap = charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
         let bound = input.mining.append_bound(&entry, spec)?
-            + vec_growth(&input.spans, 1)
-            + vec_growth(&input.entries, 1)
-            + vec_growth(&input.hook_markers, 1)
-            + map_growth(&input.digests, entry.tool_uses().count())
+            + vec_reallocation_bound(&input.spans, 1)
+            + vec_reallocation_bound(&input.entries, 1)
+            + vec_reallocation_bound(&input.meta_events, 1)
+            + vec_reallocation_bound(&input.model_events, 1)
+            + vec_reallocation_bound(&input.hook_markers, 1)
+            + map_reallocation_bound(&input.digests, entry.tool_uses().count())
             + input.contexts.append_bound(entry)
             + input.facts.append_bound(entry)
             + heap * 10
@@ -466,12 +476,17 @@ impl NativeStore {
                 .contexts
                 .append(input.mining.event_count() - 1, &entry, &input.activity);
         });
-        if input.session_id.is_empty() {
-            if let Some(meta) = projected.meta() {
+        let position = input.entries.len();
+        if let Some(meta) = projected.meta() {
+            if input.meta_events.is_empty() {
                 input.session_id.clone_from(&meta.session_id);
             }
+            input.meta_events.push(position);
         }
-        let position = input.entries.len();
+        if matches!(&projected, Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL)
+        {
+            input.model_events.push(position);
+        }
         if marked {
             input.hook_markers.push(position);
         }
@@ -497,6 +512,103 @@ impl NativeStore {
         input.spans.push(line);
         input.preparation_lifts += 1;
 
+        Ok(())
+    }
+
+    fn truncate_registered_review_input(
+        &self,
+        input: &mut RegisteredReviewInput,
+        first: usize,
+        spec: &crate::mining::CompiledMiningSpec,
+        context: &Value,
+        reservation: &mut ProjectionReservation<'_>,
+    ) -> crate::mining::MiningResult<()> {
+        let mut ids = HashSet::new();
+        let tools = input.entries[first..]
+            .iter()
+            .map(|rows| rows[0].tool_uses().count())
+            .sum::<usize>();
+        let bytes = input.entries[first..]
+            .iter()
+            .flat_map(|rows| rows[0].tool_uses())
+            .map(|tool| tool.id.len())
+            .sum::<usize>();
+        self.review_reserve(
+            reservation,
+            context,
+            input.accounted_bytes() + set_reallocation_bound(&ids, tools) + bytes + 8192,
+        )?;
+        for rows in &input.entries[first..] {
+            for tool in rows[0].tool_uses() {
+                ids.insert(tool.id.clone());
+            }
+        }
+        self.review_reserve(
+            reservation,
+            context,
+            input.accounted_bytes()
+                + input.mining.truncate_bound(first, &ids)
+                + set_reallocation_bound(&HashSet::<String>::new(), tools)
+                + bytes
+                + 8192,
+        )?;
+        while input
+            .meta_events
+            .last()
+            .is_some_and(|event| *event >= first)
+        {
+            input.meta_events.pop();
+        }
+        while input
+            .model_events
+            .last()
+            .is_some_and(|event| *event >= first)
+        {
+            input.model_events.pop();
+        }
+        input.mining.truncate(first, spec)?;
+        input.activity.truncate(
+            first,
+            &input.entries,
+            |id| input.mining.last_result(id),
+            input.meta_events.first().copied(),
+            input.meta_events.last().copied(),
+            input.model_events.last().copied(),
+        );
+        input.contexts.truncate(first);
+        input.facts.truncate(first)?;
+        for rows in &input.entries[first..] {
+            let charge = entry_charge(&rows[0]);
+            input.retained_entries -= arc_bytes::<ChunkRows>()
+                + size_of::<Entry>()
+                + charge.owned_capacity_bytes
+                + charge.opaque_dom_accounted_bytes;
+        }
+        input.entries.truncate(first);
+        input.spans.truncate(first);
+        input
+            .hook_markers
+            .truncate(input.hook_markers.partition_point(|event| *event < first));
+        if input.meta_events.is_empty() {
+            input.session_id.clear();
+        }
+        for id in ids {
+            if let Some((key, value)) = input.digests.remove_entry(&id) {
+                input.digest_bytes -= key.capacity() + value.capacity();
+            }
+            if let Some(event) = input.mining.tool_position(&id) {
+                let tool = input.entries[event][0]
+                    .tool_uses()
+                    .filter(|tool| tool.id == id)
+                    .last()
+                    .expect("retained tool use");
+                let digest = crate::ids::tool_digest(&tool.name, &tool.input)
+                    .expect("previously indexed digest");
+                input.digest_bytes += id.capacity() + digest.capacity();
+                input.digests.insert(id, digest);
+            }
+        }
+        input.checkpoint.events = first;
         Ok(())
     }
 
@@ -644,6 +756,8 @@ impl NativeStore {
                     pending_codex: 0..0,
                     canonical_path: canonical.clone(),
                     session_id: String::new(),
+                    meta_events: Vec::new(),
+                    model_events: Vec::new(),
                     retained_entries: 0,
                     pending_line: Vec::new(),
                     scan_complete: false,
@@ -802,7 +916,7 @@ impl NativeStore {
                 self.review_reserve(
                     &mut reservation,
                     context,
-                    input.accounted_bytes() + vec_growth(&input.raw_spans, 1),
+                    input.accounted_bytes() + vec_reallocation_bound(&input.raw_spans, 1),
                 )?;
                 input.raw_spans.push(line);
                 if line.len > self.config.entry {
@@ -816,38 +930,29 @@ impl NativeStore {
                     input.provider = Some(sniff_provider(bytes));
                 }
                 let mut entries = if input.provider == Some(Provider::Codex) {
-                    self.review_reserve(
-                        &mut reservation,
-                        context,
-                        input.accounted_bytes()
-                            + dom_parse_bound(bytes.len())
-                                .ok_or_else(|| invalid("Codex allocation bound overflow"))?
-                                .saturating_mul(4)
-                            + vec_growth(&input.raw_spans, 1),
-                    )?;
+                    let peak = match input.codex.as_ref() {
+                        Some(codex) => codex.ingest_peak_bound(bytes.len() + 1),
+                        None => crate::codex::CodexReviewContinuation::default()
+                            .ingest_peak_bound(bytes.len() + 1),
+                    }
+                    .ok_or_else(|| invalid("Codex allocation bound overflow"))?;
+                    self.review_reserve(&mut reservation, context, input.accounted_bytes() + peak)?;
                     let mut bytes = bytes.to_vec();
                     bytes.push(b'\n');
                     let codex = input.codex.get_or_insert_with(Default::default);
                     let changed = codex.ingest(&bytes)?;
                     let end = codex.len();
                     let start = if changed < input.entries.len() {
-                        input.mining = crate::mining::ReviewMiningIndex::new(spec)?;
-                        input.facts = crate::snapshot_text::SourceFactsIndex::new(first_user_token);
-                        input.activity = ActivityIndex::default();
-                        input.contexts =
-                            crate::snapshot_review_context::ReviewContextState::default();
-                        input.entries.clear();
-                        input.spans.clear();
-                        input.pending_rows.clear();
-                        input.retained_entries = 0;
-                        input.pending_row_bytes = 0;
-                        input.session_id.clear();
-                        input.hook_markers.clear();
-                        input.digests.clear();
-                        input.digest_bytes = 0;
-                        0
-                    } else {
+                        self.truncate_registered_review_input(
+                            &mut input,
+                            changed,
+                            spec,
+                            context,
+                            &mut reservation,
+                        )?;
                         changed
+                    } else {
+                        input.entries.len().min(changed)
                     };
                     input.pending_codex = start..end;
                     budget.commit_parse()?;
@@ -879,7 +984,7 @@ impl NativeStore {
                                     + size_of::<(Entry, crate::scan_stream::LineSpan)>()
                             })
                             .sum::<usize>()
-                        + deque_growth(&input.pending_rows, entries.len()),
+                        + deque_reallocation_bound(&input.pending_rows, entries.len()),
                 )?;
                 for (entry, line) in entries.drain(..) {
                     let charge = entry_charge(&entry);

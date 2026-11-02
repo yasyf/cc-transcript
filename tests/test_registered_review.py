@@ -55,7 +55,7 @@ def test_registered_scope_preserves_words_capture_and_warm_zero(tmp_path: Path) 
     for _ in range(3):
         warm = run(store, path, prepare)
         assert warm["signals"] == first["signals"]
-        assert warm["usage"]["source_bytes_read"] == 0
+        assert warm["usage"]["source_bytes_read"] == 0, {"first": first, "warm": warm, "owner_epoch": store.owner_epoch}
         assert warm["usage"]["events_parsed"] == 0
     with pytest.raises(SnapshotIncomplete):
         held[0].checkpoint()
@@ -91,3 +91,19 @@ def test_registered_publication_pages_without_raw_lease(tmp_path: Path) -> None:
         assert page is not None
         actual.extend(page["records_json"])
     assert actual == records
+
+
+def test_registered_controller_warm_usage_without_handler_projections(tmp_path: Path) -> None:
+    path = tmp_path / "warm.jsonl"
+    path.write_bytes(event(0, "owner words"))
+    store = TranscriptStore({})
+
+    def describe(snapshot: TranscriptSnapshot) -> dict[str, object]:
+        return {"revision": snapshot.description["source_revision"], "usage": dict(snapshot.usage)}
+
+    first = run(store, path, describe)
+    for _ in range(3):
+        warm = run(store, path, describe)
+        assert warm["usage"]["source_bytes_read"] == 0, {"first": first, "warm": warm, "owner_epoch": store.owner_epoch}
+        assert warm["usage"]["events_parsed"] == 0
+        assert warm["revision"] == first["revision"]

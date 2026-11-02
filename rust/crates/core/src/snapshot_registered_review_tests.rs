@@ -359,3 +359,98 @@ fn registered_review_deadline_during_decode_preserves_committed_source_work() {
     assert_eq!(second.progress.source_bytes, 0);
     assert_eq!(second.progress.parsed_events, 0);
 }
+
+#[test]
+fn registered_review_codex_adjacent_echo_reuses_untouched_prefix_at_32_and_10000_rows() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for count in [32, 10000] {
+        let line = |kind: &str, payload: Value| {
+            sonic_rs::to_string(
+                &json!({"timestamp":"2026-11-02T00:00:00Z","type":kind,"payload":payload}),
+            )
+            .unwrap()
+                + "\n"
+        };
+        let message = |text: &str| {
+            line(
+                "response_item",
+                json!({"type":"message","role":"user","content":[{"type":"input_text","text":text}]}),
+            )
+        };
+        let mut contents = line("session_meta", json!({"id":"thread","cwd":"/repo"}));
+        contents.push_str(&line("turn_context", json!({"model":"m"})));
+        for event in 0..count {
+            contents.push_str(&line("response_item", json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":format!("retained owner words {event}")}]})));
+        }
+        contents.push_str(&line(
+            "event_msg",
+            json!({"type":"user_message","message":"adjacent owner words"}),
+        ));
+        let source = Source::new(&contents);
+        let store = NativeStore::new(&json!({})).unwrap();
+        let spec = registered_review_spec();
+        let callbacks = AtomicUsize::new(0);
+        let marker = |_: &Arc<ChunkRows>| {
+            callbacks.fetch_add(1, Ordering::Relaxed);
+            Ok(false)
+        };
+        let mut limits = registered_review_limits();
+        limits.max_output_bytes = 16 * 1024 * 1024;
+        let read = || {
+            store
+                .with_registered_review_frame(
+                    &source.path,
+                    &context("codex-echo"),
+                    &json!({"id":"review","version":"1"}),
+                    &spec,
+                    "owner words",
+                    limits,
+                    &Cancellation::default(),
+                    "controller",
+                    None,
+                    &marker,
+                    |frame| {
+                        let frame = frame.lock().unwrap();
+                        let input = frame.as_ref().unwrap();
+                        assert_eq!(input.mining.accounted_bytes(), input.mining.audited_bytes());
+                        assert_eq!(
+                            input.contexts.accounted_bytes(),
+                            input.contexts.audited_bytes()
+                        );
+                        let signals = input.mining.signals()?.collect::<Vec<_>>();
+                        let encoded = sonic_rs::to_string(&signals).unwrap();
+                        Ok(encoded)
+                    },
+                )
+                .unwrap()
+        };
+        let first = read();
+        assert!(first.complete);
+        callbacks.store(0, Ordering::Relaxed);
+        let append = message("adjacent owner words");
+        source.append(&append);
+        contents.push_str(&append);
+        let changed = read();
+        assert!(changed.complete);
+        assert_eq!(callbacks.load(Ordering::Relaxed), 2, "N={count}");
+        assert_eq!(changed.progress.source_bytes, append.len() + 128);
+        let parsed = crate::codex::parse::parse_codex_bytes(contents.as_bytes());
+        let canonical = crate::codex::lower::lower(&parsed);
+        let expected =
+            crate::mining::mine_entries(canonical.entries.iter().collect(), &spec).unwrap();
+        assert_eq!(
+            changed.value.as_deref(),
+            Some(sonic_rs::to_string(&expected).unwrap().as_str())
+        );
+        let warm = read();
+        assert_eq!(warm.progress.source_bytes, 0);
+        assert_eq!(warm.progress.parsed_events, 0);
+        assert_eq!(warm.mining_usage.events, 0);
+        assert_eq!(callbacks.load(Ordering::Relaxed), 2);
+        let state = store.lock_state();
+        for (_, charged, walked) in NativeStore::walked_records(&state) {
+            assert_eq!(charged, walked);
+        }
+        println!("REGISTERED_REVIEW_CODEX_ECHO N={count} append={} source_read={} callbacks=2 warm_read=0", append.len(), changed.progress.source_bytes);
+    }
+}

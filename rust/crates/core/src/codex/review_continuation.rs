@@ -15,9 +15,47 @@ struct Echoes {
     counts: HashMap<String, usize>,
     events: HashMap<String, Vec<usize>>,
     payload_bytes: usize,
+    max_event_capacity: usize,
 }
 
 impl Echoes {
+    fn ingest_growth_bound(&self) -> Option<usize> {
+        use crate::snapshot_ledger::{map_growth, set_growth};
+        let peak = |old: usize, growth: usize| {
+            if growth == 0 {
+                Some(0)
+            } else {
+                old.checked_add(growth)
+            }
+        };
+        let counts = peak(
+            self.counts
+                .capacity()
+                .checked_mul(std::mem::size_of::<(String, usize)>())?,
+            map_growth(&self.counts, 1),
+        )?;
+        let texts = peak(
+            self.texts
+                .capacity()
+                .checked_mul(std::mem::size_of::<String>())?,
+            set_growth(&self.texts, 1),
+        )?;
+        let events = peak(
+            self.events
+                .capacity()
+                .checked_mul(std::mem::size_of::<(String, Vec<usize>)>())?,
+            map_growth(&self.events, 1),
+        )?;
+        let response = counts.checked_add(texts)?;
+        let event = events.checked_add(
+            self.max_event_capacity
+                .max(4)
+                .checked_mul(2)?
+                .checked_mul(std::mem::size_of::<usize>())?,
+        )?;
+        Some(response.max(event))
+    }
+
     fn key_bytes(&self, text: &str) -> usize {
         self.texts.get(text).map_or(0, String::capacity)
             + self
@@ -65,10 +103,9 @@ impl Echoes {
     }
     fn add_event(&mut self, text: &str, position: usize) {
         let before = self.key_bytes(text);
-        self.events
-            .entry(text.to_owned())
-            .or_default()
-            .push(position);
+        let rows = self.events.entry(text.to_owned()).or_default();
+        rows.push(position);
+        self.max_event_capacity = self.max_event_capacity.max(rows.capacity());
         self.payload_bytes = self.payload_bytes - before + self.key_bytes(text);
     }
     fn remove_event(&mut self, text: &str, position: usize) {
@@ -111,6 +148,49 @@ pub struct CodexReviewContinuation {
 }
 
 impl CodexReviewContinuation {
+    pub fn ingest_peak_bound(&self, source_bytes: usize) -> Option<usize> {
+        use crate::snapshot_ledger::vec_growth;
+        let bytes = source_bytes.checked_add(self.tail.len())?;
+        let parsed = crate::snapshot_memory::dom_parse_bound(bytes)?
+            .checked_add(bytes.checked_mul(16)?)?
+            .checked_add(4 * std::mem::size_of::<CodexEntry>() + 8192)?;
+        let peak = |old: usize, growth: usize| {
+            if growth == 0 {
+                Some(0)
+            } else {
+                old.checked_add(growth)
+            }
+        };
+        let entries = peak(
+            self.entries
+                .capacity()
+                .checked_mul(std::mem::size_of::<CodexEntry>())?,
+            vec_growth(&self.entries, 1),
+        )?
+        .checked_add(peak(
+            self.entry_charges
+                .capacity()
+                .checked_mul(std::mem::size_of::<usize>())?,
+            vec_growth(&self.entry_charges, 1),
+        )?)?;
+        let metadata = peak(
+            self.models
+                .capacity()
+                .checked_mul(std::mem::size_of::<(usize, String)>())?,
+            vec_growth(&self.models, 1),
+        )?
+        .checked_add(peak(
+            self.cwds
+                .capacity()
+                .checked_mul(std::mem::size_of::<(usize, String)>())?,
+            vec_growth(&self.cwds, 1),
+        )?)?;
+        let facts = metadata
+            .max(self.user.ingest_growth_bound()?)
+            .max(self.assistant.ingest_growth_bound()?);
+        parsed.checked_add(entries)?.checked_add(facts)
+    }
+
     pub fn accounted_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.entries.capacity() * std::mem::size_of::<CodexEntry>()
