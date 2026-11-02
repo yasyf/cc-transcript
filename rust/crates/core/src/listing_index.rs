@@ -131,11 +131,15 @@ pub struct ListingIndex {
 impl ListingIndex {
     /// Open a metadata index while holding its stable writer lock.
     pub fn open(path: &Path) -> Result<Self, IndexError> {
+        let path = std::path::absolute(path)?;
         let parent = path.parent().ok_or(IndexError::InvalidPath)?;
         DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(parent)?;
+        let path = parent
+            .canonicalize()?
+            .join(path.file_name().ok_or(IndexError::InvalidPath)?);
         let writer = OpenOptions::new()
             .read(true)
             .write(true)
@@ -148,7 +152,7 @@ impl ListingIndex {
             return Err(io::Error::last_os_error().into());
         }
         let mut connection = Connection::open_with_flags(
-            path,
+            &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -454,6 +458,51 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let index = ListingIndex::open(&directory.path().join("listing.sqlite3")).unwrap();
         (directory, index)
+    }
+
+    #[test]
+    fn an_aliased_parent_opens_the_same_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let index = ListingIndex::open(&alias.join("listing.sqlite3")).unwrap();
+        assert!(index.request(b"alias").unwrap().clock().is_none());
+        drop(index);
+        assert!(real.join("listing.sqlite3").is_file());
+        let index = ListingIndex::open(&real.join("listing.sqlite3")).unwrap();
+        assert!(index.request(b"alias").unwrap().clock().is_none());
+    }
+
+    #[test]
+    fn a_database_leaf_symlink_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().canonicalize().unwrap();
+        let target = parent.join("target.sqlite3");
+        drop(ListingIndex::open(&target).unwrap());
+        let link = parent.join("link.sqlite3");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(matches!(
+            ListingIndex::open(&link),
+            Err(IndexError::Sqlite(rusqlite::Error::SqliteFailure(error, _)))
+                if error.extended_code == rusqlite::ffi::SQLITE_CANTOPEN_SYMLINK
+        ));
+    }
+
+    #[test]
+    fn a_writer_leaf_symlink_is_refused_before_opening_the_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().canonicalize().unwrap();
+        let target = parent.join("target.lock");
+        File::create(&target).unwrap();
+        let database = parent.join("listing.sqlite3");
+        std::os::unix::fs::symlink(&target, database.with_extension("lock")).unwrap();
+        assert!(matches!(
+            ListingIndex::open(&database),
+            Err(IndexError::Io(error)) if error.raw_os_error() == Some(libc::ELOOP)
+        ));
+        assert!(!database.exists());
     }
 
     fn file(path: impl Into<PathBuf>, mtime: f64) -> EntryChange {

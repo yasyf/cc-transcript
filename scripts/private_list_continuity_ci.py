@@ -85,10 +85,23 @@ with PrivateWatchman(out / "service") as server:
             assert cache_state(database)[2] == population - 1
             before_recrawl = cache_state(database)[1]
             files[2].unlink()
-            server.request(["debug-recrawl", str(root)])
-            recrawl = server.request(["query", str(root), {"since": before_recrawl, "fields": ["name"]}])
-            assert recrawl["is_fresh_instance"] is True
-            pair(f"n{population}-continuity-recrawl", arguments, home)
+            recrawl_ack = server.request(["debug-recrawl", str(root)])
+            recrawl = server.request(["query", str(root), {"since": before_recrawl, "fields": ["name", "exists"]}])
+            deleted = files[2].relative_to(root).as_posix()
+            if recrawl["is_fresh_instance"]:
+                assert not any(entry["name"] == deleted and entry["exists"] for entry in recrawl["files"])
+            else:
+                assert {"name": deleted, "exists": False} in recrawl["files"]
+            (out / f"n{population}-recrawl-change-observation.json").write_text(json.dumps({
+                "purpose": "change-continuity after a recrawl request",
+                "ack": recrawl_ack,
+                "query_clock": recrawl["clock"],
+                "is_fresh_instance": recrawl["is_fresh_instance"],
+                "warning": recrawl.get("warning"),
+                "deleted": deleted,
+                "completion_proof": "not inferred from the ACK or cookie",
+            }, sort_keys=True) + "\n")
+            pair(f"n{population}-continuity-recrawl-change", arguments, home)
             assert cache_state(database)[2] == population - 2
             files[3].unlink()
             server.stop()
