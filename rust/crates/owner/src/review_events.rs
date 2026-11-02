@@ -117,7 +117,8 @@ pub fn page(scope: &mut Scope<'_>, request: &Value, id: &str) -> Result<Value, F
     let mut records: Vec<String> = Vec::with_capacity(MAX_RECORDS);
     let mut skipped = Vec::new();
     let mut next = start;
-    while next < snapshot.event_count && records.len() < MAX_RECORDS {
+    while next < snapshot.event_count && records.len() < MAX_RECORDS && skipped.len() < MAX_RECORDS
+    {
         scope.checkpoint()?;
         let encoded = match record(&snapshot, next) {
             Ok(encoded) => encoded,
