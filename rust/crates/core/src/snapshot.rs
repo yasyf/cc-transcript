@@ -8689,9 +8689,14 @@ impl NativeStore {
                 let pledge = pledge.map(|(token, bytes)| (token, bytes + state.leases.growth(1)));
                 let additional = generation.as_ref().map_or(0, |(snapshot, record)| {
                     let key = snapshot_key(snapshot);
-                    state.admission(&key, record, record.anchors())
-                        + state.generations.growth_for(&key)
-                        + state.escape_growth(&snapshot.chunks)
+                    state.admission(
+                        &key,
+                        record,
+                        record.anchors().chain(state.escaping(&snapshot.chunks)),
+                    ) + state.generations.growth_for(&key)
+                        + state
+                            .escaped_chunks
+                            .growth(state.escaping(&snapshot.chunks).count())
                 }) + pledge.as_ref().map_or(0, |(_, bytes)| *bytes)
                     + pending_charge;
                 match self.admit_memory(
@@ -22509,4 +22514,5 @@ mod tests {
 
     include!("snapshot_load_charge_work_tests.rs");
     include!("snapshot_load_charge_audit_tests.rs");
+    include!("snapshot_publication_shared_admission_tests.rs");
 }
