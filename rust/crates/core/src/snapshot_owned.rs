@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::mem::size_of;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use serde::ser::{SerializeMap, SerializeSeq};
@@ -92,6 +93,7 @@ struct OwnedOperation {
     claimant: String,
     context_hash: [u8; 32],
     handles: Vec<Value>,
+    review_source: Option<PathBuf>,
     expires: u64,
     deadline: u64,
     cancel: Cancellation,
@@ -117,6 +119,10 @@ impl OwnedOperation {
             + self.token.capacity()
             + self.claimant.capacity()
             + self.field.capacity()
+            + self
+                .review_source
+                .as_ref()
+                .map_or(0, |path| path.as_os_str().len())
             + self.handles.capacity() * size_of::<Value>()
             + self.handles.iter().map(charge).sum::<usize>()
             + charge(&self.metadata)
@@ -707,6 +713,18 @@ fn validate_inputs(
 }
 
 impl NativeStore {
+    fn owned_projection_expiry(
+        &self,
+        operation: &OwnedOperation,
+        context: &Value,
+        deadline: u64,
+    ) -> Result<u64, SnapshotError> {
+        match &operation.review_source {
+            Some(path) => self.registered_projection_expiry(path, context, deadline),
+            None => self.owned_handle_expiry(&operation.handles, context, deadline),
+        }
+    }
+
     pub fn reserve_owned_input<'a>(
         &'a self,
         context: &Value,
@@ -733,12 +751,74 @@ impl NativeStore {
         usage: &Value,
         work: &Value,
     ) -> Result<OwnedProjectionReply<'a>, SnapshotError> {
+        self.publish_projection_source(
+            request,
+            context,
+            cancel,
+            metadata,
+            field,
+            records_json,
+            usage,
+            work,
+            None,
+        )
+    }
+
+    pub fn publish_registered_projection<'a>(
+        &'a self,
+        input: &crate::snapshot::RegisteredReviewInput,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        metadata: &Value,
+        field: &str,
+        records_json: &[&str],
+        usage: &Value,
+        work: &Value,
+    ) -> Result<OwnedProjectionReply<'a>, SnapshotError> {
+        let path = input.publication_source()?;
+        if request
+            .get("source_revision")
+            .and_then(Value::as_str)
+            .is_some_and(|revision| revision != input.source_revision())
+        {
+            return Err(SnapshotError::new(
+                Status::StaleHandle,
+                "registered publication source revision mismatch",
+            ));
+        }
+        self.publish_projection_source(
+            request,
+            context,
+            cancel,
+            metadata,
+            field,
+            records_json,
+            usage,
+            work,
+            Some(path),
+        )
+    }
+
+    fn publish_projection_source<'a>(
+        &'a self,
+        request: &Value,
+        context: &Value,
+        cancel: &Cancellation,
+        metadata: &Value,
+        field: &str,
+        records_json: &[&str],
+        usage: &Value,
+        work: &Value,
+        review_source: Option<&Path>,
+    ) -> Result<OwnedProjectionReply<'a>, SnapshotError> {
         let (deadline, limit) =
             validate_inputs(request, metadata, field, records_json, usage, work)?;
         cancel.check(deadline)?;
-        let input = records_json.iter().try_fold(field.len(), |bytes, record| {
-            checked_add(bytes, record.len())
-        })?;
+        let input = records_json.iter().try_fold(
+            field.len() + review_source.map_or(0, |path| path.as_os_str().len()),
+            |bytes, record| checked_add(bytes, record.len()),
+        )?;
         let input = [request, context, metadata, usage, work]
             .iter()
             .try_fold(input, |bytes, value| checked_add(bytes, charge(value)))?;
@@ -754,8 +834,15 @@ impl NativeStore {
             MAX_REPLY_BYTES * 6 + 8192,
         )?;
         let (mut reservation, mut operation) = admitted(self, context, reservation_bytes, || {
-            let handles = source_handles(request)?;
-            let expires = self.owned_handle_expiry(&handles, context, deadline)?;
+            let handles = if review_source.is_some() {
+                Vec::new()
+            } else {
+                source_handles(request)?
+            };
+            let expires = match review_source {
+                Some(path) => self.registered_projection_expiry(path, context, deadline)?,
+                None => self.owned_handle_expiry(&handles, context, deadline)?,
+            };
             let token = self.owned_token();
             let plans = PageSource {
                 metadata,
@@ -778,6 +865,7 @@ impl NativeStore {
                 claimant: text(context, "claimant")?.to_owned(),
                 context_hash: context_hash(context)?,
                 handles,
+                review_source: review_source.map(Path::to_path_buf),
                 expires,
                 deadline,
                 cancel: cancel.clone(),
@@ -796,7 +884,7 @@ impl NativeStore {
             Ok(operation)
         })?;
         let encoded = page(&mut operation, cancel)?;
-        self.owned_handle_expiry(&operation.handles, context, deadline)?;
+        self.owned_projection_expiry(&operation, context, deadline)?;
         cancel.check(deadline)?;
         let delivery_cursor = (!operation.plans.is_empty())
             .then(|| format!("{}:{}", operation.token, operation.next));
@@ -863,9 +951,9 @@ impl NativeStore {
             operation.valid(offset, claimant, &binding, now_ms())?;
             Ok(registry.take(token).expect("validated operation"))
         })?;
-        self.owned_handle_expiry(&operation.handles, context, operation.deadline)?;
+        self.owned_projection_expiry(&operation, context, operation.deadline)?;
         let encoded = page(&mut operation, cancel)?;
-        self.owned_handle_expiry(&operation.handles, context, operation.deadline)?;
+        self.owned_projection_expiry(&operation, context, operation.deadline)?;
         cancel.check(operation.deadline)?;
         let delivery_cursor = (!operation.plans.is_empty())
             .then(|| format!("{}:{}", operation.token, operation.next));

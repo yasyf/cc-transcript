@@ -643,6 +643,52 @@ impl ActivityIndex {
         self.project_call_turn_with(index, entry, |_| true)
     }
 
+    pub(crate) fn event_fragment<'a>(&self, event: usize, entry: &'a Entry) -> Option<Turn<'a>> {
+        let index = self.turn_of_event(event)?;
+        let turn = &self.turns[index];
+        let first = turn.calls.partition_point(|call| call.event < event);
+        let stop = turn.calls.partition_point(|call| call.event <= event);
+        let mut uses = Vec::with_capacity(stop - first);
+        for cached in &turn.calls[first..stop] {
+            let Entry::Assistant(assistant) = entry else {
+                unreachable!()
+            };
+            let ContentBlock::ToolUse(tool) = &assistant.blocks[cached.ordinal] else {
+                unreachable!()
+            };
+            uses.push(ToolUse {
+                event_uuid: &assistant.meta.uuid,
+                tool_use_id: &tool.id,
+                name: &tool.name,
+                ts: assistant.meta.timestamp,
+                cwd: assistant.meta.cwd.as_deref(),
+                result: None,
+                result_ts: None,
+                turn_index: index,
+                call: cached.call.clone(),
+                edits: cached.edits.clone(),
+            });
+        }
+        Some(Turn {
+            index,
+            prompt: if turn.bounds.start == event {
+                turn.prompt.clone()
+            } else {
+                String::new()
+            },
+            started_at: (turn.started == Some(event)).then(|| entry.meta().unwrap().timestamp),
+            ended_at: (turn.ended == Some(event)).then(|| entry.meta().unwrap().timestamp),
+            events: vec![entry],
+            tool_uses: uses,
+        })
+    }
+
+    pub(crate) fn result_position(&self, id: &str) -> Option<(usize, usize)> {
+        self.results
+            .get(id)
+            .map(|position| (position.event, position.ordinal))
+    }
+
     pub(crate) fn project_call_turn_with<'a>(
         &self,
         index: usize,

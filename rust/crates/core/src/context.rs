@@ -170,7 +170,7 @@ impl ContextWindow {
             .expect("unlimited context writer")
     }
 
-    pub(crate) fn to_json_bounded(&self, limit: usize) -> Result<String, SchemaError> {
+    pub fn to_json_bounded(&self, limit: usize) -> Result<String, SchemaError> {
         let mut out = JsonSink {
             bytes: Vec::new(),
             limit,
@@ -641,10 +641,24 @@ fn preview_of_call(tu: &ToolUseBlock, use_: &ToolUse, budget: &Budget) -> Previe
 }
 
 fn ask_preview(tu: &ToolUseBlock, use_: &ToolUse) -> Preview {
-    let (selections, notes) = match use_
-        .result
+    let (selections, notes) = ask_result(use_.result);
+    Preview::AskUserQuestion {
+        questions: parse_questions(&tu.input)
+            .unwrap_or_default()
+            .into_iter()
+            .map(PreviewQuestion::from)
+            .collect(),
+        selections,
+        notes,
+    }
+}
+
+pub(crate) fn ask_result(
+    result: Option<&crate::types::ToolResultBlock>,
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    match result
         .and_then(|r| r.tool_use_result.as_ref())
-        .map(|payload| parse_tool_result(&tu.name, payload))
+        .map(|payload| parse_tool_result(ASK_USER_QUESTION, payload))
     {
         Some(ToolResult::AskUserQuestion(result)) => (
             result.answers.into_iter().collect(),
@@ -655,15 +669,6 @@ fn ask_preview(tu: &ToolUseBlock, use_: &ToolUse) -> Preview {
                 .collect(),
         ),
         _ => (BTreeMap::new(), BTreeMap::new()),
-    };
-    Preview::AskUserQuestion {
-        questions: parse_questions(&tu.input)
-            .unwrap_or_default()
-            .into_iter()
-            .map(PreviewQuestion::from)
-            .collect(),
-        selections,
-        notes,
     }
 }
 

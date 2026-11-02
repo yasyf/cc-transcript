@@ -97,7 +97,7 @@ fn detached_tools<'py>(
         .collect()
 }
 
-fn detached_turns<'py>(
+pub(crate) fn detached_turns<'py>(
     py: Python<'py>,
     mut records: Vec<TurnRecord>,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {

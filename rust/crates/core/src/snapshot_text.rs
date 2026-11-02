@@ -42,6 +42,17 @@ pub struct SourceFactsIndex {
 }
 
 impl SourceFactsIndex {
+    pub(crate) fn append_bound(&self, entry: &Entry) -> usize {
+        use crate::snapshot_ledger::{set_growth, vec_growth};
+        entry
+            .meta()
+            .and_then(|meta| meta.cwd.as_ref())
+            .filter(|cwd| !self.seen.contains(*cwd))
+            .map_or(0, |cwd| {
+                set_growth(&self.seen, 1) + vec_growth(&self.facts.cwds, 1) + cwd.len() * 4 + 256
+            })
+    }
+
     pub fn new(token: &str) -> Self {
         Self {
             token: token.to_owned(),

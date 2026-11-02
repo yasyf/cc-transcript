@@ -83,6 +83,7 @@ jobs:
           cargo test --locked -p cc-transcript-core --no-default-features --lib registered_review_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/reader.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_review:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/dependencies.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib codex::review_continuation -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/codex.log"
       - name: Upload Linux registered review continuation controls
         if: always()
         uses: actions/upload-artifact@v7
@@ -248,6 +249,7 @@ jobs:
           cargo test --locked -p cc-transcript-core --no-default-features --lib registered_review_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/reader.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_review:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/dependencies.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib codex::review_continuation -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/codex.log"
       - name: Upload macOS registered review continuation controls
         if: always()
         uses: actions/upload-artifact@v7

@@ -52,6 +52,7 @@ pub mod snapshot_prepared_disk;
 pub mod snapshot_projection;
 mod snapshot_raw_window;
 pub mod snapshot_review;
+pub mod snapshot_review_context;
 mod snapshot_skill_framing;
 pub mod snapshot_text;
 #[cfg(feature = "sqlite")]

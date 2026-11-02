@@ -672,6 +672,36 @@ impl NativeSnapshotStore {
         })).map_err(error)
     }
 
+    fn run_registered_review(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        policy_json: &str,
+        mining_spec_json: &str,
+        callable_formats: Vec<(String, Py<PyAny>, Py<PyAny>, bool)>,
+        first_user_marker: &str,
+        prose_marker: Py<PyAny>,
+        request_json: &str,
+        context_json: &str,
+        cancel: &SnapshotCancellation,
+        handler: Py<PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        run_registered_review(
+            self,
+            py,
+            path,
+            policy_json,
+            mining_spec_json,
+            callable_formats,
+            first_user_marker,
+            prose_marker,
+            request_json,
+            context_json,
+            cancel,
+            handler,
+        )
+    }
+
     fn register_classifier(
         &self,
         py: Python<'_>,
@@ -1345,6 +1375,8 @@ impl NativeSnapshotScope {
     }
 }
 
+include!("snapshots_registered_review.rs");
+
 pub(crate) fn add_functions(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add(
         "SnapshotOperationError",
@@ -1353,6 +1385,7 @@ pub(crate) fn add_functions(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SnapshotCancellation>()?;
     module.add_class::<NativeSnapshotStore>()?;
     module.add_class::<NativeSnapshotScope>()?;
+    module.add_class::<NativeRegisteredReviewScope>()?;
     Ok(())
 }
 

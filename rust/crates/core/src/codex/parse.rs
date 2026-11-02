@@ -62,7 +62,7 @@ pub fn parse_codex_bytes(bytes: &[u8]) -> CodexSession {
     fold_session(entries)
 }
 
-fn parse_codex_line(line: &[u8], line_index: usize, entries: &mut Vec<CodexEntry>) {
+pub(crate) fn parse_codex_line(line: &[u8], line_index: usize, entries: &mut Vec<CodexEntry>) {
     if line.iter().all(u8::is_ascii_whitespace) {
         return;
     }
