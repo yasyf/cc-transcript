@@ -23,6 +23,8 @@ pub mod filter;
 pub mod gateway;
 pub mod ids;
 pub mod judge;
+#[cfg(all(feature = "sqlite", unix))]
+pub mod listing_index;
 pub mod notifications;
 pub mod parse;
 pub mod protocol;

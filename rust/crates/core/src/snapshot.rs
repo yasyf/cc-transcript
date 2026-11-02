@@ -141,6 +141,11 @@ pub struct Cancellation {
 }
 
 impl Cancellation {
+    /// Whether cancellation was requested for this operation.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
     }
@@ -150,7 +155,7 @@ impl Cancellation {
     }
 
     pub fn check(&self, deadline_unix_ms: u64) -> Result<(), SnapshotError> {
-        if self.cancelled.load(Ordering::Acquire) {
+        if self.is_cancelled() {
             return Err(SnapshotError::new(Status::Cancelled, "request cancelled"));
         }
         if now_ms() >= deadline_unix_ms {

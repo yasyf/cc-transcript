@@ -1,0 +1,65 @@
+name: Indexed list private characterization
+
+on:
+  push:
+    branches: [fix/list-watchman-adapter-c810]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: list-index-private-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  private-list:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: 31ede754f265e26a49d2ae65bf70187a353be418
+          path: .list-baseline-source
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13.15"
+      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install private-fixture Watchman on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y watchman
+      - name: Install private-fixture Watchman on macOS
+        if: runner.os == 'macOS'
+        run: brew install watchman
+      - name: Grade the complete warm index turn
+        run: cargo test --locked -p cc-transcript-core --no-default-features --features sqlite --lib listing_index::tests:: -- --nocapture --test-threads=2
+      - name: Grade the protocol and metadata adapter
+        run: cargo test --locked -p cc-transcript-cli --lib listing::tests:: -- --nocapture --test-threads=2
+      - name: Build the exact-source candidate wheel
+        run: uv build --wheel
+      - name: Re-run the immutable official35 baseline
+        run: python -I -B .list-baseline-source/scripts/list_discovery_baseline_ci.py "$RUNNER_TEMP/c810-old-baseline"
+      - name: Compare native private cases and preserve list goldens
+        run: python -I -B scripts/list_index_build_ci.py "$RUNNER_TEMP/c810-list-build" "$RUNNER_TEMP/c810-old-baseline"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: private-indexed-list-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/c810-list-build/receipts
+            ${{ runner.temp }}/c810-list-build/continuity
+            ${{ runner.temp }}/c810-list-build/golden-service
+            ${{ runner.temp }}/c810-list-build/goldens
+            ${{ runner.temp }}/c810-list-build/result.json
+            ${{ runner.temp }}/c810-old-baseline/receipts
+            ${{ runner.temp }}/c810-old-baseline/results
+            ${{ runner.temp }}/c810-old-baseline/bootstrap_result.json

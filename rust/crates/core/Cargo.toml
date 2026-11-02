@@ -41,6 +41,7 @@ command = ["dep:rable"]
 sqlite = ["dep:rusqlite"]
 
 [dev-dependencies]
+tempfile = "3"
 # Criterion for the v14 P0 parse/filter/activity baseline (benches/parse.rs).
 # default-features off: skip the plotters/HTML report machinery; estimates.json
 # (the medians BASELINE.json reads) is written by the core regardless.

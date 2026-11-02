@@ -359,7 +359,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     let timeout_ms = args.scan_limits.timeout_ms(&store);
     let cancel = Cancellation::default();
     *crate::SCAN_CANCELLATION.lock().expect("scan cancellation") = Some(cancel.clone());
-    let _interrupt = ScanInterrupt;
+    let _interrupt = crate::ScanInterrupt;
     if let Some(path) = &args.corpus {
         return run_over_corpus(&store, &args, path, limits, timeout_ms, cancel);
     }
@@ -673,13 +673,6 @@ fn failed_outcome(error: SnapshotError, budget: &ScanBudget) -> ScanOutcome {
         selected_sources: 0,
         available_sources: 0,
         progress: budget.progress.clone(),
-    }
-}
-
-struct ScanInterrupt;
-impl Drop for ScanInterrupt {
-    fn drop(&mut self) {
-        *crate::SCAN_CANCELLATION.lock().expect("scan cancellation") = None;
     }
 }
 

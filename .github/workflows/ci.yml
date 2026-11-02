@@ -127,7 +127,10 @@ jobs:
         run: uv run ty check cc_transcript
 
       - name: Test (pytest)
-        run: uv run pytest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y watchman
+          uv run --no-sync python scripts/private_watchman.py "$RUNNER_TEMP/c810-pytest-watchman" -- uv run --no-sync pytest
 
       - name: Test capt-hook hooks
         run: uvx --isolated 'capt-hook>=12.74.0' test

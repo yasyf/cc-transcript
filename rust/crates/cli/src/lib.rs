@@ -9,6 +9,8 @@ use clap::error::ErrorKind as ClapErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 pub mod commands;
+#[cfg(unix)]
+mod listing;
 pub mod output;
 pub mod target;
 pub mod timearg;
@@ -31,6 +33,14 @@ fn pkg_version() -> &'static str {
 pub(crate) static SCAN_CANCELLATION: std::sync::Mutex<
     Option<cc_transcript_core::snapshot::Cancellation>,
 > = std::sync::Mutex::new(None);
+
+pub(crate) struct ScanInterrupt;
+
+impl Drop for ScanInterrupt {
+    fn drop(&mut self) {
+        *SCAN_CANCELLATION.lock().expect("scan cancellation") = None;
+    }
+}
 
 /// The real SIGINT handler spike C mandates: with the GIL detached, Python-side
 /// KeyboardInterrupt delivery never fires, so the Rust side owns the signal.

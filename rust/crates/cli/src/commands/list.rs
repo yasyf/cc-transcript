@@ -10,7 +10,9 @@ use cc_transcript_core::render::{display_path, human_size, Json};
 use chrono::{DateTime, Local};
 
 use crate::output::{click_error, CliExit, Out};
-use crate::target::{discover as discover_claude, require_dir};
+#[cfg(not(unix))]
+use crate::target::discover as discover_claude;
+use crate::target::require_dir;
 use crate::DiscoveryOpts;
 
 const USAGE: &str = "cc-transcript list [OPTIONS]";
@@ -112,8 +114,35 @@ fn local_minute(mtime: f64) -> String {
         .to_string()
 }
 
-fn claude_rows(root: &Path, discovery: &DiscoveryOpts) -> Result<Vec<ListRow>, CliExit> {
-    discover_claude(
+#[cfg(unix)]
+fn claude_rows(root: &Path, discovery: &DiscoveryOpts) -> Result<(Vec<ListRow>, usize), CliExit> {
+    let result = crate::listing::select(
+        root,
+        cc_transcript_core::listing_index::ListingFilter {
+            project: discovery.project.as_deref(),
+            contains: discovery
+                .contains
+                .as_deref()
+                .filter(|value| !value.is_empty()),
+            limit: discovery.effective_limit(),
+        },
+    );
+    let selected = result.map_err(|error| click_error(&error))?;
+    let rows = selected
+        .rows
+        .into_iter()
+        .map(|row| ListRow::Claude {
+            path: root.join(row.path),
+            mtime: row.mtime,
+            size: row.size,
+        })
+        .collect();
+    Ok((rows, selected.total))
+}
+
+#[cfg(not(unix))]
+fn claude_rows(root: &Path, discovery: &DiscoveryOpts) -> Result<(Vec<ListRow>, usize), CliExit> {
+    let rows: Result<Vec<_>, CliExit> = discover_claude(
         root,
         discovery.project.as_deref(),
         discovery.contains.as_deref(),
@@ -125,7 +154,10 @@ fn claude_rows(root: &Path, discovery: &DiscoveryOpts) -> Result<Vec<ListRow>, C
             .len();
         Ok(ListRow::Claude { path, mtime, size })
     })
-    .collect()
+    .collect();
+    let rows = rows?;
+    let total = rows.len();
+    Ok((rows, total))
 }
 
 fn codex_rows(root: &Path, contains: Option<&str>) -> Result<Vec<ListRow>, CliExit> {
@@ -189,11 +221,16 @@ pub fn run(
     };
 
     let mut rows = Vec::new();
+    let mut total = 0;
     if let Some(root) = claude_root.as_deref() {
-        rows.extend(claude_rows(root, discovery)?);
+        let (claude, population) = claude_rows(root, discovery)?;
+        total += population;
+        rows.extend(claude);
     }
     if let Some(root) = codex_root.as_deref() {
-        rows.extend(codex_rows(root, discovery.contains.as_deref())?);
+        let codex = codex_rows(root, discovery.contains.as_deref())?;
+        total += codex.len();
+        rows.extend(codex);
     }
     rows.sort_by(|a, b| {
         b.mtime()
@@ -201,7 +238,6 @@ pub fn run(
             .expect("mtimes are finite")
             .then_with(|| a.path().cmp(b.path()))
     });
-    let total = rows.len();
     if let Some(limit) = discovery.effective_limit() {
         rows.truncate(limit);
     }
