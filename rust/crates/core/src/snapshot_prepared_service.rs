@@ -2385,7 +2385,7 @@ impl NativeStore {
         usage: &mut [u64; 20],
     ) -> Result<SourceStamp, SnapshotError> {
         let (snapshot, physical) = self.prepared_root_observation(root, header, context)?;
-        if physical.viewed_as(root.stamp) != root.stamp
+        if !self.matches_source(physical, root.stamp)
             && !self.extends_prefix(&snapshot, remaining, usage)?
         {
             return Err(SnapshotError::new(
