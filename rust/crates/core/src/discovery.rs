@@ -8,7 +8,11 @@
 use std::collections::HashMap;
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::UNIX_EPOCH;
+
+const WARM_THREADS: usize = 8;
 
 /// Every transcript under `root`, sorted by path. Mirrors
 /// `TranscriptDiscovery.find_transcripts`: a recursive `*.jsonl` glob with no
@@ -176,6 +180,53 @@ pub fn mtime_secs(meta: &Metadata) -> f64 {
             -(err.duration().as_secs() as f64 + 1e-9 * err.duration().subsec_nanos() as f64)
         }
     }
+}
+
+/// Reads every directory under `roots` and lstats each entry across a bounded
+/// thread pool, without following directory symlinks, so a sequential walk
+/// right after it finds the metadata already in the kernel's vnode cache.
+pub fn warm_metadata(roots: &[PathBuf], max_entries: usize, deadline_unix_ms: u64) {
+    let state = Mutex::new((roots.to_vec(), 0usize));
+    let ready = Condvar::new();
+    let examined = AtomicUsize::new(0);
+    let open = || {
+        examined.load(Ordering::Relaxed) < max_entries
+            && crate::snapshot::now_ms() < deadline_unix_ms
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..WARM_THREADS {
+            scope.spawn(|| {
+                let mut guard = state.lock().expect("warm queue");
+                loop {
+                    if let Some(dir) = guard.0.pop() {
+                        guard.1 += 1;
+                        drop(guard);
+                        let mut children = Vec::new();
+                        if let Ok(entries) = fs::read_dir(&dir).map(|entries| entries.flatten()) {
+                            for entry in entries.take_while(|_| open()) {
+                                examined.fetch_add(1, Ordering::Relaxed);
+                                match entry.file_type() {
+                                    Ok(kind) if kind.is_dir() => children.push(entry.path()),
+                                    _ => {
+                                        let _ = entry.metadata();
+                                    }
+                                }
+                            }
+                        }
+                        guard = state.lock().expect("warm queue");
+                        guard.0.append(&mut children);
+                        guard.1 -= 1;
+                        ready.notify_all();
+                    } else if guard.1 == 0 {
+                        ready.notify_all();
+                        return;
+                    } else {
+                        guard = ready.wait(guard).expect("warm queue");
+                    }
+                }
+            });
+        }
+    });
 }
 
 // Recursive walk mirroring pathlib `rglob`: real directories (hidden included)

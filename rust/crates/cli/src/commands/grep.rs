@@ -405,7 +405,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
             if let Some(control) = reducer.scan_stream(
                 path,
                 !structured,
-                Some(&checkpoints),
+                (!reducer.prefilters()).then_some(&checkpoints),
                 &mut session.budget,
                 &cancel,
                 |event, budget, cancel| render.event(path, event, budget, cancel),
