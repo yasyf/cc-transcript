@@ -41,9 +41,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install watchman
       - name: Grade the complete warm index turn
-        run: cargo test --locked -p cc-transcript-core --no-default-features --features sqlite --lib listing_index::tests:: -- --nocapture --test-threads=2
+        run: 'cargo test --locked -p cc-transcript-core --no-default-features --features sqlite --lib listing_index::tests:: -- --nocapture --test-threads=2'
       - name: Grade the protocol and metadata adapter
-        run: cargo test --locked -p cc-transcript-cli --lib listing::tests:: -- --nocapture --test-threads=2
+        run: 'cargo test --locked -p cc-transcript-cli --lib listing::tests:: -- --nocapture --test-threads=2'
       - name: Build the exact-source candidate wheel
         run: uv build --wheel
       - name: Re-run the immutable official35 baseline
