@@ -6873,8 +6873,8 @@ impl NativeStore {
             );
             assert_eq!(
                 record.indexes,
-                snapshot.activity.audited_allocations(true),
-                "a generation's index records diverge from their activity walk"
+                snapshot.activity.audited_shared_roots(),
+                "a generation's index records diverge from their shared roots"
             );
         }
         assert_eq!(

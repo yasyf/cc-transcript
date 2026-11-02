@@ -10056,7 +10056,7 @@ fn published_generations_record_their_arc_headers() {
             ),
             "the generation's index entry misses its arc header"
         );
-        assert_eq!(record.indexes, snapshot.activity.audited_allocations(true));
+        assert_eq!(record.indexes, snapshot.activity.audited_shared_roots());
         assert_eq!(
             record
                 .entries

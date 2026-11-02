@@ -1532,6 +1532,21 @@ impl ActivityIndex {
     }
 
     #[cfg(test)]
+    pub(crate) fn audited_shared_roots(&self) -> Vec<(usize, usize)> {
+        let root = self as *const Self as usize;
+        let membership = self
+            .allocation_owners
+            .get()
+            .expect("shared allocation membership")
+            .metadata_allocation()
+            .0;
+        self.audited_allocations(true)
+            .into_iter()
+            .filter(|(id, _)| *id == root || *id == membership)
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn audited_heap_allocations(&self) -> Vec<(usize, usize)> {
         self.audited_allocations(false)
             .into_iter()
