@@ -69,6 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regular files without a `.jsonl` name. A projects tree holds about as many
   `.json`, `.txt` and `.md` side files as transcripts, and each stat used to
   cost an inode read under a full vnode cache.
+- A grep whose patterns all have usable literals reads the transcripts it will
+  visit ahead of the scan on 8 threads, at most 32 transcripts past the one
+  the scan is on. A transcript where no line can match is counted without a
+  second read, so the scan decodes only the transcripts that hold a candidate.
+  A transcript that changes between that read and its turn is scanned as
+  before. The scan outcome's `surveyed_sources` counts the transcripts counted
+  this way.
 - `cc-transcript list` and a `cc-transcript grep` with no explicit paths read
   their transcripts from one persistent index under
   `~/.claude/cc-transcript/index` instead of walking and statting the projects
