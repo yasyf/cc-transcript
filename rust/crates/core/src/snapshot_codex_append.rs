@@ -1186,6 +1186,56 @@ mod codex_append_tests {
     }
 
     #[test]
+    fn agent_codex_diag_echo_reservations() {
+        let mut text = String::from("{\"timestamp\":\"2026-01-02T03:04:05Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"activity-prefix\"}}\n");
+        for index in 0..10_000 {
+            text.push_str(&format!("{{\"timestamp\":\"2026-01-02T03:04:06Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"old-{index}\"}}}}\n"));
+        }
+        let source = Source::new(&text);
+        let store = store();
+        let context = context();
+        let stats = |label: &str| {
+            let response = request(
+                &store,
+                &json!({"schema":SCHEMA,"id":"stats","operation":"stats"}),
+                &context,
+            );
+            eprintln!("diag_gauges {label} {}", response["data"]["gauges"]);
+        };
+        let initial = acquire(&store, &source, &context);
+        stats("initial");
+        let mut prior = store
+            .pin(&initial["data"]["description"]["handle"], &context)
+            .unwrap();
+        let fresh = "{\"timestamp\":\"2026-01-02T03:04:07Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"new-fresh\"}}\n";
+        let echo = "{\"timestamp\":\"2026-01-02T03:04:08Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"new-fresh\"}]}}\n";
+        let interlude = "{\"timestamp\":\"2026-01-02T03:04:07Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"interlude\"}}\n";
+        for (phase, suffix) in [("fresh", fresh), ("interlude", interlude), ("echo", echo)] {
+            let activity = &prior.activity;
+            let entries = activity.entry_count();
+            eprintln!(
+                "diag_activity {phase} {}",
+                json!({"entries":entries,"accounted":activity.accounted_bytes(),
+                    "rewind":activity.rewind_reservation_bytes(entries.saturating_sub(2), 4096),
+                    "container":activity.append_container_reservation_bytes(3, 0, 0),
+                    "keys":activity.append_key_reservation_bytes(3, 0, 64, 0),
+                    "undo":activity.undo_reservation_bytes(3, 0),
+                    "pending_allocation":activity.pending_allocation_reservation()})
+            );
+            source.append(suffix);
+            let next = acquire(&store, &source, &context);
+            stats(phase);
+            eprintln!("diag_reply {phase} {} {}", next["status"], next["reason"]);
+            if next["status"].as_str() != Some("ok") {
+                break;
+            }
+            prior = store
+                .pin(&next["data"]["description"]["handle"], &context)
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn agent_raw_fresh_and_echo_append_preserve_the_activity_prefix() {
         for count in [32, 10_000] {
             let mut text = String::from("{\"timestamp\":\"2026-01-02T03:04:05Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"activity-prefix\"}}\n");
