@@ -59,7 +59,7 @@ impl Owner {
         owner.send(
             &json!({"protocol":1,"op":"hello","build":"test","snapshot_config":{
             "max_read_bytes_per_step":8192,"max_events_per_step":128,"max_entry_bytes":8192,
-            "max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":4096,
+            "max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":16*1024*1024,
             "max_leases":16,"reserved_hook_leases":1}}),
         );
         assert_eq!(
