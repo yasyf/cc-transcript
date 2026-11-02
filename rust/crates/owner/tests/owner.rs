@@ -34,6 +34,19 @@ fn context() -> Value {
         "registry_generation":""})
 }
 
+fn defaults() -> Value {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../../cc_transcript/snapshot_schema/config.schema.json"
+    ))
+    .unwrap();
+    schema["properties"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(key, field)| (key.clone(), field["default"].clone()))
+        .collect()
+}
+
 fn user(id: &str) -> String {
     format!(
         "{{\"type\":\"user\",\"uuid\":\"{id}\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-02T03:04:05Z\",\"message\":{{\"content\":\"hello {id}\"}}}}\n"
@@ -56,12 +69,7 @@ impl Owner {
             output,
             next: 0,
         };
-        owner.send(
-            &json!({"protocol":1,"op":"hello","build":"test","snapshot_config":{
-            "max_read_bytes_per_step":8192,"max_events_per_step":128,"max_entry_bytes":8192,
-            "max_retained_bytes":32*1024*1024,"reserved_hook_accounted_bytes":16*1024*1024,
-            "max_leases":16,"reserved_hook_leases":1}}),
-        );
+        owner.send(&json!({"protocol":1,"op":"hello","build":"test","snapshot_config":defaults()}));
         assert_eq!(
             owner.receive(),
             json!({"protocol":1,"op":"hello","build":"test"})
