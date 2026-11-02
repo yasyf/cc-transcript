@@ -231,6 +231,7 @@ jobs:
           path: dist/*.whl
 
   snapshot-catalog-macos:
+    if: github.event_name != 'pull_request'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -273,6 +274,7 @@ jobs:
           if-no-files-found: error
 
   snapshot-wheel:
+    if: github.event_name != 'pull_request'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -340,6 +342,7 @@ jobs:
         run: cargo test --release -p cc-transcript-core --no-default-features two_hundred_megabyte_root_completes_in_three_second_steps --lib -- --ignored --test-threads=1
 
   swift:
+    if: github.event_name != 'pull_request'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
