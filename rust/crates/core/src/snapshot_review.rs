@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -36,9 +36,38 @@ pub struct ReviewFollowupTargets {
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct ReviewUndo {
+    uses: Vec<String>,
+    results: Vec<String>,
+    first: Vec<usize>,
+    corrections: Vec<usize>,
+    plans: Vec<usize>,
+    targets: Vec<(usize, ReviewFollowupTargets)>,
+    waits: bool,
+    plan: bool,
+}
+
+impl ReviewUndo {
+    fn owned_bytes(&self) -> usize {
+        (self.uses.capacity() + self.results.capacity()) * size_of::<String>()
+            + self
+                .uses
+                .iter()
+                .chain(&self.results)
+                .map(String::capacity)
+                .sum::<usize>()
+            + (self.first.capacity() + self.corrections.capacity() + self.plans.capacity())
+                * size_of::<usize>()
+            + self.targets.capacity() * size_of::<(usize, ReviewFollowupTargets)>()
+    }
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewDependencies {
     events: usize,
+    undo: Vec<ReviewUndo>,
+    undo_bytes: usize,
     results: HashMap<String, Vec<usize>>,
     first_followups: Vec<usize>,
     corrections: Vec<usize>,
@@ -58,7 +87,7 @@ pub struct ReviewChanges {
 
 impl ReviewDependencies {
     pub(crate) fn append_bound(&self, entry: &Entry, followup: Followup) -> (usize, usize) {
-        use crate::snapshot_ledger::{map_growth, vec_growth};
+        use crate::snapshot_ledger::{map_reallocation_bound, vec_reallocation_bound};
         let uses = entry.tool_uses().count();
         let results = match entry {
             Entry::User(user) => user.tool_results().count(),
@@ -71,13 +100,16 @@ impl ReviewDependencies {
         for tool in entry.tool_uses() {
             affected += self.results.get(&tool.id).map_or(0, Vec::len);
         }
-        let mut bytes = map_growth(&self.results, results)
-            + vec_growth(&self.first_followups, 1)
-            + vec_growth(&self.corrections, 1)
-            + vec_growth(&self.plans, 1)
-            + map_growth(&self.followups, 1)
-            + map_growth(&self.plan_users, plans)
-            + (affected + uses + results + 1) * 4 * size_of::<usize>();
+        let mut bytes = map_reallocation_bound(&self.results, results)
+            + vec_reallocation_bound(&self.first_followups, 1)
+            + vec_reallocation_bound(&self.corrections, 1)
+            + vec_reallocation_bound(&self.plans, 1)
+            + map_reallocation_bound(&self.followups, 1)
+            + map_reallocation_bound(&self.plan_users, plans)
+            + (affected + uses + results + 1) * 12 * size_of::<usize>()
+            + vec_reallocation_bound(&self.undo, 1)
+            + (uses + results) * size_of::<String>();
+        bytes += entry.tool_uses().map(|tool| tool.id.len()).sum::<usize>();
         if let Entry::User(user) = entry {
             for result in user.tool_results() {
                 bytes += result.tool_use_id.len() * 2;
@@ -85,11 +117,129 @@ impl ReviewDependencies {
                     .results
                     .get(&result.tool_use_id)
                     .map_or(4usize.max(results) * size_of::<usize>(), |indices| {
-                        vec_growth(indices, results)
+                        vec_reallocation_bound(indices, results)
                     });
             }
         }
         (bytes, affected)
+    }
+
+    pub fn last_result(&self, id: &str) -> Option<usize> {
+        self.results.get(id).and_then(|rows| rows.last().copied())
+    }
+
+    pub(crate) fn truncate_bound(&self, first: usize, ids: &HashSet<String>) -> usize {
+        use crate::snapshot_ledger::{
+            map_reallocation_bound, set_reallocation_bound, vec_reallocation_bound,
+        };
+        let undo = &self.undo[first..];
+        let uses = undo.iter().map(|undo| undo.uses.len()).sum::<usize>();
+        let targets = undo.iter().map(|undo| undo.targets.len()).sum::<usize>();
+        let plans = undo.iter().map(|undo| undo.plans.len()).sum::<usize>();
+        let firsts = undo.iter().map(|undo| undo.first.len()).sum::<usize>();
+        let corrections = undo
+            .iter()
+            .map(|undo| undo.corrections.len())
+            .sum::<usize>();
+        let results = ids
+            .iter()
+            .map(|id| self.results.get(id).map_or(0, Vec::len))
+            .sum::<usize>();
+        set_reallocation_bound(&HashSet::<String>::new(), uses)
+            + map_reallocation_bound(&self.followups, targets)
+            + vec_reallocation_bound(&self.first_followups, firsts)
+            + vec_reallocation_bound(&self.corrections, corrections)
+            + vec_reallocation_bound(&self.plans, plans)
+            + (results + targets + plans) * 3 * size_of::<usize>()
+    }
+
+    pub fn truncate(&mut self, first: usize) -> Result<ReviewChanges, SnapshotError> {
+        if first > self.events {
+            return Err(SnapshotError::new(
+                Status::InvalidRequest,
+                "review truncate exceeds committed sequence",
+            ));
+        }
+        let old_end = self.events;
+        let mut accounted = self.accounted_bytes();
+        let mut revisited = BTreeSet::new();
+        let uses = self.undo[first..]
+            .iter()
+            .map(|undo| undo.uses.len())
+            .sum::<usize>();
+        let mut removed_uses = HashSet::with_capacity(uses);
+        let old_tables = self.results.capacity() * size_of::<(String, Vec<usize>)>()
+            + self.followups.capacity() * size_of::<(usize, ReviewFollowupTargets)>()
+            + self.plan_users.capacity() * size_of::<(usize, usize)>();
+        while self.events > first {
+            self.events -= 1;
+            let event = self.events;
+            let undo = self.undo.pop().expect("committed dependency undo");
+            let bytes = undo.owned_bytes();
+            self.undo_bytes -= bytes;
+            accounted -= bytes;
+            removed_uses.extend(undo.uses);
+            if undo.waits {
+                assert_eq!(self.first_followups.pop(), Some(event));
+                assert_eq!(self.corrections.pop(), Some(event));
+                self.followups.remove(&event);
+            }
+            if undo.plan {
+                assert_eq!(self.plans.pop(), Some(event));
+            }
+            for id in &undo.results {
+                let rows = self
+                    .results
+                    .get_mut(id)
+                    .expect("committed result positions");
+                assert_eq!(rows.pop(), Some(event));
+                if rows.is_empty() {
+                    let (id, rows) = self
+                        .results
+                        .remove_entry(id)
+                        .expect("empty result positions");
+                    accounted -= id.capacity() + rows.capacity() * size_of::<usize>();
+                }
+            }
+            for (index, targets) in undo.targets {
+                self.followups.insert(index, targets);
+                if index < first {
+                    revisited.insert(index);
+                }
+            }
+            for &index in &undo.plans {
+                self.plan_users.remove(&index);
+                if index < first {
+                    revisited.insert(index);
+                }
+            }
+            let old = self.first_followups.capacity()
+                + self.corrections.capacity()
+                + self.plans.capacity();
+            self.first_followups.extend(undo.first);
+            self.corrections.extend(undo.corrections);
+            self.plans.extend(undo.plans);
+            accounted += (self.first_followups.capacity()
+                + self.corrections.capacity()
+                + self.plans.capacity()
+                - old)
+                * size_of::<usize>();
+        }
+        for id in removed_uses {
+            if let Some(rows) = self.results.get(&id) {
+                revisited.extend(rows.iter().copied());
+            }
+        }
+        accounted = accounted - old_tables
+            + self.results.capacity() * size_of::<(String, Vec<usize>)>()
+            + self.followups.capacity() * size_of::<(usize, ReviewFollowupTargets)>()
+            + self.plan_users.capacity() * size_of::<(usize, usize)>();
+        self.accounted.store(accounted, Ordering::Relaxed);
+        Ok(ReviewChanges {
+            start: first,
+            end: old_end,
+            revisited,
+        })
     }
 
     pub fn event_count(&self) -> usize {
@@ -110,6 +260,8 @@ impl ReviewDependencies {
             return cached;
         }
         let bytes = size_of::<Self>()
+            + self.undo.capacity() * size_of::<ReviewUndo>()
+            + self.undo_bytes
             + self.results.capacity() * size_of::<(String, Vec<usize>)>()
             + self
                 .results
@@ -188,6 +340,8 @@ impl ReviewDependencies {
         }
         let start = self.events;
         let mut accounted = self.accounted_bytes();
+        let old_undo_capacity = self.undo.capacity();
+        let old_undo_bytes = self.undo_bytes;
         let old_results_capacity = self.results.capacity();
         let old_first_capacity = self.first_followups.capacity();
         let old_corrections_capacity = self.corrections.capacity();
@@ -196,13 +350,21 @@ impl ReviewDependencies {
         let old_plan_users_capacity = self.plan_users.capacity();
         let mut revisited = BTreeSet::new();
         for event in events {
+            let mut undo = ReviewUndo {
+                uses: event.tool_uses.clone(),
+                results: Vec::new(),
+                waits: event.waits_for_correction,
+                plan: event.plan_mode,
+                ..ReviewUndo::default()
+            };
             for id in &event.tool_uses {
                 if let Some(indices) = self.results.get(id) {
                     revisited.extend(indices.iter().copied().filter(|index| *index < start));
                 }
             }
             if event.followup != Followup::Blank {
-                for index in self.plans.drain(..) {
+                undo.plans.extend(self.plans.drain(..));
+                for &index in &undo.plans {
                     self.plan_users.insert(index, event.index);
                     if index < start {
                         revisited.insert(index);
@@ -211,7 +373,9 @@ impl ReviewDependencies {
             }
             match event.followup {
                 Followup::Structural => {
-                    for index in self.first_followups.drain(..) {
+                    undo.first.extend(self.first_followups.drain(..));
+                    for &index in &undo.first {
+                        undo.targets.push((index, self.followups[&index]));
                         self.followups
                             .get_mut(&index)
                             .expect("pending followup anchor")
@@ -222,7 +386,9 @@ impl ReviewDependencies {
                     }
                 }
                 Followup::Correction => {
-                    for index in self.corrections.drain(..) {
+                    undo.corrections.extend(self.corrections.drain(..));
+                    for &index in &undo.corrections {
+                        undo.targets.push((index, self.followups[&index]));
                         let targets = self
                             .followups
                             .get_mut(&index)
@@ -233,7 +399,7 @@ impl ReviewDependencies {
                             revisited.insert(index);
                         }
                     }
-                    self.first_followups.clear();
+                    undo.first.extend(self.first_followups.drain(..));
                 }
                 Followup::Blank | Followup::BareMarker => {}
             }
@@ -248,6 +414,7 @@ impl ReviewDependencies {
                 if indices.last() != Some(&event.index) {
                     let old_capacity = indices.capacity();
                     indices.push(event.index);
+                    undo.results.push(id.clone());
                     accounted += (indices.capacity() - old_capacity) * size_of::<usize>();
                 }
             }
@@ -260,8 +427,12 @@ impl ReviewDependencies {
             if event.plan_mode {
                 self.plans.push(event.index);
             }
+            self.undo_bytes += undo.owned_bytes();
+            self.undo.push(undo);
         }
         self.events += events.len();
+        accounted += self.undo_bytes - old_undo_bytes
+            + (self.undo.capacity() - old_undo_capacity) * size_of::<ReviewUndo>();
         accounted += (self.results.capacity() - old_results_capacity)
             * size_of::<(String, Vec<usize>)>()
             + (self.first_followups.capacity() - old_first_capacity + self.corrections.capacity()
@@ -293,6 +464,72 @@ mod tests {
             followup,
             waits_for_correction: false,
             plan_mode: false,
+        }
+    }
+
+    #[test]
+    fn suffix_rollback_cached_charge_matches_large_unique_result_table_audit() {
+        let rows = (0..256)
+            .map(|index| {
+                let mut row = event(index, Followup::Blank);
+                row.tool_results.push(format!("unique-{index}"));
+                row
+            })
+            .collect::<Vec<_>>();
+        for first in [0, 1, 127, 255, 256] {
+            let mut index = ReviewDependencies::default();
+            index.append(&rows).unwrap();
+            index.truncate(first).unwrap();
+            let cached = index.accounted_bytes();
+            index.accounted.store(0, Ordering::Relaxed);
+            assert_eq!(cached, index.accounted_bytes(), "cut={first}");
+        }
+    }
+
+    #[test]
+    fn suffix_undo_restores_drained_frontiers_targets_and_result_stacks() {
+        let mut rows = Vec::new();
+        let mut anchor = event(0, Followup::Blank);
+        anchor.waits_for_correction = true;
+        anchor.plan_mode = true;
+        anchor.tool_results = vec!["shared".into(), "shared".into()];
+        rows.push(anchor);
+        rows.push(event(1, Followup::Structural));
+        rows.push(event(2, Followup::Correction));
+        let mut tail = event(3, Followup::Blank);
+        tail.tool_uses = vec!["shared".into()];
+        tail.tool_results = vec!["shared".into()];
+        tail.waits_for_correction = true;
+        tail.plan_mode = true;
+        rows.push(tail);
+        rows.push(event(4, Followup::Correction));
+        for first in 0..=rows.len() {
+            let mut index = ReviewDependencies::default();
+            index.append(&rows).unwrap();
+            let changed = index.truncate(first).unwrap();
+            assert_eq!((changed.start, changed.end), (first, rows.len()));
+            assert!(changed.revisited.iter().all(|event| *event < first));
+            let mut cold = ReviewDependencies::default();
+            cold.append(&rows[..first]).unwrap();
+            assert_eq!(index.results, cold.results);
+            assert_eq!(index.first_followups, cold.first_followups);
+            assert_eq!(index.corrections, cold.corrections);
+            assert_eq!(index.plans, cold.plans);
+            assert_eq!(index.followups, cold.followups);
+            assert_eq!(index.plan_users, cold.plan_users);
+            assert_eq!(
+                index.undo_bytes,
+                index
+                    .undo
+                    .iter()
+                    .map(ReviewUndo::owned_bytes)
+                    .sum::<usize>()
+            );
+            let cached = index.accounted_bytes();
+            index.accounted.store(0, Ordering::Relaxed);
+            assert_eq!(index.accounted_bytes(), cached);
+            index.append(&rows[first..]).unwrap();
+            assert_eq!(index.last_result("shared"), Some(3));
         }
     }
 

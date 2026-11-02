@@ -39,6 +39,9 @@ jobs:
       - name: Check snapshot schemas
         run: uv run python scripts/snapshot_contract.py cc_transcript/snapshot_schema --check
 
+      - name: Test registered review Python boundary
+        run: uv run pytest tests/test_registered_review.py -x --tb=long
+
       - name: Prefetch embedder (potion-retrieval-32M)
         run: uv run python -c "from model2vec import StaticModel; StaticModel.from_pretrained('minishlab/potion-retrieval-32M')"
 
@@ -83,6 +86,11 @@ jobs:
           cargo test --locked -p cc-transcript-core --no-default-features --lib registered_review_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/reader.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_review:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/dependencies.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib codex::review_continuation -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/codex.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib suffix_rollback -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/suffix-rollback.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib shared_allocation_discovery_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/allocation-discovery.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib codex_append_tests -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-raw.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib agent_codex_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-scenarios.log"
       - name: Upload Linux registered review continuation controls
         if: always()
         uses: actions/upload-artifact@v7
@@ -249,6 +257,11 @@ jobs:
           cargo test --locked -p cc-transcript-core --no-default-features --lib registered_review_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/reader.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_review:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/dependencies.log"
           cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot_text:: -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/facts.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib codex::review_continuation -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/codex.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib suffix_rollback -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/suffix-rollback.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib shared_allocation_discovery_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/allocation-discovery.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib codex_append_tests -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-raw.log"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib agent_codex_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/registered-review-evidence/agent-scenarios.log"
       - name: Upload macOS registered review continuation controls
         if: always()
         uses: actions/upload-artifact@v7
@@ -317,6 +330,17 @@ jobs:
         run: |
           uv venv .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
+      - name: Test installed registered review boundary
+        run: |
+          set -euo pipefail
+          wheel_python="${GITHUB_WORKSPACE:?}/.wheel-smoke/bin/python"
+          probe_root="${RUNNER_TEMP:?}/registered-review-installed"
+          uv pip install --python "$wheel_python" --only-binary :all: pytest orjson
+          mkdir -p "$probe_root/tests"
+          cp tests/test_registered_review.py tests/test_snapshots.py "$probe_root/tests/"
+          touch "$probe_root/tests/__init__.py"
+          cd "$probe_root"
+          "$wheel_python" -I -B -m pytest -c /dev/null tests/test_registered_review.py -x -s --tb=long
       - name: Verify distribution contents and installed NLP APIs
         run: |
           .wheel-smoke/bin/python -I scripts/check_distribution.py dist > distribution-proof.json

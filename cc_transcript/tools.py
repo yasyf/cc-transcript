@@ -13,6 +13,7 @@ parsing a command pulls in no Python module or bash grammar on the hook hot path
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Literal
@@ -70,7 +71,7 @@ from cc_transcript.ids import ToolDigest as ToolDigest
 from cc_transcript.ids import tool_digest as tool_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
     from typing import Any
 
 TOOL_ALIASES: dict[str, str] = {
@@ -228,6 +229,8 @@ def parse_tool_call(
         >>> call.new
         'y'
     """
+    if not isinstance(input, Mapping):
+        return _native.toolcall_parse_view(name, json.dumps(input), on_error)
     try:
         return _native.toolcall_parse_view(name, json.dumps(input), on_error)
     except (TypeError, ValueError) as exc:

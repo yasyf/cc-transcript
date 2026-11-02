@@ -176,6 +176,28 @@ impl<'store> SourceStream<'store> {
         Ok(())
     }
 
+    pub fn restore_pending(
+        &mut self,
+        offset: u64,
+        bytes: &[u8],
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        self.seek(offset + bytes.len() as u64)?;
+        budget.extend_staging(&mut self.staging, bytes.len(), cancel)?;
+        self.buffer.extend_from_slice(bytes);
+        self.base = offset;
+        Ok(())
+    }
+
+    pub fn pending(&self) -> &[u8] {
+        &self.buffer[self.consumed..]
+    }
+
+    pub fn defer(&mut self, line: &LineSpan) {
+        self.consumed = (line.offset - self.base) as usize;
+    }
+
     pub fn read_span(
         &mut self,
         line: &LineSpan,

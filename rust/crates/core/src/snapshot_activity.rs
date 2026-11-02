@@ -1,4 +1,10 @@
+use crate::snapshot_index_allocations::{AllocationOwner, AllocationSet, RegistryWitness};
+use crate::snapshot_ledger::{LedgerEvent, ReleaseQueue};
+use std::sync::OnceLock;
+
+#[cfg(test)]
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::mem::size_of;
 use std::ops::Range;
 use std::sync::Arc;
@@ -7,10 +13,11 @@ use crate::activity::{lift_session_index_tail, lower_edit, Hunk, LiftedSession, 
 use crate::parse::pushed_capacity;
 #[cfg(test)]
 use crate::snapshot::NativeStore;
+use crate::snapshot_ledger::{arc_bytes, arc_control_bytes, arc_slice_bytes};
 #[cfg(test)]
-use crate::snapshot_ledger::arc_mirror;
-use crate::snapshot_ledger::{arc_bytes, arc_control_bytes};
+use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror};
 use crate::snapshot_memory::{block_charge, value_charge, MemoryCharge};
+use crate::snapshot_persistent::{string_allocation, Tree, Vector};
 use crate::toolcall::{parse_tool_call, ToolCall};
 #[cfg(test)]
 use crate::toolcall::{
@@ -74,14 +81,20 @@ pub(crate) struct CachedCall {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedTurn {
-    prompt: String,
+    prompt: Arc<str>,
     prompt_count: usize,
     bounds: Range<usize>,
     started: Option<usize>,
     ended: Option<usize>,
-    calls: Vec<Arc<CachedCall>>,
+    calls: Vector<Arc<CachedCall>>,
     prefix_turn_bytes: usize,
     prefix_call_bytes: usize,
+}
+
+impl CachedTurn {
+    fn prompt_bytes(&self) -> usize {
+        arc_slice_bytes::<u8>(self.prompt.len())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +122,22 @@ pub(crate) struct ActivityShape {
 }
 
 impl ActivityShape {
+    fn remove(&mut self, other: Self) {
+        self.calls -= other.calls;
+        self.call_name_bytes -= other.call_name_bytes;
+        self.paths -= other.paths;
+        self.path_bytes -= other.path_bytes;
+        self.edits -= other.edits;
+        self.edit_path_bytes -= other.edit_path_bytes;
+        self.commands -= other.commands;
+        self.command_bytes -= other.command_bytes;
+        self.skills -= other.skills;
+        self.skill_bytes -= other.skill_bytes;
+        self.prose_bytes -= other.prose_bytes;
+        self.tool_name_slots -= other.tool_name_slots;
+        self.tool_name_bytes -= other.tool_name_bytes;
+    }
+
     fn include_entry(&mut self, entry: &Entry) {
         match entry {
             Entry::User(user) => {
@@ -153,26 +182,433 @@ impl ActivityShape {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TurnUndo {
+    end: usize,
+    started: Option<usize>,
+    ended: Option<usize>,
+    calls: usize,
+    turn_bytes: usize,
+    call_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ActivityUndo {
+    uuid: Option<String>,
+    results: Vec<(String, Option<ResultPosition>)>,
+    turns: usize,
+    last_turn: Option<TurnUndo>,
+    continued: bool,
+    shape: ActivityShape,
+    started: Option<i64>,
+    model: Option<usize>,
+    prefix_bytes: usize,
+}
+
+impl ActivityUndo {
+    fn owned_bytes(&self) -> usize {
+        arc_bytes::<Self>()
+            + self.uuid.as_ref().map_or(0, String::capacity)
+            + self.results.capacity() * size_of::<(String, Option<ResultPosition>)>()
+            + self
+                .results
+                .iter()
+                .map(|(key, _)| key.capacity())
+                .sum::<usize>()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ActivityIndex {
+    allocation_owners: OnceLock<AllocationSet>,
     entries: usize,
-    turns: Arc<Vec<Arc<CachedTurn>>>,
-    uuids: Arc<HashMap<String, usize>>,
+    turns: Arc<Vector<Arc<CachedTurn>>>,
+    uuids: Arc<Tree<Arc<str>, usize>>,
     uuid_key_bytes: usize,
     uuid_key_lens: usize,
-    results: Arc<HashMap<String, ResultPosition>>,
+    results: Arc<Tree<Arc<str>, ResultPosition>>,
     result_key_bytes: usize,
     result_key_lens: usize,
     shape: ActivityShape,
     started_unix_ms: Option<i64>,
     last_model_event: Option<usize>,
     work: ActivityWork,
+    undo: Arc<Vector<Arc<ActivityUndo>>>,
+}
+
+#[cfg(test)]
+thread_local! { static ALLOCATION_DISCOVERY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(crate) fn reset_allocation_discovery_visits() {
+    ALLOCATION_DISCOVERY_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_discovery_visits() -> usize {
+    ALLOCATION_DISCOVERY_VISITS.with(std::cell::Cell::get)
+}
+
+fn record_allocation_discovery() {
+    #[cfg(test)]
+    ALLOCATION_DISCOVERY_VISITS.with(|count| count.set(count.get() + 1));
 }
 
 impl ActivityIndex {
-    pub(crate) const EMPTY_ALLOCATION_BYTES: usize = arc_bytes::<Vec<Arc<CachedTurn>>>()
-        + arc_bytes::<HashMap<String, usize>>()
-        + arc_bytes::<HashMap<String, ResultPosition>>();
+    pub(crate) const EMPTY_ALLOCATION_BYTES: usize = arc_bytes::<Vector<Arc<CachedTurn>>>()
+        + arc_bytes::<Tree<Arc<str>, usize>>()
+        + arc_bytes::<Tree<Arc<str>, ResultPosition>>()
+        + arc_bytes::<Vector<Arc<ActivityUndo>>>()
+        + 20 * size_of::<usize>();
+
+    fn root_heap_allocations(&self) -> [(usize, usize); 8] {
+        [
+            (
+                Arc::as_ptr(&self.turns) as usize,
+                arc_bytes::<Vector<Arc<CachedTurn>>>(),
+            ),
+            (
+                Arc::as_ptr(&self.uuids) as usize,
+                arc_bytes::<Tree<Arc<str>, usize>>(),
+            ),
+            (
+                Arc::as_ptr(&self.results) as usize,
+                arc_bytes::<Tree<Arc<str>, ResultPosition>>(),
+            ),
+            (
+                Arc::as_ptr(&self.undo) as usize,
+                arc_bytes::<Vector<Arc<ActivityUndo>>>(),
+            ),
+            self.turns.allocations().next().expect("turn metadata"),
+            self.uuids
+                .allocations(string_allocation)
+                .next()
+                .expect("UUID metadata"),
+            self.results
+                .allocations(string_allocation)
+                .next()
+                .expect("result metadata"),
+            self.undo.allocations().next().expect("undo metadata"),
+        ]
+    }
+
+    fn replace_allocation(
+        &mut self,
+        previous: Option<(usize, usize)>,
+        next: Option<(usize, usize)>,
+    ) {
+        if previous == next {
+            return;
+        }
+        if let Some((id, _)) = previous {
+            self.allocation_owners
+                .get_mut()
+                .expect("shared allocation owners")
+                .remove(id);
+        }
+        if let Some((id, bytes)) = next {
+            self.allocation_owners
+                .get_mut()
+                .expect("shared allocation owners")
+                .insert(id, bytes);
+        }
+    }
+
+    fn refresh_allocation_owners(
+        &mut self,
+        prior: &Self,
+        first: usize,
+        uuids: &[&str],
+        results: &[&str],
+    ) {
+        if prior.allocation_owners.get().is_none() {
+            return;
+        }
+        let current = self.root_heap_allocations();
+        for old in prior.root_heap_allocations() {
+            if !current.iter().any(|new| new.0 == old.0) {
+                self.allocation_owners
+                    .get_mut()
+                    .expect("shared allocation owners")
+                    .remove(old.0);
+            }
+        }
+        for (id, bytes) in current {
+            self.allocation_owners
+                .get_mut()
+                .expect("shared allocation owners")
+                .insert(id, bytes);
+        }
+        for key in uuids {
+            let old = prior.uuids.key_allocation(*key, string_allocation);
+            let new = self.uuids.key_allocation(*key, string_allocation);
+            self.replace_allocation(old, new);
+        }
+        for key in results {
+            let old = prior.results.key_allocation(*key, string_allocation);
+            let new = self.results.key_allocation(*key, string_allocation);
+            self.replace_allocation(old, new);
+        }
+        let touched = prior.turns.partition_point(|turn| turn.bounds.end < first);
+        for at in touched..prior.turns.len().max(self.turns.len()) {
+            let old = prior.turns.get(at).cloned();
+            let new = self.turns.get(at).cloned();
+            self.replace_allocation(
+                old.as_ref()
+                    .map(|turn| (Arc::as_ptr(turn) as usize, arc_bytes::<CachedTurn>())),
+                new.as_ref()
+                    .map(|turn| (Arc::as_ptr(turn) as usize, arc_bytes::<CachedTurn>())),
+            );
+            self.replace_allocation(
+                old.as_ref()
+                    .and_then(|turn| string_allocation(&turn.prompt)),
+                new.as_ref()
+                    .and_then(|turn| string_allocation(&turn.prompt)),
+            );
+            self.replace_allocation(
+                old.as_ref()
+                    .and_then(|turn| turn.calls.allocations().next()),
+                new.as_ref()
+                    .and_then(|turn| turn.calls.allocations().next()),
+            );
+            if let Some(turn) = old {
+                let start = turn.calls.partition_point(|call| call.event < first);
+                for call in turn.calls.range(start..turn.calls.len()) {
+                    self.allocation_owners
+                        .get_mut()
+                        .expect("shared allocation owners")
+                        .remove(Arc::as_ptr(call) as usize);
+                }
+            }
+            if let Some(turn) = new {
+                let start = turn.calls.partition_point(|call| call.event < first);
+                for call in turn.calls.range(start..turn.calls.len()) {
+                    self.allocation_owners
+                        .get_mut()
+                        .expect("shared allocation owners")
+                        .insert(
+                            Arc::as_ptr(call) as usize,
+                            arc_control_bytes::<CachedCall>() + call.accounted_bytes,
+                        );
+                }
+            }
+        }
+        for undo in prior
+            .undo
+            .range(first.min(prior.undo.len())..prior.undo.len())
+        {
+            self.allocation_owners
+                .get_mut()
+                .expect("shared allocation owners")
+                .remove(Arc::as_ptr(undo) as usize);
+        }
+        for undo in self.undo.range(first.min(self.undo.len())..self.undo.len()) {
+            self.allocation_owners
+                .get_mut()
+                .expect("shared allocation owners")
+                .insert(Arc::as_ptr(undo) as usize, undo.owned_bytes());
+        }
+    }
+
+    pub(crate) fn shared_membership_metadata(&self) -> Option<(usize, usize)> {
+        self.allocation_owners
+            .get()
+            .map(AllocationSet::metadata_allocation)
+    }
+
+    pub(crate) fn staged_heap_bytes(&self, carried_metadata: Option<usize>) -> usize {
+        self.allocation_owners.get().map_or_else(
+            || self.unshared_heap_bytes_since(None),
+            |owners| {
+                let (id, bytes) = owners.metadata_allocation();
+                owners.pending_bytes()
+                    + owners.registry_pending_bytes()
+                    + usize::from(carried_metadata != Some(id)) * bytes
+            },
+        )
+    }
+
+    pub(crate) fn prepare_shared_ownership(&self) {
+        self.ensure_allocation_owners();
+    }
+
+    fn ensure_allocation_owners(&self) -> &AllocationSet {
+        self.allocation_owners.get_or_init(|| {
+            let mut owners = AllocationSet::default();
+            for (id, bytes) in self.direct_heap_allocations() {
+                owners.insert(id, bytes);
+            }
+            owners
+        })
+    }
+
+    fn allocation_count_bound(&self) -> usize {
+        8usize
+            .saturating_add(self.uuids.len())
+            .saturating_add(self.results.len())
+            .saturating_add(self.undo.len())
+            .saturating_add(self.turns.len().saturating_mul(3))
+            .saturating_add(self.shape.calls)
+    }
+
+    pub(crate) fn pending_allocations(&self) -> Vec<Arc<AllocationOwner>> {
+        self.ensure_allocation_owners().take_pending()
+    }
+    pub(crate) fn pending_allocation_count(&self) -> usize {
+        self.allocation_owners
+            .get()
+            .map_or(self.allocation_count_bound(), AllocationSet::pending_count)
+    }
+    pub(crate) fn pending_allocation_bytes(&self) -> usize {
+        self.allocation_owners.get().map_or_else(
+            || self.unshared_heap_bytes_since(None),
+            AllocationSet::pending_bytes,
+        )
+    }
+    pub(crate) fn registry_metadata_allocation(&self) -> (usize, usize) {
+        self.ensure_allocation_owners()
+            .registry_metadata_allocation()
+    }
+    pub(crate) fn registry_pending_bytes(&self) -> usize {
+        self.ensure_allocation_owners().registry_pending_bytes()
+    }
+    pub(crate) fn registry_witness(&self) -> RegistryWitness {
+        self.ensure_allocation_owners().registry_witness()
+    }
+    pub(crate) fn arm_registry(&self, queue: &Arc<ReleaseQueue>, event: LedgerEvent, bytes: usize) {
+        self.ensure_allocation_owners()
+            .arm_registry(queue, event, bytes);
+    }
+    pub(crate) fn pending_allocation_reservation(&self) -> usize {
+        self.allocation_owners.get().map_or_else(
+            || AllocationSet::cold_reservation(self.allocation_count_bound()),
+            |owners| {
+                owners
+                    .pending_count()
+                    .saturating_mul(2 * size_of::<Arc<AllocationOwner>>())
+            },
+        )
+    }
+
+    pub(crate) fn truncate(
+        &mut self,
+        first: usize,
+        entries: &[Arc<crate::snapshot::ChunkRows>],
+        last_result: impl Fn(&str) -> Option<usize>,
+        first_meta: Option<usize>,
+        last_meta: Option<usize>,
+        last_model: Option<usize>,
+    ) {
+        assert!(first <= self.entries);
+        let prior_allocations = self.clone();
+        let mut removed = ActivityShape::default();
+        for rows in &entries[first..self.entries] {
+            removed.include_entry(&rows[0]);
+        }
+        let touched = self.turns.partition_point(|turn| turn.bounds.end <= first);
+        for turn in self.turns.range(touched..self.turns.len()) {
+            let at = turn.calls.partition_point(|call| call.event < first);
+            for call in turn.calls.range(at..turn.calls.len()) {
+                removed.include_call(&call.call, &call.edits);
+            }
+        }
+        self.shape.remove(removed);
+        let uuids = Arc::make_mut(&mut self.uuids);
+        let results = Arc::make_mut(&mut self.results);
+        for rows in &entries[first..self.entries] {
+            let entry = &rows[0];
+            if let Some(meta) = entry.meta() {
+                if uuids
+                    .get(meta.uuid.as_str())
+                    .is_some_and(|event| *event >= first)
+                {
+                    let (key, _) = uuids.remove_entry(meta.uuid.as_str()).expect("suffix UUID");
+                    self.uuid_key_bytes -= key.len();
+                    self.uuid_key_lens -= key.len();
+                }
+            }
+            if let Entry::User(user) = entry {
+                for result in user.tool_results() {
+                    if !results
+                        .get(result.tool_use_id.as_str())
+                        .is_some_and(|position| position.event >= first)
+                    {
+                        continue;
+                    }
+                    if let Some(event) = last_result(&result.tool_use_id) {
+                        let Entry::User(user) = &entries[event][0] else {
+                            unreachable!()
+                        };
+                        let (ordinal, block) = user.blocks().iter().enumerate().filter(|(_, block)| matches!(block, ContentBlock::ToolResult(previous) if previous.tool_use_id == result.tool_use_id)).last().expect("retained result position");
+                        results.insert(
+                            Arc::<str>::from(result.tool_use_id.clone()),
+                            ResultPosition {
+                                event,
+                                ordinal,
+                                charge: block_charge(block),
+                            },
+                        );
+                    } else {
+                        let (key, _) = results
+                            .remove_entry(result.tool_use_id.as_str())
+                            .expect("suffix result");
+                        self.result_key_bytes -= key.len();
+                        self.result_key_lens -= key.len();
+                    }
+                }
+            }
+        }
+        let keep = self.turns.partition_point(|turn| turn.bounds.start < first);
+        let turns = Arc::make_mut(&mut self.turns);
+        turns.truncate(keep);
+        let stable_turn_bytes = turns
+            .len()
+            .checked_sub(2)
+            .map_or(0, |at| turns[at].prefix_turn_bytes);
+        if let Some(turn) = turns.last_mut() {
+            if turn.bounds.end > first {
+                let turn = Arc::make_mut(turn);
+                let keep = turn.calls.partition_point(|call| call.event < first);
+                let removed = turn
+                    .calls
+                    .range(keep..turn.calls.len())
+                    .map(|call| arc_control_bytes::<CachedCall>() + call.accounted_bytes)
+                    .sum::<usize>();
+                turn.calls.truncate(keep);
+                turn.prefix_call_bytes -= removed;
+                turn.prefix_turn_bytes = stable_turn_bytes
+                    + arc_bytes::<CachedTurn>()
+                    + turn.prompt_bytes()
+                    + turn.calls.bytes_since(None);
+                turn.bounds.end = first;
+                turn.started = turn.started.filter(|event| *event < first);
+                turn.ended = last_meta.filter(|event| *event >= turn.bounds.start);
+            }
+        }
+        self.entries = first;
+        self.started_unix_ms = first_meta.map(|event| {
+            entries[event][0]
+                .meta()
+                .expect("metadata source")
+                .timestamp
+                .timestamp_millis()
+        });
+        self.last_model_event = last_model;
+        Arc::make_mut(&mut self.undo).truncate(first);
+        if first < prior_allocations.entries {
+            let uuids = entries[first..prior_allocations.entries]
+                .iter()
+                .filter_map(|rows| rows[0].meta().map(|meta| meta.uuid.as_str()))
+                .collect::<Vec<_>>();
+            let results = entries[first..prior_allocations.entries]
+                .iter()
+                .flat_map(|rows| rows[0].tool_results())
+                .map(|result| result.tool_use_id.as_str())
+                .collect::<Vec<_>>();
+            self.refresh_allocation_owners(&prior_allocations, first, &uuids, &results);
+        }
+        self.work = ActivityWork::default();
+    }
 
     pub fn new(entries: &[&Entry], openers: Option<&[bool]>) -> Self {
         Self::default().append_tail(entries, openers)
@@ -199,8 +635,10 @@ impl ActivityIndex {
         if let Some(flags) = openers {
             assert_eq!(flags.len(), entries.len());
         }
+        let prior_allocations = self.clone();
         let first_new_index = self.entries;
         let tail = lift_session_index_tail(entries, openers, !self.turns.is_empty());
+        let turns_copied = self.turns.copied();
         let mut next = self;
         next.entries += entries.len();
         next.work = ActivityWork {
@@ -214,15 +652,13 @@ impl ActivityIndex {
                 if next.started_unix_ms.is_none() {
                     next.started_unix_ms = Some(meta.timestamp.timestamp_millis());
                 }
-                if !next.uuids.contains_key(&meta.uuid) {
-                    if Arc::strong_count(&next.uuids) > 1 {
-                        next.work.copied_index_entries += next.uuids.len();
-                        next.uuid_key_bytes = next.uuid_key_lens;
-                    }
+                if !next.uuids.contains_key(meta.uuid.as_str()) {
                     let key = meta.uuid.clone();
-                    next.uuid_key_bytes += key.capacity();
+                    next.uuid_key_bytes += key.len();
                     next.uuid_key_lens += key.len();
-                    Arc::make_mut(&mut next.uuids).insert(key, event);
+                    let before = next.uuids.copied();
+                    Arc::make_mut(&mut next.uuids).insert(Arc::<str>::from(key), event);
+                    next.work.copied_index_entries += next.uuids.copied() - before;
                 }
             }
             if matches!(entry, Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL)
@@ -234,28 +670,23 @@ impl ActivityIndex {
                     let ContentBlock::ToolResult(result) = block else {
                         continue;
                     };
-                    if Arc::strong_count(&next.results) > 1 {
-                        next.work.copied_index_entries += next.results.len();
-                        next.result_key_bytes = next.result_key_lens;
-                    }
                     let key = result.tool_use_id.clone();
-                    if !next.results.contains_key(&key) {
-                        next.result_key_bytes += key.capacity();
+                    if !next.results.contains_key(key.as_str()) {
+                        next.result_key_bytes += key.len();
                         next.result_key_lens += key.len();
                     }
+                    let before = next.results.copied();
                     Arc::make_mut(&mut next.results).insert(
-                        key,
+                        Arc::<str>::from(key),
                         ResultPosition {
                             event,
                             ordinal,
                             charge: block_charge(block),
                         },
                     );
+                    next.work.copied_index_entries += next.results.copied() - before;
                 }
             }
-        }
-        if !tail.turns.is_empty() && Arc::strong_count(&next.turns) > 1 {
-            next.work.copied_index_entries += next.turns.len();
         }
         for (position, indexed) in tail.turns.into_iter().enumerate() {
             let mut calls = Vec::new();
@@ -309,11 +740,11 @@ impl ActivityIndex {
             let mut turn = CachedTurn {
                 prompt_count: next.prompt_count_before(next.turn_count())
                     + usize::from(!indexed.prompt.is_empty()),
-                prompt: indexed.prompt,
+                prompt: Arc::from(indexed.prompt),
                 bounds: first_new_index + indexed.start..first_new_index + indexed.end,
                 started: indexed.started_idx.map(|i| first_new_index + i),
                 ended: indexed.ended_idx.map(|i| first_new_index + i),
-                calls,
+                calls: calls.into(),
                 prefix_turn_bytes,
                 prefix_call_bytes: prefix_call_bytes + fresh_call_bytes,
             };
@@ -324,30 +755,233 @@ impl ActivityIndex {
                     .checked_sub(2)
                     .map_or(0, |at| next.turns[at].prefix_turn_bytes);
                 let prior = Arc::make_mut(&mut next.turns).last_mut().unwrap();
-                if Arc::strong_count(prior) > 1 {
-                    next.work.copied_index_entries += prior.calls.len();
-                }
                 let prior = Arc::make_mut(prior);
+                let calls_copied = prior.calls.copied();
                 prior.bounds.end = turn.bounds.end;
                 prior.started = prior.started.or(turn.started);
                 prior.ended = turn.ended.or(prior.ended);
                 prior.calls.extend(turn.calls);
+                next.work.copied_index_entries += prior.calls.copied() - calls_copied;
                 prior.prefix_turn_bytes = stable_turn_bytes
                     + arc_bytes::<CachedTurn>()
-                    + prior.prompt.capacity()
-                    + prior.calls.capacity() * size_of::<Arc<CachedCall>>();
+                    + prior.prompt_bytes()
+                    + prior.calls.bytes_since(None);
                 prior.prefix_call_bytes = prefix_call_bytes + fresh_call_bytes;
             } else {
-                turn.prefix_turn_bytes += arc_bytes::<CachedTurn>()
-                    + turn.prompt.capacity()
-                    + turn.calls.capacity() * size_of::<Arc<CachedCall>>();
+                turn.prefix_turn_bytes +=
+                    arc_bytes::<CachedTurn>() + turn.prompt_bytes() + turn.calls.bytes_since(None);
                 Arc::make_mut(&mut next.turns).push(Arc::new(turn));
             }
+        }
+        next.work.copied_index_entries += next.turns.copied() - turns_copied;
+        if !entries.is_empty() {
+            let uuids = entries
+                .iter()
+                .filter_map(|entry| entry.meta().map(|meta| meta.uuid.as_str()))
+                .collect::<Vec<_>>();
+            let results = entries
+                .iter()
+                .flat_map(|entry| entry.tool_results())
+                .map(|result| result.tool_use_id.as_str())
+                .collect::<Vec<_>>();
+            next.refresh_allocation_owners(&prior_allocations, first_new_index, &uuids, &results);
         }
         next
     }
 
-    pub(crate) fn heap_bytes_since(&self, previous: Option<&Self>) -> usize {
+    pub(crate) fn append_checkpointed_tail(mut self, entries: &[&Entry]) -> Self {
+        let mut work = ActivityWork::default();
+        for entry in entries {
+            let prior_allocations = self.clone();
+            let first = self.entries;
+            let mut undo = ActivityUndo {
+                uuid: entry
+                    .meta()
+                    .filter(|meta| !self.uuids.contains_key(meta.uuid.as_str()))
+                    .map(|meta| meta.uuid.clone()),
+                results: entry
+                    .tool_results()
+                    .map(|result| {
+                        (
+                            result.tool_use_id.clone(),
+                            self.results.get(result.tool_use_id.as_str()).cloned(),
+                        )
+                    })
+                    .collect(),
+                turns: self.turns.len(),
+                last_turn: self.turns.last().map(|turn| TurnUndo {
+                    end: turn.bounds.end,
+                    started: turn.started,
+                    ended: turn.ended,
+                    calls: turn.calls.len(),
+                    turn_bytes: turn.prefix_turn_bytes,
+                    call_bytes: turn.prefix_call_bytes,
+                }),
+                continued: false,
+                shape: self.shape,
+                started: self.started_unix_ms,
+                model: self.last_model_event,
+                prefix_bytes: 0,
+            };
+            self = self.append_tail(std::slice::from_ref(entry), None);
+            undo.continued = self.turns.len() == undo.turns;
+            undo.prefix_bytes =
+                self.undo.last().map_or(0, |prior| prior.prefix_bytes) + undo.owned_bytes();
+            Arc::make_mut(&mut self.undo).push(Arc::new(undo));
+            let uuids = entry
+                .meta()
+                .map(|meta| vec![meta.uuid.as_str()])
+                .unwrap_or_default();
+            let results = entry
+                .tool_results()
+                .map(|result| result.tool_use_id.as_str())
+                .collect::<Vec<_>>();
+            self.refresh_allocation_owners(&prior_allocations, first, &uuids, &results);
+            work.indexed_entries += self.work.indexed_entries;
+            work.parsed_tool_calls += self.work.parsed_tool_calls;
+            work.copied_index_entries += self.work.copied_index_entries;
+        }
+        self.work = work;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn copied_work(&self) -> usize {
+        self.uuids.copied()
+            + self.results.copied()
+            + self.turns.copied()
+            + self.undo.copied()
+            + self
+                .turns
+                .iter()
+                .map(|turn| turn.calls.copied())
+                .sum::<usize>()
+    }
+
+    pub(crate) fn rewind_reservation_bytes(&self, first: usize, budget: usize) -> usize {
+        assert_eq!(self.undo.len(), self.entries);
+        assert!(first <= self.entries);
+        let stop = self.entries.saturating_sub(budget).max(first);
+        let count = self.entries - stop;
+        if count == 0 {
+            return 0;
+        }
+        let mut results = 0usize;
+        let mut keys = 0usize;
+        let mut key_max = 0usize;
+        let mut turns = 0usize;
+        for undo in self.undo.range(stop..self.entries) {
+            results = results.saturating_add(undo.results.len());
+            key_max = key_max.max(
+                undo.results
+                    .iter()
+                    .map(|(key, _)| arc_slice_bytes::<u8>(key.len()))
+                    .max()
+                    .unwrap_or(0),
+            );
+            keys = keys.saturating_add(
+                undo.results
+                    .iter()
+                    .map(|(key, _)| arc_slice_bytes::<u8>(key.len()))
+                    .sum::<usize>(),
+            );
+            if undo.continued {
+                if let Some(turn) = undo.turns.checked_sub(1).and_then(|at| self.turns.get(at)) {
+                    turns =
+                        turns.saturating_add(arc_bytes::<CachedTurn>() + turn.calls.reservation(1));
+                }
+            }
+        }
+        self.allocation_owners
+            .get()
+            .map_or(0, |owners| {
+                owners.reservation(
+                    count
+                        .saturating_mul(16)
+                        .saturating_add(results.saturating_mul(2)),
+                )
+            })
+            .saturating_add(self.uuids.reservation(count))
+            .saturating_add(self.results.reservation(results))
+            .saturating_add(self.results.key_reservation(results, key_max))
+            .saturating_add(self.turns.reservation(count))
+            .saturating_add(self.undo.reservation(count))
+            .saturating_add(keys)
+            .saturating_add(turns)
+            .saturating_add(Self::EMPTY_ALLOCATION_BYTES)
+    }
+
+    pub(crate) fn rewind_step(&mut self, first: usize, budget: usize) -> bool {
+        assert_eq!(self.undo.len(), self.entries);
+        let stop = self.entries.saturating_sub(budget).max(first);
+        let prior_allocations = self.clone();
+        while self.entries > stop {
+            let undo = Arc::clone(self.undo.last().expect("raw activity undo"));
+            let remaining = self.undo.len() - 1;
+            Arc::make_mut(&mut self.undo).truncate(remaining);
+            if let Some(uuid) = &undo.uuid {
+                let (key, _) = Arc::make_mut(&mut self.uuids)
+                    .remove_entry(uuid.as_str())
+                    .expect("raw suffix UUID");
+                self.uuid_key_bytes -= key.len();
+                self.uuid_key_lens -= key.len();
+            }
+            for (key, previous) in undo.results.iter().rev() {
+                if let Some(previous) = previous {
+                    Arc::make_mut(&mut self.results)
+                        .insert(Arc::<str>::from(key.as_str()), previous.clone());
+                } else if let Some((key, _)) =
+                    Arc::make_mut(&mut self.results).remove_entry(key.as_str())
+                {
+                    self.result_key_bytes -= key.len();
+                    self.result_key_lens -= key.len();
+                }
+            }
+            Arc::make_mut(&mut self.turns).truncate(undo.turns);
+            if undo.continued {
+                if let Some(previous) = &undo.last_turn {
+                    let turn = Arc::make_mut(
+                        Arc::make_mut(&mut self.turns)
+                            .last_mut()
+                            .expect("continued raw turn"),
+                    );
+                    turn.bounds.end = previous.end;
+                    turn.started = previous.started;
+                    turn.ended = previous.ended;
+                    turn.calls.truncate(previous.calls);
+                    turn.prefix_turn_bytes = previous.turn_bytes;
+                    turn.prefix_call_bytes = previous.call_bytes;
+                }
+            }
+            self.entries -= 1;
+            self.shape = undo.shape;
+            self.started_unix_ms = undo.started;
+            self.last_model_event = undo.model;
+        }
+        if self.entries < prior_allocations.entries {
+            let uuids = prior_allocations
+                .undo
+                .range(self.entries..prior_allocations.entries)
+                .filter_map(|undo| undo.uuid.as_deref())
+                .collect::<Vec<_>>();
+            let results = prior_allocations
+                .undo
+                .range(self.entries..prior_allocations.entries)
+                .flat_map(|undo| undo.results.iter().map(|(id, _)| id.as_str()))
+                .collect::<Vec<_>>();
+            self.refresh_allocation_owners(&prior_allocations, self.entries, &uuids, &results);
+        }
+        self.work = ActivityWork::default();
+        self.entries == first
+    }
+
+    pub(crate) fn undo_reservation_bytes(&self, entries: usize, results: usize) -> usize {
+        self.undo.reservation(entries)
+            + entries * arc_bytes::<ActivityUndo>()
+            + results * size_of::<(String, Option<ResultPosition>)>()
+    }
+
+    fn unshared_heap_bytes_since(&self, previous: Option<&Self>) -> usize {
         let shared_turns = previous.map_or(0, |prior| {
             assert!(self.entries >= prior.entries);
             prior.turns.len().checked_sub(1).map_or(0, |last| {
@@ -365,27 +999,79 @@ impl ActivityIndex {
         let turns = if previous.is_some_and(|prior| Arc::ptr_eq(&self.turns, &prior.turns)) {
             0
         } else {
-            arc_bytes::<Vec<Arc<CachedTurn>>>()
-                + self.turns.capacity() * size_of::<Arc<CachedTurn>>()
+            arc_bytes::<Vector<Arc<CachedTurn>>>()
+                + self
+                    .turns
+                    .bytes_since(previous.map(|prior| prior.turns.as_ref()))
         };
         let uuids = if previous.is_some_and(|prior| Arc::ptr_eq(&self.uuids, &prior.uuids)) {
             0
         } else {
-            arc_bytes::<HashMap<String, usize>>()
-                + self.uuids.capacity() * size_of::<(String, usize)>()
-                + self.uuid_key_bytes
+            arc_bytes::<Tree<Arc<str>, usize>>()
+                + self.uuids.bytes_since(
+                    previous.map(|prior| prior.uuids.as_ref()),
+                    string_allocation,
+                )
         };
         let results = if previous.is_some_and(|prior| Arc::ptr_eq(&self.results, &prior.results)) {
             0
         } else {
-            arc_bytes::<HashMap<String, ResultPosition>>()
-                + self.results.capacity() * size_of::<(String, ResultPosition)>()
-                + self.result_key_bytes
+            arc_bytes::<Tree<Arc<str>, ResultPosition>>()
+                + self.results.bytes_since(
+                    previous.map(|prior| prior.results.as_ref()),
+                    string_allocation,
+                )
         };
+        let undo = if previous.is_some_and(|prior| Arc::ptr_eq(&self.undo, &prior.undo)) {
+            0
+        } else {
+            arc_bytes::<Vector<Arc<ActivityUndo>>>()
+                + self
+                    .undo
+                    .bytes_since(previous.map(|prior| prior.undo.as_ref()))
+                + self
+                    .undo
+                    .last()
+                    .map_or(0, |undo| undo.prefix_bytes)
+                    .saturating_sub(
+                        previous
+                            .and_then(|prior| prior.undo.last())
+                            .map_or(0, |undo| undo.prefix_bytes),
+                    )
+        };
+        let shared_prompt = previous
+            .and_then(|prior| {
+                let at = prior.turns.len().checked_sub(1)?;
+                let old = &prior.turns[at];
+                let new = &self.turns[at];
+                (!Arc::ptr_eq(old, new) && Arc::ptr_eq(&old.prompt, &new.prompt))
+                    .then(|| old.prompt_bytes())
+            })
+            .unwrap_or(0);
         let payload = self.turns.last().map_or(0, |turn| {
-            turn.prefix_turn_bytes - shared_turns + turn.prefix_call_bytes - shared_calls
+            turn.prefix_turn_bytes - shared_turns + turn.prefix_call_bytes
+                - shared_calls
+                - shared_prompt
         });
-        turns + uuids + results + payload
+        turns + uuids + results + payload + undo
+    }
+    pub(crate) fn heap_bytes_since(&self, previous: Option<&Self>) -> usize {
+        let Some(owners) = self.allocation_owners.get() else {
+            return self.unshared_heap_bytes_since(previous);
+        };
+        let metadata = owners.metadata_allocation();
+        if let Some(previous) = previous {
+            owners.pending_bytes()
+                + owners.registry_pending_bytes()
+                + usize::from(
+                    previous
+                        .allocation_owners
+                        .get()
+                        .is_none_or(|prior| metadata.0 != prior.metadata_allocation().0),
+                ) * metadata.1
+        } else {
+            owners.bytes() + metadata.1 + owners.registry_metadata_allocation().1
+        }
     }
 
     pub fn entry_count(&self) -> usize {
@@ -409,7 +1095,7 @@ impl ActivityIndex {
     }
 
     pub fn prompt(&self, index: usize) -> Option<&str> {
-        self.turns.get(index).map(|turn| turn.prompt.as_str())
+        self.turns.get(index).map(|turn| turn.prompt.as_ref())
     }
 
     pub(crate) fn prompt_count_before(&self, turn: usize) -> usize {
@@ -457,10 +1143,10 @@ impl ActivityIndex {
     pub fn call_at(&self, event: usize, block_ordinal: usize) -> Option<&ToolCall> {
         let calls = &self.turns.get(self.turn_of_event(event)?)?.calls;
         let index = calls
-            .binary_search_by(|call| {
+            .binary_search_by_key(&(event, block_ordinal), |call| {
                 #[cfg(test)]
                 CALL_LOOKUP_STEPS.with(|steps| steps.set(steps.get() + 1));
-                (call.event, call.ordinal).cmp(&(event, block_ordinal))
+                (call.event, call.ordinal)
             })
             .ok()?;
         Some(&calls[index].call)
@@ -480,7 +1166,7 @@ impl ActivityIndex {
             .binary_search_by_key(&(event, ordinal), |call| (call.event, call.ordinal))
             .ok()?;
         let call = &calls[index];
-        let result = self.results.get(&call.id).map_or(0, |result| {
+        let result = self.results.get(call.id.as_str()).map_or(0, |result| {
             result.charge.owned_capacity_bytes + result.charge.opaque_dom_accounted_bytes
         });
         Some(size_of::<ToolUse<'_>>() + call.accounted_bytes + result)
@@ -504,7 +1190,7 @@ impl ActivityIndex {
         let ContentBlock::ToolUse(tool) = &assistant.blocks[ordinal] else {
             unreachable!()
         };
-        let result = self.results.get(&cached.id).map(|position| {
+        let result = self.results.get(cached.id.as_str()).map(|position| {
             let Entry::User(user) = entry(position.event) else {
                 unreachable!()
             };
@@ -555,7 +1241,7 @@ impl ActivityIndex {
         let turn = self.turns.get(index)?;
         Some(
             size_of::<Turn<'_>>()
-                + turn.prompt.capacity()
+                + turn.prompt.len()
                 + turn.bounds.len() * size_of::<&Entry>()
                 + turn
                     .calls
@@ -571,7 +1257,7 @@ impl ActivityIndex {
             .get(index)
             .into_iter()
             .flat_map(|turn| turn.calls.iter())
-            .filter_map(|call| self.results.get(&call.id))
+            .filter_map(|call| self.results.get(call.id.as_str()))
             .fold(0usize, |total, result| {
                 total
                     .saturating_add(result.charge.owned_capacity_bytes)
@@ -584,7 +1270,11 @@ impl ActivityIndex {
             .get(index)
             .into_iter()
             .flat_map(|turn| turn.calls.iter())
-            .filter_map(|call| self.results.get(&call.id).map(|position| position.event))
+            .filter_map(|call| {
+                self.results
+                    .get(call.id.as_str())
+                    .map(|position| position.event)
+            })
     }
 
     pub fn call_events(
@@ -599,7 +1289,9 @@ impl ActivityIndex {
                 (
                     call.call.name(),
                     call.event,
-                    self.results.get(&call.id).map(|position| position.event),
+                    self.results
+                        .get(call.id.as_str())
+                        .map(|position| position.event),
                 )
             })
     }
@@ -610,29 +1302,31 @@ impl ActivityIndex {
         range: Range<usize>,
     ) -> impl DoubleEndedIterator<Item = (&str, usize, Option<(usize, usize)>)> + ExactSizeIterator + '_
     {
-        let calls = self.turns.get(index).map_or(&[][..], |turn| {
-            let start = turn
-                .calls
-                .partition_point(|call| instruction_call_before(call, range.start));
-            let stop = turn
-                .calls
-                .partition_point(|call| instruction_call_before(call, range.end));
-            &turn.calls[start..stop]
+        let turn = self.turns.get(index);
+        let start = turn.map_or(0, |turn| {
+            turn.calls
+                .partition_point(|call| instruction_call_before(call, range.start))
         });
-        calls.iter().map(|call| {
-            #[cfg(test)]
-            INSTRUCTION_CALL_WORK.with(|work| {
-                let (comparisons, visits) = work.get();
-                work.set((comparisons, visits + 1));
-            });
-            (
-                call.call.name(),
-                call.event,
-                self.results
-                    .get(&call.id)
-                    .map(|position| (position.event, position.ordinal)),
-            )
-        })
+        let stop = turn.map_or(0, |turn| {
+            turn.calls
+                .partition_point(|call| instruction_call_before(call, range.end))
+        });
+        (start..stop)
+            .map(move |at| &turn.expect("selected turn").calls[at])
+            .map(|call| {
+                #[cfg(test)]
+                INSTRUCTION_CALL_WORK.with(|work| {
+                    let (comparisons, visits) = work.get();
+                    work.set((comparisons, visits + 1));
+                });
+                (
+                    call.call.name(),
+                    call.event,
+                    self.results
+                        .get(call.id.as_str())
+                        .map(|position| (position.event, position.ordinal)),
+                )
+            })
     }
 
     pub fn project_turn_with<'a>(
@@ -641,6 +1335,52 @@ impl ActivityIndex {
         entry: impl Fn(usize) -> &'a Entry,
     ) -> Option<Turn<'a>> {
         self.project_call_turn_with(index, entry, |_| true)
+    }
+
+    pub(crate) fn event_fragment<'a>(&self, event: usize, entry: &'a Entry) -> Option<Turn<'a>> {
+        let index = self.turn_of_event(event)?;
+        let turn = &self.turns[index];
+        let first = turn.calls.partition_point(|call| call.event < event);
+        let stop = turn.calls.partition_point(|call| call.event <= event);
+        let mut uses = Vec::with_capacity(stop - first);
+        for cached in turn.calls.range(first..stop) {
+            let Entry::Assistant(assistant) = entry else {
+                unreachable!()
+            };
+            let ContentBlock::ToolUse(tool) = &assistant.blocks[cached.ordinal] else {
+                unreachable!()
+            };
+            uses.push(ToolUse {
+                event_uuid: &assistant.meta.uuid,
+                tool_use_id: &tool.id,
+                name: &tool.name,
+                ts: assistant.meta.timestamp,
+                cwd: assistant.meta.cwd.as_deref(),
+                result: None,
+                result_ts: None,
+                turn_index: index,
+                call: cached.call.clone(),
+                edits: cached.edits.clone(),
+            });
+        }
+        Some(Turn {
+            index,
+            prompt: if turn.bounds.start == event {
+                turn.prompt.as_ref().to_owned()
+            } else {
+                String::new()
+            },
+            started_at: (turn.started == Some(event)).then(|| entry.meta().unwrap().timestamp),
+            ended_at: (turn.ended == Some(event)).then(|| entry.meta().unwrap().timestamp),
+            events: vec![entry],
+            tool_uses: uses,
+        })
+    }
+
+    pub(crate) fn result_position(&self, id: &str) -> Option<(usize, usize)> {
+        self.results
+            .get(id)
+            .map(|position| (position.event, position.ordinal))
     }
 
     pub(crate) fn project_call_turn_with<'a>(
@@ -652,7 +1392,7 @@ impl ActivityIndex {
         let turn = self.turns.get(index)?;
         Some(Turn {
             index,
-            prompt: turn.prompt.clone(),
+            prompt: turn.prompt.as_ref().to_owned(),
             started_at: turn.started.map(|i| entry(i).meta().unwrap().timestamp),
             ended_at: turn.ended.map(|i| entry(i).meta().unwrap().timestamp),
             events: turn.bounds.clone().map(&entry).collect(),
@@ -675,7 +1415,7 @@ impl ActivityIndex {
                             else {
                                 unreachable!()
                             };
-                            let result = self.results.get(&cached.id).map(|position| {
+                            let result = self.results.get(cached.id.as_str()).map(|position| {
                                 let Entry::User(user) = entry(position.event) else {
                                     unreachable!()
                                 };
@@ -726,47 +1466,84 @@ impl ActivityIndex {
             .collect()
     }
 
-    pub fn heap_allocations(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+    fn direct_heap_allocations(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         [
             (
                 Arc::as_ptr(&self.turns) as usize,
-                arc_bytes::<Vec<Arc<CachedTurn>>>()
-                    + self.turns.capacity() * size_of::<Arc<CachedTurn>>(),
+                arc_bytes::<Vector<Arc<CachedTurn>>>(),
             ),
             (
                 Arc::as_ptr(&self.uuids) as usize,
-                arc_bytes::<HashMap<String, usize>>()
-                    + self.uuids.capacity() * size_of::<(String, usize)>()
-                    + self.uuid_key_bytes,
+                arc_bytes::<Tree<Arc<str>, usize>>(),
             ),
             (
                 Arc::as_ptr(&self.results) as usize,
-                arc_bytes::<HashMap<String, ResultPosition>>()
-                    + self.results.capacity() * size_of::<(String, ResultPosition)>()
-                    + self.result_key_bytes,
+                arc_bytes::<Tree<Arc<str>, ResultPosition>>(),
+            ),
+            (
+                Arc::as_ptr(&self.undo) as usize,
+                arc_bytes::<Vector<Arc<ActivityUndo>>>(),
             ),
         ]
         .into_iter()
+        .chain(self.turns.allocations())
+        .chain(self.uuids.allocations(string_allocation))
+        .chain(self.results.allocations(string_allocation))
+        .chain(self.undo.allocations())
+        .chain(
+            self.undo
+                .iter()
+                .map(|undo| (Arc::as_ptr(undo) as usize, undo.owned_bytes())),
+        )
         .chain(self.turns.iter().flat_map(|turn| {
-            std::iter::once((
-                Arc::as_ptr(turn) as usize,
-                arc_bytes::<CachedTurn>()
-                    + turn.prompt.capacity()
-                    + turn.calls.capacity() * size_of::<Arc<CachedCall>>(),
-            ))
-            .chain(turn.calls.iter().map(|call| {
-                (
-                    Arc::as_ptr(call) as usize,
-                    arc_control_bytes::<CachedCall>() + call.accounted_bytes,
-                )
-            }))
+            std::iter::once((Arc::as_ptr(turn) as usize, arc_bytes::<CachedTurn>()))
+                .chain(std::iter::once((
+                    Arc::as_ptr(&turn.prompt) as *const u8 as usize,
+                    turn.prompt_bytes(),
+                )))
+                .chain(turn.calls.allocations())
+                .chain(turn.calls.iter().map(|call| {
+                    (
+                        Arc::as_ptr(call) as usize,
+                        arc_control_bytes::<CachedCall>() + call.accounted_bytes,
+                    )
+                }))
         }))
+        .inspect(|_| record_allocation_discovery())
+    }
+
+    pub fn heap_allocations(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let mut seen = HashSet::new();
+        self.direct_heap_allocations()
+            .chain(self.allocation_owners.get().into_iter().flat_map(|owners| {
+                [
+                    owners.metadata_allocation(),
+                    owners.registry_metadata_allocation(),
+                ]
+            }))
+            .filter(move |(id, _)| seen.insert(*id))
     }
 
     pub fn shared_allocations(self: &Arc<Self>) -> Vec<(usize, usize)> {
-        let mut allocations = self.accounted_allocations();
-        allocations[0].1 = arc_bytes::<Self>();
-        allocations
+        vec![
+            (Arc::as_ptr(self) as usize, arc_bytes::<Self>()),
+            self.ensure_allocation_owners().metadata_allocation(),
+        ]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn audited_shared_roots(&self) -> Vec<(usize, usize)> {
+        let root = self as *const Self as usize;
+        let membership = self
+            .allocation_owners
+            .get()
+            .expect("shared allocation membership")
+            .metadata_allocation()
+            .0;
+        self.audited_allocations(true)
+            .into_iter()
+            .filter(|(id, _)| *id == root || *id == membership)
+            .collect()
     }
 
     #[cfg(test)]
@@ -779,85 +1556,151 @@ impl ActivityIndex {
 
     #[cfg(test)]
     pub(crate) fn audited_allocations(&self, shared: bool) -> Vec<(usize, usize)> {
-        let Self {
-            entries: _,
-            turns,
-            uuids,
-            uuid_key_bytes: _,
-            uuid_key_lens: _,
-            results,
-            result_key_bytes: _,
-            result_key_lens: _,
-            shape: _,
-            started_unix_ms: _,
-            last_model_event: _,
-            work: _,
-        } = self;
-        let mut allocations = vec![
-            (
-                self as *const Self as usize,
-                if shared {
-                    arc_mirror::<Self>()
+        use crate::snapshot_persistent::Counted;
+        let mut allocations = vec![(
+            self as *const Self as usize,
+            if shared {
+                arc_mirror::<Self>()
+            } else {
+                size_of::<Self>()
+            },
+        )];
+        let direct = |source: &Self, allocations: &mut Vec<(usize, usize)>| {
+            let bound = |len: usize, width: usize, root: usize| {
+                if len == 0 {
+                    5 * size_of::<usize>()
                 } else {
-                    size_of::<Self>()
-                },
-            ),
-            (
-                Arc::as_ptr(turns) as usize,
-                arc_mirror::<Vec<Arc<CachedTurn>>>()
-                    + turns.capacity() * size_of::<Arc<CachedTurn>>(),
-            ),
-            (
-                Arc::as_ptr(uuids) as usize,
-                arc_mirror::<HashMap<String, usize>>()
-                    + uuids.capacity() * size_of::<(String, usize)>()
-                    + uuids.keys().map(String::capacity).sum::<usize>(),
-            ),
-            (
-                Arc::as_ptr(results) as usize,
-                arc_mirror::<HashMap<String, ResultPosition>>()
-                    + results.capacity() * size_of::<(String, ResultPosition)>()
-                    + results.keys().map(String::capacity).sum::<usize>(),
-            ),
-        ];
-        for turn in turns.iter() {
-            let CachedTurn {
-                prompt,
-                prompt_count: _,
-                bounds: _,
-                started: _,
-                ended: _,
-                calls,
-                prefix_turn_bytes: _,
-                prefix_call_bytes: _,
-            } = &**turn;
-            allocations.push((
-                Arc::as_ptr(turn) as usize,
-                arc_mirror::<CachedTurn>()
-                    + prompt.capacity()
-                    + calls.capacity() * size_of::<Arc<CachedCall>>(),
-            ));
-            allocations.extend(calls.iter().map(|call| {
-                let audited = audited_call(call);
-                assert!(
-                    call.accounted_bytes >= audited.total(),
-                    "{audited:?} exceeds the {} byte call charge",
-                    call.accounted_bytes
-                );
-                if audited.dom == 0 {
-                    assert_eq!(call.accounted_bytes, audited.exact);
+                    (len * 8 + root) * (width + 4 * size_of::<usize>())
                 }
+            };
+            allocations.extend([
                 (
-                    Arc::as_ptr(call) as usize,
-                    arc_mirror::<CachedCall>() - size_of::<CachedCall>() + call.accounted_bytes,
+                    Arc::as_ptr(&source.turns) as usize,
+                    arc_mirror::<Vector<Arc<CachedTurn>>>(),
+                ),
+                (
+                    Arc::as_ptr(&source.uuids) as usize,
+                    arc_mirror::<Tree<Arc<str>, usize>>(),
+                ),
+                (
+                    Arc::as_ptr(&source.results) as usize,
+                    arc_mirror::<Tree<Arc<str>, ResultPosition>>(),
+                ),
+                (
+                    source.turns.metadata_id(),
+                    bound(
+                        source.turns.len(),
+                        size_of::<Counted<Arc<CachedTurn>>>(),
+                        256,
+                    ),
+                ),
+                (
+                    source.uuids.metadata_id(),
+                    bound(
+                        source.uuids.len(),
+                        size_of::<Arc<str>>() + size_of::<Counted<usize>>(),
+                        64,
+                    ) + source.uuids.len() * source.uuids.key_payload_max(),
+                ),
+                (
+                    source.results.metadata_id(),
+                    bound(
+                        source.results.len(),
+                        size_of::<Arc<str>>() + size_of::<Counted<ResultPosition>>(),
+                        64,
+                    ) + source.results.len() * source.results.key_payload_max(),
+                ),
+                (
+                    Arc::as_ptr(&source.undo) as usize,
+                    arc_mirror::<Vector<Arc<ActivityUndo>>>(),
+                ),
+                (
+                    source.undo.metadata_id(),
+                    bound(
+                        source.undo.len(),
+                        size_of::<Counted<Arc<ActivityUndo>>>(),
+                        256,
+                    ),
+                ),
+            ]);
+            allocations.extend(source.uuids.keys().chain(source.results.keys()).map(|key| {
+                (
+                    Arc::as_ptr(key) as *const u8 as usize,
+                    arc_slice_mirror::<u8>(key.len()),
                 )
             }));
+            allocations.extend(source.undo.iter().map(|undo| {
+                (
+                    Arc::as_ptr(undo) as usize,
+                    arc_mirror::<ActivityUndo>()
+                        + undo.uuid.as_ref().map_or(0, String::capacity)
+                        + undo.results.capacity() * size_of::<(String, Option<ResultPosition>)>()
+                        + undo
+                            .results
+                            .iter()
+                            .map(|(key, _)| key.capacity())
+                            .sum::<usize>(),
+                )
+            }));
+            for turn in source.turns.iter() {
+                allocations.push((Arc::as_ptr(turn) as usize, arc_mirror::<CachedTurn>()));
+                allocations.push((
+                    Arc::as_ptr(&turn.prompt) as *const u8 as usize,
+                    arc_slice_mirror::<u8>(turn.prompt.len()),
+                ));
+                allocations.push((
+                    turn.calls.metadata_id(),
+                    bound(turn.calls.len(), size_of::<Counted<Arc<CachedCall>>>(), 256),
+                ));
+                allocations.extend(turn.calls.iter().map(|call| {
+                    let audited = audited_call(call);
+                    assert!(call.accounted_bytes >= audited.total());
+                    if audited.dom == 0 {
+                        assert_eq!(call.accounted_bytes, audited.exact);
+                    }
+                    (
+                        Arc::as_ptr(call) as usize,
+                        arc_mirror::<CachedCall>() - size_of::<CachedCall>() + call.accounted_bytes,
+                    )
+                }));
+            }
+        };
+        direct(self, &mut allocations);
+        if let Some(owners) = self.allocation_owners.get() {
+            let mut expected = allocations[1..].to_vec();
+            expected.sort_unstable_by_key(|(id, _)| *id);
+            expected.dedup_by_key(|(id, _)| *id);
+            let actual = owners.audit_members();
+            assert_eq!(
+                actual, expected,
+                "shared allocation membership differs from payload walk"
+            );
         }
+        if let Some(owners) = self.allocation_owners.get() {
+            allocations.extend([
+                owners.metadata_allocation(),
+                owners.registry_metadata_allocation(),
+            ]);
+        }
+        let mut seen = HashSet::new();
+        allocations.retain(|(id, _)| seen.insert(*id));
         allocations
     }
 
     pub fn accounted_bytes(&self) -> usize {
         size_of::<Self>() + self.heap_bytes_since(None)
+    }
+
+    pub(crate) fn append_key_reservation_bytes(
+        &self,
+        entries: usize,
+        results: usize,
+        uuid_max: usize,
+        result_max: usize,
+    ) -> usize {
+        self.uuids
+            .key_reservation(entries, uuid_max)
+            .saturating_add(self.results.key_reservation(results, result_max))
     }
 
     pub fn append_container_reservation_bytes(
@@ -866,73 +1709,25 @@ impl ActivityIndex {
         calls: usize,
         results: usize,
     ) -> usize {
-        let growth = |capacity: usize, needed: usize, width: usize| {
-            if needed > capacity {
-                needed
-                    .max(capacity)
-                    .saturating_mul(2)
-                    .max(8)
-                    .saturating_mul(width)
-            } else {
-                0
-            }
-        };
-        let uuid_copy = if Arc::strong_count(&self.uuids) > 1 {
-            arc_bytes::<HashMap<String, usize>>()
-                + self.uuids.capacity() * size_of::<(String, usize)>()
-                + self.uuid_key_bytes
-        } else {
-            0
-        };
-        let result_copy = if Arc::strong_count(&self.results) > 1 {
-            arc_bytes::<HashMap<String, ResultPosition>>()
-                + self.results.capacity() * size_of::<(String, ResultPosition)>()
-                + self.result_key_bytes
-        } else {
-            0
-        };
-        let turn_copy = if Arc::strong_count(&self.turns) > 1 {
-            arc_bytes::<Vec<Arc<CachedTurn>>>()
-                + self.turns.capacity() * size_of::<Arc<CachedTurn>>()
-        } else {
-            0
-        };
-        let open_turn = self.turns.last().map_or(0, |turn| {
-            growth(
-                turn.calls.capacity(),
-                turn.calls.len().saturating_add(calls),
-                size_of::<Arc<CachedCall>>(),
-            ) + if Arc::strong_count(turn) > 1 || Arc::strong_count(&self.turns) > 1 {
-                arc_bytes::<CachedTurn>()
-                    + turn.prompt.capacity()
-                    + turn.calls.capacity() * size_of::<Arc<CachedCall>>()
-            } else {
-                0
-            }
-        });
-        uuid_copy
-            .saturating_add(result_copy)
-            .saturating_add(turn_copy)
-            .saturating_add(open_turn)
-            .saturating_add(growth(
-                self.uuids.capacity(),
-                self.uuids.len().saturating_add(entries),
-                size_of::<(String, usize)>(),
-            ))
-            .saturating_add(growth(
-                self.results.capacity(),
-                self.results.len().saturating_add(results),
-                size_of::<(String, ResultPosition)>(),
-            ))
-            .saturating_add(growth(
-                self.turns.capacity(),
-                self.turns.len().saturating_add(entries),
-                size_of::<Arc<CachedTurn>>(),
-            ))
+        self.allocation_owners
+            .get()
+            .map_or(0, |owners| {
+                owners.reservation(
+                    entries
+                        .saturating_mul(16)
+                        .saturating_add(calls.saturating_mul(3))
+                        .saturating_add(results.saturating_mul(2)),
+                )
+            })
+            .saturating_add(self.uuids.reservation(entries))
+            .saturating_add(self.results.reservation(results))
+            .saturating_add(self.turns.reservation(entries.max(1)))
+            .saturating_add(self.turns.last().map_or(0, |turn| {
+                turn.calls.reservation(calls) + arc_bytes::<CachedTurn>()
+            }))
             .saturating_add(entries.saturating_mul(arc_bytes::<CachedTurn>()))
-            .saturating_add(
-                calls.saturating_mul(arc_bytes::<CachedCall>() + 4 * size_of::<Arc<CachedCall>>()),
-            )
+            .saturating_add(calls.saturating_mul(arc_control_bytes::<CachedCall>()))
+            .saturating_add(Self::EMPTY_ALLOCATION_BYTES + arc_bytes::<Self>())
     }
 }
 
@@ -1361,6 +2156,142 @@ mod tests {
     }
 
     #[test]
+    fn shared_allocation_discovery_does_not_revisit_the_prefix_at_32_and_10000_rows() {
+        for count in [32, 10000] {
+            let entries = (0..count)
+                .map(|event| user(&format!("u-{event}"), "owner words"))
+                .collect::<Vec<_>>();
+            let refs = entries.iter().collect::<Vec<_>>();
+            let prior = Arc::new(ActivityIndex::new(&refs, None));
+            prior.shared_allocations();
+            let queue = Arc::new(ReleaseQueue::default());
+            for owner in prior.pending_allocations() {
+                owner.arm(&queue, LedgerEvent::Chunk(owner.id));
+            }
+            assert_eq!(prior.pending_allocation_count(), 0);
+            ALLOCATION_DISCOVERY_VISITS.with(|visits| visits.set(0));
+            let appended = user("tail", "new owner words");
+            let next = Arc::new(prior.as_ref().clone().append_tail(&[&appended], None));
+            assert_eq!(next.shared_allocations().len(), 2);
+            assert_eq!(
+                ALLOCATION_DISCOVERY_VISITS.with(std::cell::Cell::get),
+                0,
+                "N={count}"
+            );
+            assert!(next.pending_allocation_count() < 32, "N={count}");
+            next.audited_allocations(true);
+            parity(
+                &next,
+                &refs.into_iter().chain([&appended]).collect::<Vec<_>>(),
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_arc_charges_include_alignment_padding() {
+        for len in [0, 1, 7, 8, 9, 31] {
+            let entries = [user("u", &"x".repeat(len))];
+            let refs = entries.iter().collect::<Vec<_>>();
+            let index = ActivityIndex::new(&refs, None);
+            let turn = &index.turns[0];
+            assert_eq!(
+                turn.prompt_bytes(),
+                arc_slice_mirror::<u8>(turn.prompt.len())
+            );
+        }
+    }
+
+    #[test]
+    fn continued_turns_share_large_prompt_storage_across_append_and_undo() {
+        let entries = [user("u", &"x".repeat(1024 * 1024)), tools()];
+        let refs = entries.iter().collect::<Vec<_>>();
+        let original = ActivityIndex::new(&refs[..1], None);
+        let appended = original.append(&refs, 1, None);
+        assert!(Arc::ptr_eq(
+            &original.turns[0].prompt,
+            &appended.turns[0].prompt
+        ));
+        parity(&appended, &refs, None);
+        let raw = ActivityIndex::default().append_checkpointed_tail(&refs[..1]);
+        let mut next = raw.clone().append_checkpointed_tail(&refs[1..]);
+        assert!(Arc::ptr_eq(&raw.turns[0].prompt, &next.turns[0].prompt));
+        assert!(next.rewind_step(1, 1));
+        assert!(Arc::ptr_eq(&raw.turns[0].prompt, &next.turns[0].prompt));
+        parity(&next, &refs[..1], None);
+    }
+
+    #[test]
+    fn raw_activity_undo_matches_every_retained_prefix() {
+        let entries = [
+            user("u", "first"),
+            tools(),
+            results(),
+            user("v", "second"),
+            tools(),
+            results(),
+        ];
+        let refs = entries.iter().collect::<Vec<_>>();
+        let original = ActivityIndex::default().append_checkpointed_tail(&refs);
+        for first in 0..=refs.len() {
+            let mut index = original.clone();
+            assert!(index.rewind_step(first, usize::MAX));
+            parity(&index, &refs[..first], None);
+            index = index.append_checkpointed_tail(&refs[first..]);
+            parity(&index, &refs, None);
+            parity(&original, &refs, None);
+        }
+    }
+
+    #[test]
+    fn activity_suffix_rollback_matches_cold_at_every_cut() {
+        let entries = [
+            user("u", "first"),
+            tools(),
+            results(),
+            user("v", "second"),
+            tools(),
+            results(),
+        ];
+        let rows = entries
+            .into_iter()
+            .map(|entry| Arc::new(crate::snapshot::ChunkRows::new(vec![entry])))
+            .collect::<Vec<_>>();
+        let refs = rows.iter().map(|rows| &rows[0]).collect::<Vec<_>>();
+        for first in 0..=rows.len() {
+            let mut index = ActivityIndex::new(&refs, None);
+            let latest_result = |id: &str| {
+                refs[..first]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(event, entry)| match entry {
+                        Entry::User(user)
+                            if user.tool_results().any(|result| result.tool_use_id == id) =>
+                        {
+                            Some(event)
+                        }
+                        _ => None,
+                    })
+                    .last()
+            };
+            let first_meta = (0..first).find(|event| refs[*event].meta().is_some());
+            let last_meta = (0..first).rfind(|event| refs[*event].meta().is_some());
+            let last_model = (0..first).rfind(|event| matches!(refs[*event], Entry::Assistant(assistant) if assistant.model != crate::types::SYNTHETIC_MODEL));
+            index.truncate(
+                first,
+                &rows,
+                latest_result,
+                first_meta,
+                last_meta,
+                last_model,
+            );
+            parity(&index, &refs[..first], None);
+            index = index.append_tail(&refs[first..], None);
+            parity(&index, &refs, None);
+        }
+    }
+
+    #[test]
     fn load_charge_activity_summaries_match_independent_allocations() {
         let entries = [
             user("u", "first"),
@@ -1660,7 +2591,7 @@ mod tests {
         let index = ActivityIndex::new(&refs, None);
         let turn = &index.turns[0];
         let expected = size_of::<Turn<'_>>()
-            + turn.prompt.capacity()
+            + turn.prompt.len()
             + 2 * size_of::<&Entry>()
             + 2 * size_of::<ToolUse<'_>>()
             + turn
@@ -1704,7 +2635,12 @@ mod tests {
                     .unwrap()
                     < index.projected_bytes(0).unwrap()
             );
-            eprintln!("selective_call_slots unrelated={count} full={} selective_len={} selective_capacity={}", all.tool_uses.capacity(), selected.tool_uses.len(), selected.tool_uses.capacity());
+            eprintln!(
+                "selective_call_slots unrelated={count} full={} selective_len={} selective_capacity={}",
+                all.tool_uses.capacity(),
+                selected.tool_uses.len(),
+                selected.tool_uses.capacity()
+            );
         }
     }
 
@@ -1851,7 +2787,8 @@ mod tests {
             },
         )]));
         let index = with_registry(registry, || ActivityIndex::new(&refs, None));
-        let (zero, pairs) = index.turns[0].calls.split_first().unwrap();
+        let calls = index.turns[0].calls.iter().collect::<Vec<_>>();
+        let (zero, pairs) = calls.split_first().unwrap();
         let walked = audited_call(zero);
         assert!(matches!(
             zero.call,

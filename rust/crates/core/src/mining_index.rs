@@ -37,7 +37,7 @@ pub struct ReviewMiningIndex {
     fingerprint: [u8; 32],
     pub(super) entries: Vec<Entry>,
     pub(super) dependencies: ReviewDependencies,
-    pub(super) uses: HashMap<String, ToolUseBlock>,
+    pub(super) uses: HashMap<String, Vec<(usize, ToolUseBlock)>>,
     pub(super) assistants: BTreeSet<usize>,
     pub(super) users: BTreeSet<usize>,
     pub(super) edits: BTreeSet<usize>,
@@ -233,7 +233,7 @@ impl ReviewMiningIndex {
             + self.entries.capacity() * size_of::<Entry>()
             + self.dependencies.accounted_bytes()
             - size_of::<ReviewDependencies>()
-            + self.uses.capacity() * size_of::<(String, ToolUseBlock)>()
+            + self.uses.capacity() * size_of::<(String, Vec<(usize, ToolUseBlock)>)>()
             + (self.assistants.len() + self.users.len() + self.edits.len() + self.pending.len())
                 * size_of::<usize>()
             + self.question_refs.capacity() * size_of::<(usize, Vec<String>)>()
@@ -265,9 +265,16 @@ impl ReviewMiningIndex {
         let tools = self
             .uses
             .iter()
-            .map(|(id, tool)| {
-                let charge = tool_use_charge(tool);
-                id.capacity() + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+            .map(|(id, versions)| {
+                id.capacity()
+                    + versions.capacity() * size_of::<(usize, ToolUseBlock)>()
+                    + versions
+                        .iter()
+                        .map(|(_, tool)| {
+                            let charge = tool_use_charge(tool);
+                            charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+                        })
+                        .sum::<usize>()
             })
             .sum::<usize>();
         let questions = self
@@ -330,7 +337,7 @@ impl ReviewMiningIndex {
         spec: &CompiledMiningSpec,
     ) -> MiningResult<usize> {
         self.verify_spec(spec)?;
-        use crate::snapshot_ledger::{map_growth, vec_growth};
+        use crate::snapshot_ledger::{map_reallocation_bound, vec_reallocation_bound};
         let followup = match entry {
             Entry::User(user) => {
                 let text = user.content.text();
@@ -349,12 +356,22 @@ impl ReviewMiningIndex {
         let (dependencies, affected) = self.dependencies.append_bound(entry, followup);
         let charge = entry_charge(entry);
         let tools = entry.tool_uses().count();
+        let tool_versions = entry
+            .tool_uses()
+            .map(|tool| {
+                self.uses.get(&tool.id).map_or(
+                    4usize.max(tools) * size_of::<(usize, ToolUseBlock)>(),
+                    |versions| vec_reallocation_bound(versions, tools),
+                )
+            })
+            .sum::<usize>();
         Ok(dependencies
+            + tool_versions
             + (charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes) * 12
-            + vec_growth(&self.entries, 1)
-            + map_growth(&self.uses, tools)
-            + map_growth(&self.question_refs, 1)
-            + map_growth(&self.result_facts, 1)
+            + vec_reallocation_bound(&self.entries, 1)
+            + map_reallocation_bound(&self.uses, tools)
+            + map_reallocation_bound(&self.question_refs, 1)
+            + map_reallocation_bound(&self.result_facts, 1)
             + (affected + 8) * 4 * size_of::<usize>()
             + 4096)
     }
@@ -383,18 +400,17 @@ impl ReviewMiningIndex {
                 let tool = compact_use(tool);
                 let charge = tool_use_charge(&tool);
                 self.owned.tools += charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
-                match self.uses.entry(tool.id.clone()) {
+                let versions = match self.uses.entry(tool.id.clone()) {
                     std::collections::hash_map::Entry::Vacant(slot) => {
                         self.owned.tools += slot.key().capacity();
-                        slot.insert(tool);
+                        slot.insert(Vec::new())
                     }
-                    std::collections::hash_map::Entry::Occupied(mut slot) => {
-                        let old = slot.insert(tool);
-                        let charge = tool_use_charge(&old);
-                        self.owned.tools -=
-                            charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
-                    }
-                }
+                    std::collections::hash_map::Entry::Occupied(slot) => slot.into_mut(),
+                };
+                let old_capacity = versions.capacity();
+                versions.push((index, tool));
+                self.owned.tools +=
+                    (versions.capacity() - old_capacity) * size_of::<(usize, ToolUseBlock)>();
             }
             match entry {
                 Entry::Assistant(_) => {
@@ -436,6 +452,87 @@ impl ReviewMiningIndex {
         Ok(changes)
     }
 
+    pub fn last_result(&self, id: &str) -> Option<usize> {
+        self.dependencies.last_result(id)
+    }
+
+    pub fn tool_position(&self, id: &str) -> Option<usize> {
+        self.uses
+            .get(id)
+            .and_then(|rows| rows.last().map(|(index, _)| *index))
+    }
+
+    pub(crate) fn truncate_bound(&self, first: usize, ids: &HashSet<String>) -> usize {
+        self.dependencies.truncate_bound(first, ids)
+    }
+
+    pub fn truncate(
+        &mut self,
+        first: usize,
+        spec: &CompiledMiningSpec,
+    ) -> MiningResult<ReviewChanges> {
+        self.verify_spec(spec)?;
+        let changes = self.dependencies.truncate(first)?;
+        self.pending.split_off(&first);
+        self.assistants.split_off(&first);
+        self.users.split_off(&first);
+        self.edits.split_off(&first);
+        for (detector, signals) in self.signals.iter_mut().enumerate() {
+            for rows in signals.split_off(&first).into_values() {
+                self.owned.signals -= rows.capacity() * size_of::<MiningSignal>()
+                    + rows
+                        .iter()
+                        .map(|row| row.accounted_bytes() - size_of::<MiningSignal>())
+                        .sum::<usize>();
+                if detector == PLAN_MODE_EMISSIONS {
+                    for row in rows {
+                        if let Some(uuid) = self.plan_seen.take(&row.event_uuid) {
+                            self.owned.plan_uuids -= uuid.capacity();
+                        }
+                    }
+                }
+            }
+        }
+        while self.entries.len() > first {
+            let index = self.entries.len() - 1;
+            let entry = self.entries.pop().expect("committed mining entry");
+            let charge = entry_charge(&entry);
+            self.owned.entries -= charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
+            for tool in entry.tool_uses() {
+                let versions = self
+                    .uses
+                    .get_mut(&tool.id)
+                    .expect("committed tool versions");
+                let (event, old) = versions.pop().expect("committed tool version");
+                assert_eq!(event, index);
+                let charge = tool_use_charge(&old);
+                self.owned.tools -= charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes;
+                if versions.is_empty() {
+                    let (id, versions) = self
+                        .uses
+                        .remove_entry(&tool.id)
+                        .expect("empty tool versions");
+                    self.owned.tools -=
+                        id.capacity() + versions.capacity() * size_of::<(usize, ToolUseBlock)>();
+                }
+            }
+            if let Some(ids) = self.question_refs.remove(&index) {
+                self.owned.questions -= ids.capacity() * size_of::<String>()
+                    + ids.iter().map(String::capacity).sum::<usize>();
+            }
+            if let Some(facts) = self.result_facts.remove(&index) {
+                self.owned.results -= facts.capacity() * size_of::<ResultFacts>()
+                    + facts
+                        .iter()
+                        .filter_map(|fact| fact.embedded.as_ref())
+                        .map(String::capacity)
+                        .sum::<usize>();
+            }
+        }
+        self.pending.extend(changes.revisited.iter().copied());
+        Ok(changes)
+    }
+
     pub fn required_payloads(&self, spec: &CompiledMiningSpec) -> MiningResult<Vec<usize>> {
         self.verify_spec(spec)?;
         if !spec.detectors.contains(DETECTOR_ASK_USER_QUESTION) {
@@ -450,7 +547,8 @@ impl ReviewMiningIndex {
                     ids.iter().any(|id| {
                         self.uses
                             .get(id)
-                            .is_some_and(|tool| tool.name == "AskUserQuestion")
+                            .and_then(|versions| versions.last())
+                            .is_some_and(|(_, tool)| tool.name == "AskUserQuestion")
                     })
                 })
             })

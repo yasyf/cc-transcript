@@ -8,7 +8,7 @@ class names, field names, and semantics match the pre-inversion dataclasses;
 
 from __future__ import annotations
 
-from typing import NewType
+from typing import Never, NewType
 
 from cc_transcript._native import ApiError as ApiError
 from cc_transcript._native import AssistantEvent as AssistantEvent
@@ -83,28 +83,28 @@ class ReadOnlyDict(dict):
 
     __slots__ = ()
 
-    def __setitem__(self, *args: object, **kwargs: object) -> None:
+    def __setitem__(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
-    def __delitem__(self, *args: object, **kwargs: object) -> None:
+    def __delitem__(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
-    def __ior__(self, *args: object, **kwargs: object) -> None:
+    def __ior__(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
-    def clear(self, *args: object, **kwargs: object) -> None:
+    def clear(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
-    def pop(self, *args: object, **kwargs: object) -> None:
+    def pop(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
-    def popitem(self, *args: object, **kwargs: object) -> None:
+    def popitem(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
-    def setdefault(self, *args: object, **kwargs: object) -> None:
+    def setdefault(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
-    def update(self, *args: object, **kwargs: object) -> None:
+    def update(self, *args: object, **kwargs: object) -> Never:
         raise TypeError("ReadOnlyDict is read-only")
 
 

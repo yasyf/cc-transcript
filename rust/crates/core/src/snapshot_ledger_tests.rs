@@ -234,12 +234,20 @@ fn cap_of(store: &NativeStore, context: &Value) -> usize {
     }
 }
 
-fn store_with(read_step: usize, event_step: usize, extra: &[(&str, usize)]) -> NativeStore {
+fn store_config(read_step: usize, event_step: usize, extra: &[(&str, usize)]) -> Value {
     let mut config = json!({"max_read_bytes_per_step":read_step,"max_events_per_step":event_step,"max_entry_bytes":64*1024,"max_retained_bytes":CAP,"reserved_hook_accounted_bytes":HOOK_BYTES,"max_leases":16,"reserved_hook_leases":1});
     for (key, value) in extra {
         config.insert(key, json!(value));
     }
-    NativeStore::new(&config).unwrap()
+    config
+}
+
+fn store_with(read_step: usize, event_step: usize, extra: &[(&str, usize)]) -> NativeStore {
+    NativeStore::new(&store_config(read_step, event_step, extra)).unwrap()
+}
+
+fn agent_store_with(read_step: usize, event_step: usize, extra: &[(&str, usize)]) -> NativeStore {
+    NativeStore::new_agent(&store_config(read_step, event_step, extra)).unwrap()
 }
 
 fn fast_store() -> NativeStore {
@@ -336,7 +344,7 @@ fn resume(store: &NativeStore, response: &Value, owner: &Value) -> Value {
     let cursor = response["cursor"]
         .as_str()
         .unwrap_or_else(|| panic!("no continuation: {response:?}"));
-    store.request(&resume_request(cursor), owner, &Cancellation::default())
+    store.test_request(&resume_request(cursor), owner, &Cancellation::default())
 }
 
 fn settle(store: &NativeStore, mut response: Value, owner: &Value) -> Value {
@@ -377,7 +385,7 @@ fn ok_handle(response: &Value) -> Value {
 fn acquired(store: &NativeStore, path: &Path, owner: &Value) -> (Value, Arc<TranscriptSnapshot>) {
     let handle = ok_handle(&drive(
         store,
-        store.request(&acquire(path), owner, &Cancellation::default()),
+        store.test_request(&acquire(path), owner, &Cancellation::default()),
         owner,
     ));
     let snapshot = store.pin(&handle, owner).unwrap();
@@ -392,7 +400,7 @@ fn classified(
 ) -> (Value, Arc<TranscriptSnapshot>) {
     let handle = ok_handle(&drive(
         store,
-        store.request(
+        store.test_request(
             &classifier_acquire(path, classifier, 1024 * 1024),
             owner,
             &Cancellation::default(),
@@ -497,7 +505,7 @@ fn warm_hit(store: &NativeStore, path: &Path, owner: &Value) {
 }
 
 fn stats_gauges(store: &NativeStore, owner: &Value) -> Value {
-    let stats = store.request(
+    let stats = store.test_request(
         &json!({"schema":SCHEMA,"id":"ledger-stats","operation":"stats"}),
         owner,
         &Cancellation::default(),
@@ -507,7 +515,7 @@ fn stats_gauges(store: &NativeStore, owner: &Value) -> Value {
 }
 
 fn release_lease(store: &NativeStore, handle: &Value, owner: &Value) {
-    let released = store.request(
+    let released = store.test_request(
         &json!({"schema":SCHEMA,"id":"ledger-release","operation":"release","kind":"lease","owner_epoch":store.owner_epoch,"token":handle["lease_id"]}),
         owner,
         &Cancellation::default(),
@@ -1485,7 +1493,7 @@ fn anchor_table_charge_moves_only_when_the_table_reallocates() {
 #[test]
 fn shared_chunk_prefix_stays_charged_until_its_last_generation_dies() {
     let source = LedgerSource::new(&lines(0..2));
-    let store = fast_store();
+    let store = agent_store_with(64 * 1024, 4096, &[]);
     let owner = context_for("prefix", false);
     let (first_handle, first) = acquired(&store, &source.path, &owner);
     source.append(&lines(2..4));
@@ -1540,14 +1548,14 @@ fn escaped_chunk_rows_stay_charged_until_their_last_owner_drops() {
 #[test]
 fn source_spine_shared_rows_and_each_escaped_wrapper_release_their_exact_allocation() {
     let source = LedgerSource::new(&lines(0..200));
-    let store = store_with(1024, 4096, &[]);
+    let store = agent_store_with(1024, 4096, &[]);
     let owner = context_for("spine-wrapper-escape", false);
     let (whole_handle, full) = acquired(&store, &source.path, &owner);
     let mut request = acquire(&source.path);
     request.insert("tail_bytes", json!(4096));
     let response = drive(
         &store,
-        store.request(&request, &owner, &Cancellation::default()),
+        store.request_agent(&request, &owner, &Cancellation::default()),
         &owner,
     );
     let tail_handle = ok_handle(&response);
@@ -1732,7 +1740,7 @@ fn stats_reports_the_ledger_plus_its_reply_reservation() {
 #[test]
 fn completed_classifier_stages_prune_without_unbalancing_the_ledger() {
     let source = LedgerSource::new(&lines(0..3));
-    let store = fast_store();
+    let store = agent_store_with(64 * 1024, 4096, &[]);
     let owner = context_for("stages", false);
     let batches = recording_classifier(&store, "complete");
     let mut expected = Vec::new();
@@ -1759,7 +1767,7 @@ fn completed_classifier_stages_prune_without_unbalancing_the_ledger() {
 #[test]
 fn custom_classifier_carries_reinserts_and_evicts_its_classification() {
     let source = LedgerSource::new(&lines(0..3));
-    let store = fast_store();
+    let store = agent_store_with(64 * 1024, 4096, &[]);
     let owner = context_for("carried", false);
     let batches = recording_classifier(&store, "carried");
     let mut retained = vec![classified(&store, &source.path, "carried", &owner)];
@@ -1992,7 +2000,7 @@ fn registry_registration_charges_its_record_once() {
 #[test]
 fn carried_stage_and_label_seeds_share_one_anchor() {
     let source = LedgerSource::new(&lines(0..4));
-    let store = fast_store();
+    let store = agent_store_with(64 * 1024, 4096, &[]);
     let owner = context_for("seeds", false);
     let batches = recording_classifier(&store, "overlap");
     let _carried = classified(&store, &source.path, "overlap", &owner);
@@ -2007,7 +2015,7 @@ fn carried_stage_and_label_seeds_share_one_anchor() {
         .map(|charge| charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
         .max()
         .unwrap();
-    let mut staged = store.request(
+    let mut staged = store.test_request(
         &classifier_acquire(&source.path, "overlap", one_event),
         &owner,
         &Cancellation::default(),
@@ -3035,7 +3043,7 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
 
 fn seeded_classifier_fixture(source: &LedgerSource, classifier: &str, background: bool) -> Fixture {
     std::fs::write(&source.path, lines(0..SEEDED_EVENTS)).unwrap();
-    let store = fast_store();
+    let store = agent_store_with(64 * 1024, 4096, &[]);
     let owner = context_for("seeded", background);
     recording_classifier(&store, classifier);
     let (_, seeded) = classified(&store, &source.path, classifier, &owner);
@@ -3108,7 +3116,7 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
     let ClassifierStage {
         activity,
         indexed: _,
-        carried,
+        carried_metadata: _,
         committed,
         result: _,
     } = &*stage;
@@ -3121,6 +3129,7 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
+    let registry = activity.registry_metadata_allocation().0;
     let mut seen = HashSet::new();
     activity
         .audited_heap_allocations()
@@ -3130,10 +3139,10 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
                 .iter()
                 .flat_map(ActivityIndex::audited_heap_allocations),
         )
-        .filter(|(id, _)| !seed.contains(id) && seen.insert(*id))
+        .filter(|(id, _)| *id != registry && !seed.contains(id) && seen.insert(*id))
         .map(|(_, bytes)| bytes)
         .sum::<usize>()
-        + carried.capacity() * size_of::<usize>()
+        + activity.registry_pending_bytes()
 }
 
 fn append_reservation_mirror(
@@ -9067,6 +9076,10 @@ fn cold_load_walk(slot: &LoadSlot) -> usize {
         reuse_prepared: _,
         codex_raw,
         codex_append,
+        agent_codex: _,
+        codex_changed: _,
+        agent_codex_prepared: _,
+        codex_pending: _,
         count: _,
         activity,
         indexed: _,
@@ -9427,12 +9440,13 @@ fn wide_decode_lines_are_admitted_exactly_before_they_are_retained() {
 
 fn appended_index_fixture(source: &LedgerSource, background: bool) -> Fixture {
     std::fs::write(&source.path, lines(0..SEEDED_EVENTS)).unwrap();
-    let store = prepared_store();
+    let store = agent_store_with(4096, 2048, &[]);
     let owner = context_for("appended", background);
     let (_, previous) = acquired(&store, &source.path, &owner);
     assert_eq!(previous.event_count, SEEDED_EVENTS);
     source.append(&lines(SEEDED_EVENTS..SEEDED_EVENTS + 2 * SEEDED_STEP));
-    let mut response = store.request(&acquire(&source.path), &owner, &Cancellation::default());
+    let mut response =
+        store.request_agent(&acquire(&source.path), &owner, &Cancellation::default());
     loop {
         assert!(parked(&response), "{response:?}");
         let ready = {
@@ -10042,7 +10056,7 @@ fn published_generations_record_their_arc_headers() {
             ),
             "the generation's index entry misses its arc header"
         );
-        assert_eq!(record.indexes, snapshot.activity.audited_allocations(true));
+        assert_eq!(record.indexes, snapshot.activity.audited_shared_roots());
         assert_eq!(
             record
                 .entries
@@ -10694,7 +10708,7 @@ fn graph_cursor_charges_its_context_and_nested_buffers() {
 
 fn released_seed_label(background: bool) -> (LedgerSource, NativeStore, Value, String, LabelSlot) {
     let source = LedgerSource::new(&lines(0..4));
-    let store = fast_store();
+    let store = agent_store_with(64 * 1024, 4096, &[]);
     let owner = context_for("seeded-labels", background);
     recording_classifier(&store, "overlap");
     classified(&store, &source.path, "overlap", &owner);
@@ -10958,7 +10972,7 @@ fn sole_owner_label(
     Arc<CarriedClassification>,
 ) {
     let source = LedgerSource::new(&lines(0..4));
-    let store = fast_store();
+    let store = agent_store_with(64 * 1024, 4096, &[]);
     let owner = context_for("seeded-labels", background);
     recording_classifier(&store, "overlap");
     let (_, first) = classified(&store, &source.path, "overlap", &owner);

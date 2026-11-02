@@ -133,7 +133,7 @@ fn registered_review_partial_record_completion_resumes_at_committed_bytes() {
     assert!(changed.complete);
     assert_eq!(changed.value, registered_reference(&source, &spec));
     assert_eq!(changed.progress.parsed_events, 1);
-    assert_eq!(changed.progress.source_bytes, second.len() + 128);
+    assert_eq!(changed.progress.source_bytes, second.len() - cut + 128);
 }
 
 #[test]
@@ -192,4 +192,285 @@ fn registered_review_retains_no_compiled_policy_and_reuses_an_equivalent_transie
     assert_eq!(warm.value, first.value);
     assert_eq!(warm.progress.source_bytes, 0);
     assert_eq!(warm.mining_usage.events, 0);
+}
+
+#[test]
+fn registered_review_219mb_bounded_preparation_keeps_source_progress_and_warm_reads_zero() {
+    let first = sonic_rs::to_string(&json!({"type":"user","sessionId":"s","uuid":"owner-anchor","timestamp":"2026-11-02T00:00:00Z","message":{"content":"preserve these owner words"}})).unwrap() + "\n";
+    let source = Source::new(&first);
+    let target = 219_081_957usize;
+    let output = "x".repeat(16 * 1024);
+    let row = sonic_rs::to_string(&json!({"type":"user","sessionId":"s","uuid":"output","timestamp":"2026-11-02T00:00:00Z","toolUseResult":{"output":output},"message":{"content":[{"type":"tool_result","tool_use_id":"read","content":output}]}})).unwrap() + "\n";
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&source.path)
+        .unwrap();
+    let mut size = first.len();
+    while size + row.len() <= target {
+        file.write_all(row.as_bytes()).unwrap();
+        size += row.len();
+    }
+    file.write_all(&vec![b'\n'; target - size]).unwrap();
+    drop(file);
+    let store = NativeStore::new(&json!({"max_retained_bytes":96*1024*1024,"reserved_hook_accounted_bytes":4096,"max_source_bytes":256*1024*1024,"max_entry_bytes":1024*1024})).unwrap();
+    let spec = registered_review_spec();
+    let mut limits = registered_review_limits();
+    limits.max_read_bytes = 1024 * 1024;
+    limits.max_source_read_bytes = 1024 * 1024;
+    limits.max_events = 4096;
+    let policy = json!({"id":"fixture-review","version":"1"});
+    let cancellation = Cancellation::default();
+    let mut total_read = 0;
+    let mut calls = 0;
+    let value = loop {
+        calls += 1;
+        assert!(calls < 1024, "cold continuation must make bounded progress");
+        let read = store
+            .with_registered_review_frame(
+                &source.path,
+                &context("registered-219mb"),
+                &policy,
+                &spec,
+                "owner words",
+                limits,
+                &cancellation,
+                "fixture-controller",
+                None,
+                &|_| Ok(false),
+                |frame| {
+                    let frame = frame.lock().unwrap();
+                    let input = frame.as_ref().unwrap();
+                    assert!(input.facts.facts().first_user_contains);
+                    let anchor = crate::ids::EventRef {
+                        session_id: "s".to_owned(),
+                        event_uuid: "owner-anchor".to_owned(),
+                        tool_use_id: None,
+                    };
+                    let window = input.contexts.capture(&input.activity, &anchor, 6, 2)?;
+                    assert!(window.trigger.is_some());
+                    let encoded =
+                        sonic_rs::to_string(&input.mining.signals()?.collect::<Vec<_>>()).unwrap();
+                    Ok(encoded)
+                },
+            )
+            .unwrap();
+        assert!(read.progress.source_bytes <= limits.max_source_read_bytes);
+        total_read += read.progress.source_bytes;
+        if let Some(value) = read.value {
+            assert!(read.complete);
+            break value;
+        }
+    };
+    assert!(calls > 1);
+    assert_eq!(total_read, target + 64);
+    for _ in 0..3 {
+        let read = store
+            .with_registered_review_frame(
+                &source.path,
+                &context("registered-219mb"),
+                &policy,
+                &spec,
+                "owner words",
+                limits,
+                &cancellation,
+                "fixture-controller",
+                None,
+                &|_| Ok(false),
+                |frame| {
+                    let frame = frame.lock().unwrap();
+                    let encoded = sonic_rs::to_string(
+                        &frame
+                            .as_ref()
+                            .unwrap()
+                            .mining
+                            .signals()?
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap();
+                    Ok(encoded)
+                },
+            )
+            .unwrap();
+        assert_eq!(read.value.as_deref(), Some(value.as_str()));
+        assert_eq!(read.progress.source_bytes, 0);
+        assert_eq!(read.progress.parsed_events, 0);
+        assert_eq!(read.mining_usage.events, 0);
+    }
+    let mut state = store.lock_state();
+    for (_, charged, walked) in NativeStore::walked_records(&state) {
+        assert_eq!(charged, walked);
+    }
+    println!(
+        "REGISTERED_REVIEW_219MB bytes={} calls={} total_read={} warm_read=0 retained={}",
+        target,
+        calls,
+        total_read,
+        NativeStore::retained_total(&mut state)
+    );
+}
+
+#[test]
+fn registered_review_deadline_during_decode_preserves_committed_source_work() {
+    let source = Source::new(&(user("deadline") + "\n"));
+    let store = store();
+    *store.decode_hook.lock().unwrap() = Some(Arc::new(|stage| {
+        if stage == "registered-review-entry" {
+            std::thread::sleep(Duration::from_millis(1200));
+        }
+    }));
+    let spec = registered_review_spec();
+    let mut limits = registered_review_limits();
+    limits.deadline_unix_ms = now_ms() + 1000;
+    let first = store
+        .with_registered_review_frame(
+            &source.path,
+            &context("decode-deadline"),
+            &json!({"id":"review","version":"1"}),
+            &spec,
+            "token",
+            limits,
+            &Cancellation::default(),
+            "controller",
+            None,
+            &|_| Ok(false),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(!first.complete);
+    assert!(first.value.is_none());
+    *store.decode_hook.lock().unwrap() = None;
+    let second = store
+        .with_registered_review_frame(
+            &source.path,
+            &context("decode-deadline"),
+            &json!({"id":"review","version":"1"}),
+            &spec,
+            "token",
+            registered_review_limits(),
+            &Cancellation::default(),
+            "controller",
+            None,
+            &|_| Ok(false),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(second.complete);
+    assert!(second.value.is_some());
+    assert_eq!(second.progress.source_bytes, 0);
+    assert_eq!(second.progress.parsed_events, 0);
+}
+
+#[test]
+fn registered_review_codex_adjacent_echo_reuses_untouched_prefix_at_32_and_10000_rows() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for count in [32, 10000] {
+        let line = |kind: &str, payload: Value| {
+            sonic_rs::to_string(
+                &json!({"timestamp":"2026-11-02T00:00:00Z","type":kind,"payload":payload}),
+            )
+            .unwrap()
+                + "\n"
+        };
+        let message = |text: &str| {
+            line(
+                "response_item",
+                json!({"type":"message","role":"user","content":[{"type":"input_text","text":text}]}),
+            )
+        };
+        let mut contents = line("session_meta", json!({"id":"thread","cwd":"/repo"}));
+        contents.push_str(&line("turn_context", json!({"model":"m"})));
+        for event in 0..count {
+            contents.push_str(&line("response_item", json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":format!("retained owner words {event}")}]})));
+        }
+        contents.push_str(&line(
+            "event_msg",
+            json!({"type":"user_message","message":"adjacent owner words"}),
+        ));
+        let source = Source::new(&contents);
+        let store = NativeStore::new(&json!({})).unwrap();
+        let spec = registered_review_spec();
+        let callbacks = AtomicUsize::new(0);
+        let marker = |_: &Arc<ChunkRows>| {
+            callbacks.fetch_add(1, Ordering::Relaxed);
+            Ok(false)
+        };
+        let mut limits = registered_review_limits();
+        limits.max_output_bytes = 16 * 1024 * 1024;
+        let read = || {
+            store
+                .with_registered_review_frame(
+                    &source.path,
+                    &context("codex-echo"),
+                    &json!({"id":"review","version":"1"}),
+                    &spec,
+                    "owner words",
+                    limits,
+                    &Cancellation::default(),
+                    "controller",
+                    None,
+                    &marker,
+                    |frame| {
+                        let frame = frame.lock().unwrap();
+                        let input = frame.as_ref().unwrap();
+                        assert_eq!(input.mining.accounted_bytes(), input.mining.audited_bytes());
+                        assert_eq!(
+                            input.contexts.accounted_bytes(),
+                            input.contexts.audited_bytes()
+                        );
+                        let signals = input.mining.signals()?.collect::<Vec<_>>();
+                        let encoded = sonic_rs::to_string(&signals).unwrap();
+                        Ok(encoded)
+                    },
+                )
+                .unwrap()
+        };
+        let first = read();
+        assert!(first.complete);
+        callbacks.store(0, Ordering::Relaxed);
+        let append = message("adjacent owner words");
+        source.append(&append);
+        contents.push_str(&append);
+        let changed = read();
+        assert!(changed.complete);
+        assert_eq!(callbacks.load(Ordering::Relaxed), 2, "N={count}");
+        assert_eq!(changed.progress.source_bytes, append.len() + 128);
+        let parsed = crate::codex::parse::parse_codex_bytes(contents.as_bytes());
+        let canonical = crate::codex::lower::lower(&parsed);
+        let expected =
+            crate::mining::mine_entries(canonical.entries.iter().collect(), &spec).unwrap();
+        assert_eq!(
+            changed.value.as_deref(),
+            Some(sonic_rs::to_string(&expected).unwrap().as_str())
+        );
+        let warm = read();
+        assert_eq!(warm.progress.source_bytes, 0);
+        assert_eq!(warm.progress.parsed_events, 0);
+        assert_eq!(warm.mining_usage.events, 0);
+        assert_eq!(callbacks.load(Ordering::Relaxed), 2);
+        let state = store.lock_state();
+        for (_, charged, walked) in NativeStore::walked_records(&state) {
+            assert_eq!(charged, walked);
+        }
+        println!("REGISTERED_REVIEW_CODEX_ECHO N={count} append={} source_read={} callbacks=2 warm_read=0", append.len(), changed.progress.source_bytes);
+    }
+}
+
+#[test]
+fn registered_review_sparse_question_payload_decode_usage_includes_affected_old_bytes() {
+    let result = sonic_rs::to_string(&json!({"type":"user","sessionId":"s","uuid":"answer","timestamp":"2026-11-02T00:00:00Z","toolUseResult":{"answers":{"Which?":"A"}},"message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"answer"}]}})).unwrap();
+    let question = sonic_rs::to_string(&json!({"type":"assistant","sessionId":"s","uuid":"ask","timestamp":"2026-11-02T00:00:01Z","message":{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"q","name":"AskUserQuestion","input":{"questions":[{"question":"Which?","header":"choice","multiSelect":false,"options":[{"label":"A"},{"label":"B"}]}]}}]}})).unwrap();
+    let contents = format!("{result}\n{question}\n");
+    let source = Source::new(&contents);
+    let store = NativeStore::new(&json!({})).unwrap();
+    let spec = registered_review_spec();
+    let read = registered_review_read(&store, &source.path, Arc::clone(&spec));
+    assert!(read.complete);
+    assert_eq!(read.value, registered_reference(&source, &spec));
+    assert_eq!(
+        read.preparation_usage["bytes_decoded"].as_u64(),
+        Some((result.len() * 2 + question.len()) as u64)
+    );
+    let warm = registered_review_read(&store, &source.path, spec);
+    assert_eq!(warm.preparation_usage["bytes_decoded"].as_u64(), Some(0));
+    assert_eq!(warm.progress.source_bytes, 0);
 }

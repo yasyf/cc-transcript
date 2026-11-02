@@ -202,6 +202,14 @@ impl<'store> ScanBudget<'store> {
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
         self.checkpoint(cancel)?;
+        self.commit_projection(bytes, events)
+    }
+
+    pub(crate) fn commit_projection(
+        &mut self,
+        bytes: usize,
+        events: usize,
+    ) -> Result<(), SnapshotError> {
         let remaining = self.remaining();
         if bytes > remaining.max_read_bytes {
             return Err(self.exhaust(Budget::ReadBytes));
@@ -246,6 +254,10 @@ impl<'store> ScanBudget<'store> {
 
     pub fn charge_parse(&mut self, cancel: &Cancellation) -> Result<(), SnapshotError> {
         self.checkpoint(cancel)?;
+        self.commit_parse()
+    }
+
+    pub(crate) fn commit_parse(&mut self) -> Result<(), SnapshotError> {
         if self.remaining().max_events == 0 {
             return Err(self.exhaust(Budget::Events));
         }

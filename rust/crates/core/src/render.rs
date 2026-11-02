@@ -571,6 +571,22 @@ fn result_lines(
     quoted_result(label.head("result"), &result.content, budget)
 }
 
+pub(crate) fn registered_review_result_lines(
+    name: &str,
+    result: &ToolResultBlock,
+    budget: &Budget,
+) -> Vec<String> {
+    result_lines(
+        &CallLabel {
+            name,
+            ordinal: None,
+        },
+        result,
+        budget,
+        false,
+    )
+}
+
 fn quoted_result(head: String, content: &str, budget: &Budget) -> Vec<String> {
     let mut lines = vec![head];
     if !pystr::strip(content).is_empty() {

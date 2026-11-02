@@ -19,7 +19,7 @@ use crate::views::convert::{json_to_py, parse_err};
 
 pub use cc_transcript_core::mining::{compile_spec, CompiledMiningSpec, MiningUsage};
 
-fn error(error: MiningError) -> PyErr {
+pub(crate) fn error(error: MiningError) -> PyErr {
     match error {
         MiningError::Snapshot(error) => crate::snapshots::error(error),
         MiningError::Invalid(reason) => PyValueError::new_err(reason),
@@ -159,7 +159,10 @@ pub fn attach_bounded_callable_formats(
     Ok(())
 }
 
-fn build_signal_dict<'py>(py: Python<'py>, row: &MiningSignal) -> PyResult<Bound<'py, PyDict>> {
+pub(crate) fn build_signal_dict<'py>(
+    py: Python<'py>,
+    row: &MiningSignal,
+) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("kind", &row.kind)?;
     d.set_item("detector", &row.detector)?;

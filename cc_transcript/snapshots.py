@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
 from math import isfinite
+from pathlib import Path
 from typing import Any, Literal, TypedDict, overload
 
 import orjson
@@ -272,6 +273,39 @@ class TranscriptSnapshot:
     ) -> list[Mapping[str, Any]]:
         return _call(self._native.mine, spec_json, list(callable_formats))
 
+    @property
+    def hook_marker_indices(self) -> tuple[int, ...]:
+        """Indices of original events matched by the registered marker controller."""
+        return tuple(_call(self._native.hook_marker_indices))
+
+    @property
+    def tool_use_digests(self) -> Mapping[str, str]:
+        """Canonical tool-use digests retained by the registered native reader."""
+        return orjson.loads(_call(self._native.tool_use_digests))
+
+    def publish_projection(
+        self,
+        request: Mapping[str, Any],
+        *,
+        metadata: Mapping[str, Any],
+        field: str,
+        records_json: Sequence[str],
+        usage: Mapping[str, int],
+        work: Mapping[str, int],
+    ) -> Mapping[str, Any]:
+        """Publish owned records under this registered frame's source authority."""
+        return orjson.loads(
+            _call(
+                self._native.publish_projection,
+                _json(request),
+                _json(metadata),
+                field,
+                list(records_json),
+                _json(usage),
+                _json(work),
+            )
+        )
+
     def capture(
         self,
         anchors: Sequence[EventRef],
@@ -302,6 +336,20 @@ class TranscriptStore:
         for (policy_id, version), predicate in (policies or {}).items():
             self.register_classifier(policy_id, version, predicate)
 
+    @classmethod
+    def new_agent(
+        cls,
+        config: Mapping[str, Any],
+        *,
+        policies: Mapping[tuple[str, str], Callable[[TranscriptEvent], bool]] | None = None,
+    ) -> TranscriptStore:
+        """Own append-only agent sources whose existing bytes remain immutable."""
+        store = cls.__new__(cls)
+        store._native = _native.NativeSnapshotStore.new_agent(_json(config))
+        for (policy_id, version), predicate in (policies or {}).items():
+            store.register_classifier(policy_id, version, predicate)
+        return store
+
     def register_tool_registry(self, specs: Sequence[Mapping[str, Any]], *, context: CallContext) -> str:
         return _call(self._native.register_tool_registry, _json(specs), _json(context))
 
@@ -320,6 +368,48 @@ class TranscriptStore:
     ) -> None:
         _call(self._native.register_mining_policy, policy_id, version, spec_json, list(callable_formats))
 
+    def run_registered_review(
+        self,
+        path: str | Path,
+        *,
+        policy: Mapping[str, Any],
+        mining_spec_json: str,
+        callable_formats: Sequence[tuple[str, Any, Any, bool]],
+        first_user_marker: str,
+        prose_marker: Callable[[TranscriptEvent], object],
+        request: Mapping[str, Any],
+        context: CallContext,
+        cancellation: CancellationToken,
+        handler: Callable[[TranscriptSnapshot], Any],
+    ) -> Any:
+        """Run a bounded handler over registered native facts, or return preparation progress.
+
+        Repeating the same registered request resumes native preparation. The handler
+        runs only when preparation is complete, and its snapshot closes on return.
+        """
+        def consume(native: Any) -> Any:
+            snapshot = TranscriptSnapshot(native)
+            try:
+                return handler(snapshot)
+            except SnapshotIncomplete as error:
+                error.usage = dict(snapshot.usage)
+                error.work = dict(snapshot.work)
+                raise
+
+        return _call(
+            self._native.run_registered_review,
+            str(path),
+            _json(policy),
+            mining_spec_json,
+            list(callable_formats),
+            first_user_marker,
+            prose_marker,
+            _json(request),
+            _json(context),
+            cancellation._native,
+            consume,
+        )
+
     @property
     def owner_epoch(self) -> str:
         return self._native.owner_epoch()
@@ -331,6 +421,12 @@ class TranscriptStore:
         self, request: Mapping[str, Any], *, cancellation: CancellationToken, context: CallContext
     ) -> Mapping[str, Any]:
         return orjson.loads(_call(self._native.request, _json(request), _json(context), cancellation._native))
+
+    def request_agent(
+        self, request: Mapping[str, Any], *, cancellation: CancellationToken, context: CallContext
+    ) -> Mapping[str, Any]:
+        """Request an immutable-prefix agent source from this agent store."""
+        return orjson.loads(_call(self._native.request_agent, _json(request), _json(context), cancellation._native))
 
     def prepare_classifier(
         self,
