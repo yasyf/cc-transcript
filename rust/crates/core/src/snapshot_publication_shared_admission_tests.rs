@@ -64,7 +64,7 @@ fn shared_publication_admission_counts_raw_allocations_once_and_reuses_source() 
         );
     }
     assert!(ready);
-    let headroom = 96 * 1024;
+    let headroom = MAX_REPLY_BYTES * 2 + 96 * 1024;
     let crowded = store
         .reserve_projection(
             &owner,
