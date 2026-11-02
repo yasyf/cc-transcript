@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from cc_transcript import _native
-from cc_transcript.tools import ToolCallBase
+from cc_transcript.tools import FallbackCall
 
 if TYPE_CHECKING:
     from cc_transcript.activity import SessionActivity, Turn
-    from cc_transcript.tools import FallbackCall, ToolCall
+    from cc_transcript.tools import ToolCall
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,11 +46,11 @@ def render_tool_call(call: ToolCall | FallbackCall, *, budget: Budget) -> str:
         >>> render_tool_call(parse_tool_call("Bash", {"command": "ls"}), budget=Budget())
         'ls'
     """
-    if isinstance(call, ToolCallBase):
-        return _native.render_tool_call_view(call, budget.turn_chars, budget.tool_chars)
-    return _native.render_tool_call(
-        call.name, json.dumps(call.raw, default=str), budget.turn_chars, budget.tool_chars
-    )
+    if isinstance(call, FallbackCall):
+        return _native.render_tool_call(
+            call.name, json.dumps(call.raw, default=str), budget.turn_chars, budget.tool_chars
+        )
+    return _native.render_tool_call_view(call, budget.turn_chars, budget.tool_chars)
 
 
 def hunk_lines(old: str, new: str, *, budget: Budget) -> tuple[str, ...]:

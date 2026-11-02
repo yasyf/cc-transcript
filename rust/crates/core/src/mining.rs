@@ -652,7 +652,9 @@ impl<'a> ToolUseIndex<'a> {
     fn get(&self, id: &str) -> Option<&'a ToolUseBlock> {
         match self {
             Self::Full(uses) => uses.get(id).copied(),
-            Self::Indexed(uses) => uses.get(id).and_then(|rows| rows.last().map(|(_, tool)| tool)),
+            Self::Indexed(uses) => uses
+                .get(id)
+                .and_then(|rows| rows.last().map(|(_, tool)| tool)),
         }
     }
 }
@@ -2003,11 +2005,19 @@ mod tests {
 
     #[test]
     fn indexed_suffix_undo_preserves_reference_and_owned_accounting() {
-        let mut spec = mining_spec(&[DETECTOR_TRANSCRIPT_MESSAGE, DETECTOR_PLAN_REENTRY, DETECTOR_INTERRUPT]);
+        let mut spec = mining_spec(&[
+            DETECTOR_TRANSCRIPT_MESSAGE,
+            DETECTOR_PLAN_REENTRY,
+            DETECTOR_INTERRUPT,
+        ]);
         spec.edit_tools.insert("Edit".into());
         let rows = vec![
             tool_entry("edit", "shared", "Edit", sonic_rs::json!({})),
-            Entry::Mode(crate::types::ModeEntry { session_id: "s".into(), channel: crate::types::ModeChannel::Mode, value: "plan".into() }),
+            Entry::Mode(crate::types::ModeEntry {
+                session_id: "s".into(),
+                channel: crate::types::ModeChannel::Mode,
+                value: "plan".into(),
+            }),
             parsed_entry(sonic_rs::json!({
                 "type":"user", "sessionId":"s", "uuid":"marker", "timestamp":"2026-11-02T00:00:00Z",
                 "message":{"role":"user", "content":[{"type":"tool_result", "tool_use_id":"shared", "content":"[Request interrupted by user]"}]}
@@ -2018,16 +2028,53 @@ mod tests {
         ];
         for first in 0..=rows.len() {
             let mut index = ReviewMiningIndex::new(&spec).unwrap();
-            index.append(&rows.iter().collect::<Vec<_>>(), &spec).unwrap();
-            index.process(&spec, &HashMap::new(), index_limits(), &Cancellation::default(), &mut MiningUsage::default()).unwrap();
+            index
+                .append(&rows.iter().collect::<Vec<_>>(), &spec)
+                .unwrap();
+            index
+                .process(
+                    &spec,
+                    &HashMap::new(),
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut MiningUsage::default(),
+                )
+                .unwrap();
             index.truncate(first, &spec).unwrap();
             assert_eq!(index.accounted_bytes(), index.audited_bytes());
-            index.process(&spec, &HashMap::new(), index_limits(), &Cancellation::default(), &mut MiningUsage::default()).unwrap();
+            index
+                .process(
+                    &spec,
+                    &HashMap::new(),
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut MiningUsage::default(),
+                )
+                .unwrap();
             indexed_equals_reference(&index, &rows[..first], &spec);
-            assert_eq!(index.tool_position("shared"), if first == 0 { None } else if first == rows.len() { Some(5) } else { Some(0) });
+            assert_eq!(
+                index.tool_position("shared"),
+                if first == 0 {
+                    None
+                } else if first == rows.len() {
+                    Some(5)
+                } else {
+                    Some(0)
+                }
+            );
             assert_eq!(index.last_result("shared"), (first > 2).then_some(2));
-            index.append(&rows[first..].iter().collect::<Vec<_>>(), &spec).unwrap();
-            index.process(&spec, &HashMap::new(), index_limits(), &Cancellation::default(), &mut MiningUsage::default()).unwrap();
+            index
+                .append(&rows[first..].iter().collect::<Vec<_>>(), &spec)
+                .unwrap();
+            index
+                .process(
+                    &spec,
+                    &HashMap::new(),
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut MiningUsage::default(),
+                )
+                .unwrap();
             indexed_equals_reference(&index, &rows, &spec);
             assert_eq!(index.accounted_bytes(), index.audited_bytes());
         }
@@ -2037,10 +2084,22 @@ mod tests {
     fn indexed_tail_replacement_and_warm_work_do_not_visit_the_prefix() {
         let spec = mining_spec(&[DETECTOR_TRANSCRIPT_MESSAGE]);
         for count in [32, 10000] {
-            let mut rows = (0..count).map(|n| user_entry(&format!("u-{n}"), "message")).collect::<Vec<_>>();
+            let mut rows = (0..count)
+                .map(|n| user_entry(&format!("u-{n}"), "message"))
+                .collect::<Vec<_>>();
             let mut index = ReviewMiningIndex::new(&spec).unwrap();
-            index.append(&rows.iter().collect::<Vec<_>>(), &spec).unwrap();
-            index.process(&spec, &HashMap::new(), index_limits(), &Cancellation::default(), &mut MiningUsage::default()).unwrap();
+            index
+                .append(&rows.iter().collect::<Vec<_>>(), &spec)
+                .unwrap();
+            index
+                .process(
+                    &spec,
+                    &HashMap::new(),
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut MiningUsage::default(),
+                )
+                .unwrap();
             let changed = index.truncate(count - 1, &spec).unwrap();
             assert!(changed.revisited.is_empty());
             assert_eq!(index.pending_count(), 0);
@@ -2050,12 +2109,36 @@ mod tests {
             index.append(&[&rows[count - 1]], &spec).unwrap();
             assert!(index.accounted_bytes() <= before + bound);
             let mut usage = MiningUsage::default();
-            index.process(&spec, &HashMap::new(), index_limits(), &Cancellation::default(), &mut usage).unwrap();
+            index
+                .process(
+                    &spec,
+                    &HashMap::new(),
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut usage,
+                )
+                .unwrap();
             assert_eq!(usage.events, 1);
             indexed_equals_reference(&index, &rows, &spec);
             assert_eq!(index.accounted_bytes(), index.audited_bytes());
-            index.process(&spec, &HashMap::new(), index_limits(), &Cancellation::default(), &mut usage).unwrap();
-            assert_eq!((usage.events, usage.input_bytes, usage.items, usage.output_bytes), (0, 0, 0, 0));
+            index
+                .process(
+                    &spec,
+                    &HashMap::new(),
+                    index_limits(),
+                    &Cancellation::default(),
+                    &mut usage,
+                )
+                .unwrap();
+            assert_eq!(
+                (
+                    usage.events,
+                    usage.input_bytes,
+                    usage.items,
+                    usage.output_bytes
+                ),
+                (0, 0, 0, 0)
+            );
         }
     }
 

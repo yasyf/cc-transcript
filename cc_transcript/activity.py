@@ -353,17 +353,18 @@ class ActivityLift:
             turns.extend(grown[1:])
         else:
             turns.extend(grown)
-        repairs: dict[int, dict[int, UserEvent]] = {}
+        repairs: dict[int, dict[int, tuple[ToolUseId, UserEvent]]] = {}
         for tool_use_id, result_idx in lifted["results"]:
             for turn_index, position in self._uses.get(tool_use_id, ()):
-                repairs.setdefault(turn_index, {})[position] = tail[result_idx]
+                repairs.setdefault(turn_index, {})[position] = (tool_use_id, tail[result_idx])
             self._results[tool_use_id] = tail[result_idx]
         for turn_index, at in repairs.items():
             turns[turn_index] = repaired(turns[turn_index], at)
-        for turn in grown:
+        for turn, skeleton in zip(grown, lifted["turns"], strict=True):
             base = len(turns[turn.index].tool_uses) - len(turn.tool_uses)
-            for position, use in enumerate(turn.tool_uses, base):
-                self._uses[use.ref.tool_use_id] = (*self._uses.get(use.ref.tool_use_id, ()), (turn.index, position))
+            for position, use in enumerate(skeleton["tool_uses"], base):
+                tool_use_id: ToolUseId = use["tool_use_id"]
+                self._uses[tool_use_id] = (*self._uses.get(tool_use_id, ()), (turn.index, position))
         self._activity = SessionActivity(session_id=self._session_id, turns=tuple(turns))
         return self._activity
 
@@ -437,12 +438,12 @@ def continued(turn: Turn, tail: Turn) -> Turn:
     )
 
 
-def repaired(turn: Turn, at: Mapping[int, UserEvent]) -> Turn:
+def repaired(turn: Turn, at: Mapping[int, tuple[ToolUseId, UserEvent]]) -> Turn:
     uses = list(turn.tool_uses)
-    for position, event in at.items():
+    for position, (tool_use_id, event) in at.items():
         uses[position] = replace(
             uses[position],
-            result=result_block(event, uses[position].ref.tool_use_id),
+            result=result_block(event, tool_use_id),
             result_ts=event.meta.timestamp,
         )
     return replace(turn, tool_uses=tuple(uses))

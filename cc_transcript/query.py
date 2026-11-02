@@ -430,9 +430,9 @@ class ToolCallQuery:
         """
         return self.where(
             lambda use: (
-                isinstance(use.call.raw, Mapping)
+                isinstance(raw := use.call.raw, Mapping)
                 and all(
-                    key in use.call.raw and input_rule_matches(rule, use.call.raw[key]) for key, rule in rules.items()
+                    key in raw and input_rule_matches(rule, raw[key]) for key, rule in rules.items()
                 )
             )
         )
