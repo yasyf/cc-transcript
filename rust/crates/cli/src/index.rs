@@ -17,12 +17,20 @@ struct Stamp {
     mtime: f64,
     size: u64,
     inode: u64,
+    link: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Epoch {
+    volume: String,
+    root: u64,
+    event: u64,
 }
 
 #[derive(Debug, PartialEq)]
 struct Index {
     root: PathBuf,
-    epoch: Option<(String, u64)>,
+    epoch: Option<Epoch>,
     records: BTreeMap<PathBuf, Stamp>,
 }
 
@@ -76,11 +84,18 @@ fn stamp(path: &Path) -> Option<Stamp> {
         .as_bytes()
         .ends_with(b".jsonl")
         .then_some(())?;
-    let metadata = fs::metadata(path).ok().filter(fs::Metadata::is_file)?;
-    Some(Stamp {
+    let entry = fs::symlink_metadata(path).ok()?;
+    let link = entry.is_symlink();
+    let metadata = if link {
+        fs::metadata(path).ok()?
+    } else {
+        entry
+    };
+    metadata.is_file().then(|| Stamp {
         mtime: mtime_secs(&metadata),
         size: metadata.len(),
         inode: metadata.ino(),
+        link,
     })
 }
 
@@ -141,32 +156,38 @@ mod persisted {
 
     use sha2::{Digest, Sha256};
 
-    use super::{fsevents, full, stamp, walk, Index, Stamp};
+    use super::{fsevents, full, stamp, walk, Epoch, Index, Stamp};
 
-    const MAGIC: &[u8] = b"cc-transcript-index 1\n";
+    const MAGIC: &[u8] = b"cc-transcript-index 2\n";
     const KEPT_INDEXES: usize = 8;
 
     pub(super) fn refreshed(root: &Path, store: &Path) -> Index {
         let file = index_file(store, root);
-        let uuid = fs::metadata(root)
+        let volume = fs::metadata(root)
             .ok()
-            .and_then(|metadata| fsevents::device_uuid(metadata.dev()));
+            .and_then(|metadata| Some((fsevents::device_uuid(metadata.dev())?, metadata.ino())));
         let upto = fsevents::current_event_id();
         let stored = fs::read(&file)
             .ok()
             .and_then(|bytes| decode(&bytes))
             .filter(|index| index.root == root);
-        let mut index = match (stored, &uuid) {
-            (Some(mut index), Some(uuid)) => match index.epoch.take() {
-                Some((stored, since)) if stored == *uuid => match fsevents::changes(root, since) {
-                    Some(changes) if apply(&mut index, root, changes) => index,
-                    _ => full(root),
-                },
+        let mut index = match (stored, &volume) {
+            (Some(mut index), Some((uuid, inode))) => match index.epoch.take() {
+                Some(epoch) if epoch.volume == *uuid && epoch.root == *inode => {
+                    match fsevents::changes(root, epoch.event) {
+                        Some(changes) if apply(&mut index, root, changes) => index,
+                        _ => full(root),
+                    }
+                }
                 _ => full(root),
             },
             _ => full(root),
         };
-        index.epoch = uuid.map(|uuid| (uuid, upto));
+        index.epoch = volume.map(|(volume, root)| Epoch {
+            volume,
+            root,
+            event: upto,
+        });
         save(store, &file, &index);
         index
     }
@@ -194,24 +215,43 @@ mod persisted {
                 }
                 continue;
             };
+            let structural =
+                rescan || flags & fsevents::ITEM_IS_DIR != 0 && flags & fsevents::RESTRUCTURED != 0;
             if relative.as_os_str().is_empty() {
-                if rescan {
+                if structural {
                     return false;
                 }
                 continue;
             }
-            let directory = flags & fsevents::ITEM_IS_DIR != 0;
-            if rescan || directory && flags & fsevents::RESTRUCTURED != 0 {
+            if structural {
                 index
                     .records
                     .retain(|known, _| !known.starts_with(relative));
-                index.records.extend(walk(root, relative));
-            } else if !directory {
+            } else {
                 index.records.remove(relative);
-                if let Some(stamp) = stamp(&path) {
-                    index.records.insert(relative.to_owned(), stamp);
-                }
             }
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    if structural {
+                        index.records.extend(walk(root, relative));
+                    }
+                }
+                _ => index
+                    .records
+                    .extend(stamp(&path).map(|stamp| (relative.to_owned(), stamp))),
+            }
+        }
+        let links: Vec<PathBuf> = index
+            .records
+            .iter()
+            .filter(|(_, stamp)| stamp.link)
+            .map(|(relative, _)| relative.clone())
+            .collect();
+        for relative in links {
+            match stamp(&root.join(&relative)) {
+                Some(stamp) => index.records.insert(relative, stamp),
+                None => index.records.remove(&relative),
+            };
         }
         true
     }
@@ -246,14 +286,27 @@ mod persisted {
             out.extend_from_slice(bytes);
         };
         field(&mut out, index.root.as_os_str().as_bytes());
-        let (uuid, id) = index.epoch.clone().unwrap_or_default();
-        field(&mut out, uuid.as_bytes());
-        out.extend_from_slice(&id.to_le_bytes());
-        out.extend_from_slice(&(index.records.len() as u64).to_le_bytes());
+        let epoch = index.epoch.as_ref();
+        field(
+            &mut out,
+            epoch.map_or(&b""[..], |epoch| epoch.volume.as_bytes()),
+        );
+        for word in [
+            epoch.map_or(0, |epoch| epoch.root),
+            epoch.map_or(0, |epoch| epoch.event),
+            index.records.len() as u64,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
         for (path, stamp) in &index.records {
-            out.extend_from_slice(&stamp.mtime.to_bits().to_le_bytes());
-            out.extend_from_slice(&stamp.size.to_le_bytes());
-            out.extend_from_slice(&stamp.inode.to_le_bytes());
+            for word in [
+                stamp.mtime.to_bits(),
+                stamp.size,
+                stamp.inode,
+                u64::from(stamp.link),
+            ] {
+                out.extend_from_slice(&word.to_le_bytes());
+            }
             field(&mut out, path.as_os_str().as_bytes());
         }
         out
@@ -262,19 +315,25 @@ mod persisted {
     pub(super) fn decode(bytes: &[u8]) -> Option<Index> {
         let mut fields = Fields(bytes.strip_prefix(MAGIC)?);
         let root = PathBuf::from(OsStr::from_bytes(fields.field()?));
-        let uuid = String::from_utf8(fields.field()?.to_vec()).ok()?;
-        let id = fields.word()?;
+        let volume = String::from_utf8(fields.field()?.to_vec()).ok()?;
+        let epoch = Epoch {
+            volume,
+            root: fields.word()?,
+            event: fields.word()?,
+        };
         let mut records = BTreeMap::new();
         for _ in 0..fields.word()? {
-            let mtime = f64::from_bits(fields.word()?);
-            let size = fields.word()?;
-            let inode = fields.word()?;
-            let path = PathBuf::from(OsStr::from_bytes(fields.field()?));
-            records.insert(path, Stamp { mtime, size, inode });
+            let stamp = Stamp {
+                mtime: f64::from_bits(fields.word()?),
+                size: fields.word()?,
+                inode: fields.word()?,
+                link: fields.word()? != 0,
+            };
+            records.insert(PathBuf::from(OsStr::from_bytes(fields.field()?)), stamp);
         }
         fields.0.is_empty().then_some(Index {
             root,
-            epoch: (!uuid.is_empty()).then_some((uuid, id)),
+            epoch: (!epoch.volume.is_empty()).then_some(epoch),
             records,
         })
     }
@@ -517,13 +576,18 @@ mod tests {
     fn encoded_indexes_round_trip_and_reject_truncation() {
         let index = Index {
             root: PathBuf::from("/r"),
-            epoch: Some(("uuid".into(), 42)),
+            epoch: Some(Epoch {
+                volume: "uuid".into(),
+                root: 9,
+                event: 42,
+            }),
             records: BTreeMap::from([(
                 PathBuf::from("p/a.jsonl"),
                 Stamp {
                     mtime: 1.5,
                     size: 3,
                     inode: 7,
+                    link: true,
                 },
             )]),
         };
@@ -535,30 +599,44 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn refreshes_follow_appends_creations_renames_and_deletions() {
+    fn refreshes_follow_appends_creations_renames_replacements_and_deletions() {
         use std::io::Write;
 
+        let append = |path: &Path, text: &str| {
+            fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap()
+        };
         let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
         let store = tempfile::tempdir().unwrap();
         let canonical = fs::canonicalize(root.path()).unwrap();
         write(&root.path().join("p/a.jsonl"), "a");
         write(&root.path().join("p/b.jsonl"), "b");
+        write(&root.path().join("p/d.jsonl/inner.jsonl"), "i");
+        write(&outside.path().join("t.jsonl"), "t");
+        std::os::unix::fs::symlink(
+            outside.path().join("t.jsonl"),
+            root.path().join("p/l.jsonl"),
+        )
+        .unwrap();
         assert_eq!(
             persisted::refreshed(&canonical, store.path()).records.len(),
-            2
+            4
         );
         let file = persisted::index_file(store.path(), &canonical);
         assert!(persisted::decode(&fs::read(&file).unwrap())
             .unwrap()
             .epoch
             .is_some());
-        fs::OpenOptions::new()
-            .append(true)
-            .open(root.path().join("p/a.jsonl"))
-            .unwrap()
-            .write_all(b"ppend")
-            .unwrap();
+        append(&root.path().join("p/a.jsonl"), "ppend");
+        append(&outside.path().join("t.jsonl"), "ail");
         fs::remove_file(root.path().join("p/b.jsonl")).unwrap();
+        fs::remove_dir_all(root.path().join("p/d.jsonl")).unwrap();
+        write(&root.path().join("p/d.jsonl"), "dd");
         write(&root.path().join("q/s/subagents/c.jsonl"), "ccc");
         fs::rename(root.path().join("q"), root.path().join("r")).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -567,6 +645,8 @@ mod tests {
             sizes(refreshed),
             vec![
                 (PathBuf::from("p/a.jsonl"), 6),
+                (PathBuf::from("p/d.jsonl"), 2),
+                (PathBuf::from("p/l.jsonl"), 4),
                 (PathBuf::from("r/s/subagents/c.jsonl"), 3),
             ]
         );
