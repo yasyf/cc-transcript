@@ -174,9 +174,12 @@ mod persisted {
         let mut index = match (stored, &volume) {
             (Some(mut index), Some((uuid, inode))) => match index.epoch.take() {
                 Some(epoch) if epoch.volume == *uuid && epoch.root == *inode => {
-                    match fsevents::changes(root, epoch.event) {
-                        Some(changes) if apply(&mut index, root, changes) => index,
-                        _ => full(root),
+                    let replayed = fsevents::changes(root, epoch.event)
+                        .is_some_and(|changes| apply(&mut index, root, changes));
+                    if replayed {
+                        index
+                    } else {
+                        full(root)
                     }
                 }
                 _ => full(root),
