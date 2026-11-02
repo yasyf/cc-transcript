@@ -26,6 +26,8 @@ jobs:
           components: rustfmt
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Format check (rustfmt)
         run: cargo fmt --check
