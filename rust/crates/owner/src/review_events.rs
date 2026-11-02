@@ -148,10 +148,11 @@ pub fn page(scope: &mut Scope<'_>, request: &Value, id: &str) -> Result<Value, F
         records.push(encoded);
         next += 1;
     }
+    let position = next.max(fresh);
     let watermark = Mark {
         source: source(&snapshot),
-        position: next,
-        digest: digest(&snapshot, next).map_err(|error| scope.fail(error))?,
+        position,
+        digest: digest(&snapshot, position).map_err(|error| scope.fail(error))?,
     };
     scope.materialize(used);
     scope.checkpoint()?;
@@ -168,7 +169,7 @@ pub fn page(scope: &mut Scope<'_>, request: &Value, id: &str) -> Result<Value, F
             "fresh_start": fresh,
             "skipped": skipped,
             "watermark": watermark.encode(),
-            "caught_up": next == snapshot.event_count,
+            "caught_up": position == snapshot.event_count,
             "reset": token.is_some() && resumed.is_none(),
         },
         "cursor": null,

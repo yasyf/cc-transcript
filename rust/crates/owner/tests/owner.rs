@@ -215,6 +215,36 @@ fn review_events_page_only_events_past_the_watermark() {
 }
 
 #[test]
+fn a_page_spent_on_context_never_moves_the_watermark_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("session.jsonl");
+    std::fs::write(
+        &path,
+        (0..300)
+            .map(|index| user(&format!("u{index}")))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let mut owner = Owner::start();
+    let handle = owner.acquire(&path);
+    let first = owner.review_events(&handle, json!(null), 0);
+    assert_eq!(positions(&first), (0..256).collect::<Vec<_>>());
+    assert_eq!(
+        bounds(&first),
+        (json!(0), json!(0), json!(false), json!(false))
+    );
+    let replayed = owner.review_events(&handle, first["watermark"].clone(), 256);
+    assert_eq!(positions(&replayed), (0..256).collect::<Vec<_>>());
+    assert_eq!(replayed["watermark"], first["watermark"]);
+    let rest = owner.review_events(&handle, replayed["watermark"].clone(), 0);
+    assert_eq!(positions(&rest), (256..300).collect::<Vec<_>>());
+    assert_eq!(
+        bounds(&rest),
+        (json!(256), json!(256), json!(true), json!(false))
+    );
+}
+
+#[test]
 fn unsupported_domain_operation_fails_with_the_python_failure_envelope() {
     let mut owner = Owner::start();
     let response = owner.call(
