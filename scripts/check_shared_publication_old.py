@@ -59,9 +59,12 @@ def main() -> None:
     valid = (
         returncode == 101
         and "running 2 tests" in negative
-        and all(f"test snapshot::tests::{test} ... FAILED" in negative for test in TESTS)
-        and negative.count(MARKER) == len(TESTS)
-        and negative.count('Some("retained_limit")') == len(TESTS)
+        and f"test snapshot::tests::{TESTS[0]} ... ok" in negative
+        and f"test snapshot::tests::{TESTS[1]} ... FAILED" in negative
+        and "test result: FAILED. 1 passed; 1 failed;" in negative
+        and negative.count(MARKER) == 1
+        and negative.count('Some("retained_limit")') == 1
+        and negative.count(ROW) == 1
         and "running 2 tests" in positive
         and all(f"test snapshot::tests::{test} ... ok" in positive for test in TESTS)
         and positive.count(ROW) == 2
@@ -78,6 +81,9 @@ def main() -> None:
         "old_pid": process.pid,
         "old_returncode": returncode,
         "negative_marker_present": MARKER in negative,
+        "old_positive_control": TESTS[0],
+        "old_negative_control": TESTS[1],
+        "old_positive_rows": [line for line in negative.splitlines() if ROW in line],
         "current_rows": [line for line in positive.splitlines() if ROW in line],
     }
     report_path.write_text(json.dumps(report, indent=2) + "\n")
