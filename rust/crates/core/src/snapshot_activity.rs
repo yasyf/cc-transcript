@@ -9,15 +9,16 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::activity::{Hunk, LiftedSession, ToolUse, Turn, lift_session_index_tail, lower_edit};
+use crate::activity::{lift_session_index_tail, lower_edit, Hunk, LiftedSession, ToolUse, Turn};
 use crate::parse::pushed_capacity;
 #[cfg(test)]
 use crate::snapshot::NativeStore;
 use crate::snapshot_ledger::{arc_bytes, arc_control_bytes, arc_slice_bytes};
 #[cfg(test)]
 use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror};
-use crate::snapshot_memory::{MemoryCharge, block_charge, value_charge};
-use crate::snapshot_persistent::{Tree, Vector, string_allocation};
+use crate::snapshot_memory::{block_charge, value_charge, MemoryCharge};
+use crate::snapshot_persistent::{string_allocation, Tree, Vector};
+use crate::toolcall::{parse_tool_call, ToolCall};
 #[cfg(test)]
 use crate::toolcall::{
     ApplyPatchCall, BashCall, CodeModeCall, EditCall, EditSpan, ExitPlanModeCall, GlobCall,
@@ -25,7 +26,6 @@ use crate::toolcall::{
     SpanEditCall, TaskCall, TaskCreateCall, TaskUpdateCall, UpdatePlanCall, WorkflowCall,
     WriteCall, WriteStdinCall,
 };
-use crate::toolcall::{ToolCall, parse_tool_call};
 use crate::types::{ContentBlock, Entry};
 
 #[cfg(test)]
@@ -394,6 +394,8 @@ impl ActivityIndex {
         }
         for undo in self.undo.range(first.min(self.undo.len())..self.undo.len()) {
             self.allocation_owners
+                .get_mut()
+                .expect("shared allocation owners")
                 .insert(Arc::as_ptr(undo) as usize, undo.owned_bytes());
         }
     }
@@ -2076,7 +2078,7 @@ mod tests {
     use super::*;
     use crate::activity::lift_session_refs;
     use crate::parse::parse_entry;
-    use crate::toolcall::{McpToolSpec, SpanEditMap, ToolRegistrySnapshot, with_registry};
+    use crate::toolcall::{with_registry, McpToolSpec, SpanEditMap, ToolRegistrySnapshot};
 
     fn entry(raw: &str) -> Entry {
         parse_entry(sonic_rs::from_str(raw).unwrap()).unwrap()
@@ -2325,11 +2327,9 @@ mod tests {
         assert_eq!(next.work().parsed_tool_calls, 0);
         assert!(Arc::ptr_eq(&prior.turns[0], &next.turns[0]));
         assert!(!Arc::ptr_eq(&prior.turns[1], &next.turns[1]));
-        assert!(
-            prior.project_turn(&refs[..3], 0).unwrap().tool_uses[0]
-                .result
-                .is_none()
-        );
+        assert!(prior.project_turn(&refs[..3], 0).unwrap().tool_uses[0]
+            .result
+            .is_none());
         assert!(
             next.project_turn(&refs, 0).unwrap().tool_uses[0]
                 .result
@@ -2536,11 +2536,9 @@ mod tests {
             *visited.borrow(),
             std::collections::HashSet::from([0, 1, 3])
         );
-        assert!(
-            index
-                .project_turn_with(2, |_| panic!("out-of-range turn reads no entries"))
-                .is_none()
-        );
+        assert!(index
+            .project_turn_with(2, |_| panic!("out-of-range turn reads no entries"))
+            .is_none());
     }
 
     #[test]

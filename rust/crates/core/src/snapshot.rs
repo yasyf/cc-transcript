@@ -16,19 +16,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sonic_rs::JsonType;
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
-use crate::gateway::{Provider, sniff_provider};
+use crate::gateway::{sniff_provider, Provider};
 use crate::snapshot_activity::ActivityIndex;
 use crate::snapshot_index_allocations::{AllocationOwner, RegistryWitness};
 use crate::snapshot_ledger::{
-    Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered,
-    MUTEX_STORAGE_BYTES, RetainedLedger, Table, TicketKey, Work, arc_bytes, arc_slice_bytes,
-    charged_bytes, deque_capacity_for, deque_growth, hashbrown_tier, map_capacity_for, map_growth,
-    set_capacity_for, set_growth, vec_capacity_for, vec_growth,
+    arc_bytes, arc_slice_bytes, charged_bytes, deque_capacity_for, deque_growth, hashbrown_tier,
+    map_capacity_for, map_growth, set_capacity_for, set_growth, vec_capacity_for, vec_growth,
+    Anchor, Charge, DeadlineIndex, ExpiryIndex, LedgerEvent, LedgerHook, Ledgered, RetainedLedger,
+    Table, TicketKey, Work, MUTEX_STORAGE_BYTES,
 };
 #[cfg(test)]
-use crate::snapshot_ledger::{MUTEX_STORAGE_MIRROR, Reserved, arc_mirror, arc_slice_mirror};
+use crate::snapshot_ledger::{arc_mirror, arc_slice_mirror, Reserved, MUTEX_STORAGE_MIRROR};
 use crate::snapshot_memory::{
-    MemoryCharge, SourceArena, arena_bytes, arena_charge, dom_parse_bound, entry_charge,
+    arena_bytes, arena_charge, dom_parse_bound, entry_charge, MemoryCharge, SourceArena,
 };
 use crate::snapshot_prepared::FactsNeed;
 use crate::snapshot_prepared_disk::PreparedDiskKey;
@@ -2768,12 +2768,11 @@ impl StoreState {
             if !self.source_spines.contains_key(&physical) {
                 self.source_spines.insert(physical, BTreeSet::new());
             }
-            assert!(
-                self.source_spines
-                    .get_mut(&physical)
-                    .expect("source views")
-                    .insert(SourceView::of(&snapshot))
-            );
+            assert!(self
+                .source_spines
+                .get_mut(&physical)
+                .expect("source views")
+                .insert(SourceView::of(&snapshot)));
             self.source_view_nodes += 1;
             self.generations
                 .get_mut(&key)
@@ -5198,11 +5197,7 @@ impl NativeStore {
                 let seed = Self::carried(&mut state, &lineage, &snapshot.chunks);
                 let mut stage = ClassifierStage::seeded(seed.as_deref());
                 let retain_committed = snapshot.provisional_tail && stage.indexed == committed;
-                let ownership_reserve = if retain_committed {
-                    stage.activity.pending_allocation_reservation()
-                } else {
-                    0
-                };
+                let ownership_reserve = stage.activity.pending_allocation_reservation();
                 let accounted = stage.accounted_bytes();
                 let stored = key.clone();
                 let additional = CLASSIFIER_SLOT_BYTES
@@ -5216,8 +5211,8 @@ impl NativeStore {
                         .shared
                         .growth(seed.iter().flat_map(|seed| seed.anchors()));
                 self.admit_memory(&mut state, context, additional)?;
+                stage.activity.prepare_shared_ownership();
                 if retain_committed {
-                    stage.activity.prepare_shared_ownership();
                     stage.committed = Some(stage.activity.clone());
                 }
                 let accounted = stage.accounted_bytes();
@@ -15674,12 +15669,10 @@ mod tests {
         assert_eq!(*batches.lock().unwrap(), vec![0..1]);
         let state = store.state.lock().unwrap();
         assert!(state.waiters.is_empty());
-        assert!(
-            state
-                .classifier_stages
-                .values()
-                .all(|slot| Arc::strong_count(slot) == 1)
-        );
+        assert!(state
+            .classifier_stages
+            .values()
+            .all(|slot| Arc::strong_count(slot) == 1));
     }
 
     #[test]
@@ -18082,11 +18075,9 @@ mod tests {
         assert_eq!(cache_reads(&second), (Some(0), Some(0), Some(0)));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
         assert_eq!(store.fact_read_waits.load(Ordering::Relaxed), 1);
-        assert!(
-            resident_member_facts(&store, &members)
-                .iter()
-                .all(Option::is_some)
-        );
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
         assert!(!store.lock_state().fact_read_in_flight);
         store.assert_conserved();
     }
@@ -18133,11 +18124,9 @@ mod tests {
         assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         assert_eq!(cache_reads(&cancelled), (Some(0), Some(0), Some(0)));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
-        assert!(
-            resident_member_facts(&store, &members)
-                .iter()
-                .all(Option::is_some)
-        );
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
         assert!(!store.lock_state().fact_read_in_flight);
         store.assert_conserved();
     }
@@ -18177,11 +18166,9 @@ mod tests {
         assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         assert_eq!(cache_reads(&expired), (Some(0), Some(0), Some(0)));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 1);
-        assert!(
-            resident_member_facts(&store, &members)
-                .iter()
-                .all(Option::is_some)
-        );
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
         assert!(!store.lock_state().fact_read_in_flight);
         store.assert_conserved();
     }
@@ -18271,11 +18258,9 @@ mod tests {
         assert_eq!(cache_reads(&first), (Some(1), Some(indexed), Some(0)));
         assert_eq!(cache_reads(&second).0, Some(1));
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
-        assert!(
-            resident_member_facts(&store, &members)
-                .iter()
-                .all(Option::is_some)
-        );
+        assert!(resident_member_facts(&store, &members)
+            .iter()
+            .all(Option::is_some));
         assert!(!store.lock_state().fact_read_in_flight);
         store.assert_conserved();
     }
@@ -18325,11 +18310,9 @@ mod tests {
             assert_eq!(reused["data"]["complete"].as_bool(), Some(true));
             assert_eq!(cache_reads(&reused), (Some(1), Some(indexed), Some(0)));
             assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 2);
-            assert!(
-                resident_member_facts(&store, &members)
-                    .iter()
-                    .all(Option::is_some)
-            );
+            assert!(resident_member_facts(&store, &members)
+                .iter()
+                .all(Option::is_some));
             store.assert_conserved();
         }
     }
@@ -19428,12 +19411,10 @@ mod tests {
                 .remove_identity_facts(root.stamp.identity),
             1
         );
-        assert!(
-            store
-                .prepared_disk
-                .has_entry(&fact_entry_key(&source.path, &owner))
-                .unwrap()
-        );
+        assert!(store
+            .prepared_disk
+            .has_entry(&fact_entry_key(&source.path, &owner))
+            .unwrap());
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
         let gate = install_fact_read_gate(&store, || {});
         let (first, second) = std::thread::scope(|scope| {
@@ -19524,12 +19505,10 @@ mod tests {
                     .remove_identity_facts(root.stamp.identity),
                 1
             );
-            assert!(
-                store
-                    .prepared_disk
-                    .has_entry(&fact_entry_key(&source.path, binding))
-                    .unwrap()
-            );
+            assert!(store
+                .prepared_disk
+                .has_entry(&fact_entry_key(&source.path, binding))
+                .unwrap());
         }
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
         let gate = install_fact_read_gate(&store, || {});
@@ -19693,20 +19672,18 @@ mod tests {
         assert_eq!(store.fact_builds.load(Ordering::Relaxed), builds + 2);
         assert_eq!(resident_bindings(&store, &revised), 2);
         assert!(stale.iter().all(|facts| !Arc::ptr_eq(facts, &fresh_b.0)));
-        assert!(
-            store
-                .lock_state()
-                .touch_prepared_facts(
-                    &stale_key,
-                    root.stamp,
-                    a["registry_generation"].as_str().unwrap(),
-                    "hook",
-                    &a["authority"],
-                    &json!({"id":"native","version":"1"}),
-                    FactsNeed::Index,
-                )
-                .is_none()
-        );
+        assert!(store
+            .lock_state()
+            .touch_prepared_facts(
+                &stale_key,
+                root.stamp,
+                a["registry_generation"].as_str().unwrap(),
+                "hook",
+                &a["authority"],
+                &json!({"id":"native","version":"1"}),
+                FactsNeed::Index,
+            )
+            .is_none());
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), 0);
         drop((stale, fresh_a, fresh_b));
         store.assert_conserved();
@@ -19857,34 +19834,28 @@ mod tests {
         assert_eq!(resident_member_is_full(&store, &large), Some(false));
         ask(&large_query);
         ask(&graph(&small));
-        assert!(
-            store
-                .state
-                .lock()
-                .unwrap()
-                .has_prepared_facts(&identity(&large))
-        );
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .has_prepared_facts(&identity(&large)));
         assert_eq!(resident_member_is_full(&store, &large), Some(false));
-        assert!(
-            store
-                .state
-                .lock()
-                .unwrap()
-                .has_prepared_facts(&identity(&small))
-        );
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .has_prepared_facts(&identity(&small)));
         let writes = store.prepared_disk.stats().writes;
         let before = store.state.lock().unwrap().counters;
         ask(&large_query);
         assert_eq!(store.state.lock().unwrap().counters[1], before[1]);
         assert_eq!(store.prepared_disk.stats().writes, writes);
         assert_eq!(resident_member_is_full(&store, &large), Some(false));
-        assert!(
-            store
-                .state
-                .lock()
-                .unwrap()
-                .has_prepared_facts(&identity(&small))
-        );
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .has_prepared_facts(&identity(&small)));
     }
 
     #[test]
@@ -20372,11 +20343,9 @@ mod tests {
         assert_eq!(store.warm_records.load(Ordering::Relaxed), 1);
         assert_eq!(store.fact_builds.load(Ordering::Relaxed), 3);
         assert_eq!(store.fact_lookups.load(Ordering::Relaxed), lookups);
-        assert!(
-            !store
-                .lock_state()
-                .has_prepared_facts(&member_identity(&unrelated))
-        );
+        assert!(!store
+            .lock_state()
+            .has_prepared_facts(&member_identity(&unrelated)));
         store.assert_conserved();
     }
 
@@ -21446,13 +21415,11 @@ mod tests {
             &graph_request(
                 &root,
                 json!({"kind":"direct_sidechains","order":"forward","dispatch_ids":[]}),
-                vec![
-                    source
-                        .directory
-                        .join("absent.jsonl")
-                        .to_string_lossy()
-                        .into_owned(),
-                ],
+                vec![source
+                    .directory
+                    .join("absent.jsonl")
+                    .to_string_lossy()
+                    .into_owned()],
                 json!([]),
             ),
             &owner,
@@ -21753,14 +21720,12 @@ mod tests {
             store.request(&resume, &changed, &Cancellation::default())["status"].as_str(),
             Some("stale_cursor")
         );
-        assert!(
-            store
-                .state
-                .lock()
-                .unwrap()
-                .resolutions
-                .contains_key(&cursor)
-        );
+        assert!(store
+            .state
+            .lock()
+            .unwrap()
+            .resolutions
+            .contains_key(&cursor));
         let completed = finish(
             &store,
             store.request(&resume, &owner, &Cancellation::default()),
@@ -21902,11 +21867,9 @@ mod tests {
             .submit_classifier(&cursor, &[true, false], &owner, &Cancellation::default())
             .unwrap();
         assert_eq!(complete["complete"].as_bool(), Some(true));
-        assert!(
-            store
-                .submit_classifier(&cursor, &[true, false], &owner, &Cancellation::default())
-                .is_err()
-        );
+        assert!(store
+            .submit_classifier(&cursor, &[true, false], &owner, &Cancellation::default())
+            .is_err());
         let derived = store
             .pin(&complete["description"]["handle"], &owner)
             .unwrap();
@@ -21940,11 +21903,9 @@ mod tests {
         assert_ne!(page2["cursor"].as_str(), Some(cursor.as_str()));
         let released=store.request(&json!({"schema":SCHEMA,"id":"release-labels","operation":"release","kind":"cursor","token":page2["cursor"]}),&changed,&Cancellation::default());
         assert_eq!(released["data"]["released"].as_bool(), Some(true));
-        assert!(
-            store
-                .pin(&complete["description"]["handle"], &owner)
-                .is_ok()
-        );
+        assert!(store
+            .pin(&complete["description"]["handle"], &owner)
+            .is_ok());
     }
     #[test]
     fn label_publication_transfers_quota_and_lease_failure_rolls_back_generation() {

@@ -240,11 +240,9 @@ impl NativeStore {
             .as_ref()
             .map_or(0, RegisteredReviewInput::accounted_bytes);
         if let Some(input) = &input {
-            assert!(
-                state
-                    .cache_order
-                    .remove(&(input.touched, CacheOwner::Review(*epoch)))
-            );
+            assert!(state
+                .cache_order
+                .remove(&(input.touched, CacheOwner::Review(*epoch))));
         }
         state.transient_bytes += bytes;
         (input, ProjectionReservation { store: self, bytes })
@@ -264,11 +262,9 @@ impl NativeStore {
         self.admit_memory(&mut state, context, additional - covered)?;
         state.review_inputs.reserve_for(&key);
         input.touched = state.next_cache_touch();
-        assert!(
-            state
-                .cache_order
-                .insert((input.touched, CacheOwner::Review(key)))
-        );
+        assert!(state
+            .cache_order
+            .insert((input.touched, CacheOwner::Review(key))));
         assert!(state.review_inputs.insert(key, input).is_none());
         state.transient_bytes -= covered;
         reservation.bytes -= covered;

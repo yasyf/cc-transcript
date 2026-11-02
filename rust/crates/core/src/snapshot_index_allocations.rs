@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::snapshot_ledger::{
-    LedgerEvent, LedgerHook, MUTEX_STORAGE_BYTES, ReleaseQueue, arc_bytes,
+    arc_bytes, LedgerEvent, LedgerHook, ReleaseQueue, MUTEX_STORAGE_BYTES,
 };
 
 #[derive(Debug)]
@@ -107,12 +107,10 @@ impl AllocationOwner {
                 .pending_bytes
                 .fetch_sub(self.bytes, Ordering::AcqRel);
             let mut state = self.registry.state.lock().expect("allocation registry");
-            assert!(
-                state
-                    .owners
-                    .get(&self.id)
-                    .is_some_and(|owner| std::ptr::eq(Weak::as_ptr(&owner.owner), self))
-            );
+            assert!(state
+                .owners
+                .get(&self.id)
+                .is_some_and(|owner| std::ptr::eq(Weak::as_ptr(&owner.owner), self)));
             state.unqueue(self.id);
         }
         fresh
@@ -387,7 +385,7 @@ impl AllocationSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot_ledger::{MUTEX_STORAGE_MIRROR, arc_mirror};
+    use crate::snapshot_ledger::{arc_mirror, MUTEX_STORAGE_MIRROR};
 
     #[test]
     fn empty_registry_charge_includes_the_platform_mutex_storage() {

@@ -1,8 +1,8 @@
 use std::borrow::Borrow;
 use std::mem::size_of;
 use std::ops::{Index, Range};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::snapshot_ledger::arc_slice_bytes;
 
