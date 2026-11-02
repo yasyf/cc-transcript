@@ -85,11 +85,11 @@ fn invalid(reason: impl Into<String>) -> SnapshotError {
     SnapshotError::new(Status::InvalidRequest, reason)
 }
 
-fn mismatch() -> SnapshotError {
+pub(crate) fn mismatch() -> SnapshotError {
     invalid("input does not match snapshot schema")
 }
 
-fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, SnapshotError> {
+pub(crate) fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, SnapshotError> {
     value
         .get(key)
         .and_then(|field| field.as_str())
@@ -320,7 +320,9 @@ impl Owner {
                     ));
                 }
             }
-            let response = self.store.request(&native_input(request)?, context, cancel);
+            let response = self
+                .store
+                .request_agent(&native_input(request)?, context, cancel);
             snapshot_codec::encoded_size(&response, MAX_PAGE_BYTES)?;
             return Ok((response, ExecutionPath::CoreRequest));
         }
@@ -376,10 +378,7 @@ impl Owner {
                     "usage": scope.usage(),
                 })
             }
-            "review_events" => {
-                let mut scope = self.borrow(request, context, cancel)?;
-                review_events::page(&mut scope, request, id)?
-            }
+            "review_events" => review_events::serve(&self.store, request, context, cancel, id)?,
             _ => return Err(invalid("unregistered Captain evidence policy").into()),
         };
         Ok((response, ExecutionPath::OtherOperation))

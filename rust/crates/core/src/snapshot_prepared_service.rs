@@ -1177,13 +1177,14 @@ impl NativeStore {
         &self,
         members: &[PreparedSourceRef],
         sidechain_dirs: &[(PathBuf, Option<SourceStamp>)],
+        since: Option<i128>,
         context: &Value,
         cancel: &Cancellation,
         deadline: u64,
         absences: Option<&SidechainAbsences<'_>>,
     ) -> Result<bool, SnapshotError> {
         Ok(
-            self.validate_source_stamps(members, context, cancel, deadline)?
+            self.validate_source_stamps(members, since, context, cancel, deadline)?
                 && self.validate_sidechain_dirs(
                     sidechain_dirs,
                     context,
@@ -1197,6 +1198,7 @@ impl NativeStore {
     fn validate_source_stamps(
         &self,
         sources: &[PreparedSourceRef],
+        since: Option<i128>,
         context: &Value,
         cancel: &Cancellation,
         deadline: u64,
@@ -1207,6 +1209,14 @@ impl NativeStore {
             self.membership_metadata_checks
                 .fetch_add(1, Ordering::Relaxed);
             cancel.check(deadline)?;
+            if let Some(since) = since.filter(|since| source.stamp.mtime_ns < *since) {
+                match std::fs::metadata(&source.path) {
+                    Ok(metadata) if SourceStamp::of(&metadata).mtime_ns < since => continue,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(io_error(error)),
+                }
+            }
             let (canonical, metadata) = match dirs.resolve(&source.path) {
                 Ok(resolved) => resolved,
                 Err(error) if error.status == Status::Missing => return Ok(false),
@@ -2284,6 +2294,7 @@ impl NativeStore {
             if !self.validate_warm_membership(
                 &membership.members,
                 &membership.sidechain_dirs,
+                since,
                 context,
                 cancel,
                 remaining.deadline_unix_ms,
@@ -2861,6 +2872,7 @@ impl NativeStore {
         if cursor.next == total && cursor.input_records.as_ref().is_none_or(VecDeque::is_empty) {
             if !self.validate_source_stamps(
                 &sources,
+                None,
                 context,
                 cancel,
                 cursor.remaining.deadline_unix_ms,

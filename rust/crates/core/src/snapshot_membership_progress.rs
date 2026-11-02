@@ -308,6 +308,7 @@ impl NativeStore {
         )? || !self.validate_warm_membership(
             &membership.members,
             &membership.sidechain_dirs,
+            active_since_ns(request)?,
             context,
             cancel,
             remaining.deadline_unix_ms,
@@ -545,6 +546,7 @@ impl NativeStore {
                         || self.validate_warm_membership(
                             &cached.members,
                             &cached.sidechain_dirs,
+                            active_since_ns(request)?,
                             context,
                             cancel,
                             remaining.deadline_unix_ms,

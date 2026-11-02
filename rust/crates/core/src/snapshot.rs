@@ -17431,6 +17431,59 @@ mod tests {
     }
 
     #[test]
+    fn membership_cutoff_stats_inactive_members_and_resolves_members_appended_past_it() {
+        let source = Source::new(&format!("{}\n", user("root")));
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let sources = canonical_members(&source.directory.join("members"), &["a", "b"], "")
+            .into_iter()
+            .map(|member| {
+                std::fs::File::options()
+                    .append(true)
+                    .open(&member.path)
+                    .unwrap()
+                    .set_modified(old)
+                    .unwrap();
+                PreparedSourceRef {
+                    stamp: SourceStamp::of(&std::fs::metadata(&member.path).unwrap()),
+                    path: member.path,
+                }
+            })
+            .collect::<Vec<_>>();
+        let store = store();
+        let owner = context("a");
+        let since = Some(1_000_001 * 1_000_000_000);
+        let validate = |since: Option<i128>| {
+            let before = store.source_resolutions.load(Ordering::Relaxed);
+            let valid = store
+                .validate_source_stamps(
+                    &sources,
+                    since,
+                    &owner,
+                    &Cancellation::default(),
+                    now_ms() + 30_000,
+                )
+                .unwrap();
+            (
+                valid,
+                store.source_resolutions.load(Ordering::Relaxed) - before,
+            )
+        };
+        assert_eq!(validate(since), (true, 0));
+        assert_eq!(validate(None), (true, 2));
+        let mut appended = std::fs::File::options()
+            .append(true)
+            .open(&sources[1].path)
+            .unwrap();
+        appended.write_all(user("late").as_bytes()).unwrap();
+        appended
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000))
+            .unwrap();
+        assert_eq!(validate(since), (false, 1));
+        std::fs::remove_file(&sources[0].path).unwrap();
+        assert_eq!(validate(since), (false, 0));
+    }
+
+    #[test]
     fn source_validation_rejects_a_parent_retargeted_between_two_members() {
         let source = Source::new(&format!("{}\n", user("root")));
         let members = source.directory.join("members");
@@ -17441,6 +17494,7 @@ mod tests {
             store
                 .validate_source_stamps(
                     &sources,
+                    None,
                     &owner,
                     &Cancellation::default(),
                     now_ms() + 30_000,
@@ -17476,6 +17530,7 @@ mod tests {
         let validate = || {
             store.validate_source_stamps(
                 &sources,
+                None,
                 &owner,
                 &Cancellation::default(),
                 now_ms() + 30_000,
@@ -17502,7 +17557,7 @@ mod tests {
         let validate = |cancel: &Cancellation, deadline: u64| {
             let before = store.source_resolutions.load(Ordering::Relaxed);
             let validated = store
-                .validate_source_stamps(&sources, &owner, cancel, deadline)
+                .validate_source_stamps(&sources, None, &owner, cancel, deadline)
                 .map_err(|error| error.status);
             (
                 validated,
@@ -17549,7 +17604,7 @@ mod tests {
             assert_eq!(
                 (
                     store
-                        .validate_source_stamps(&[], &owner, &cancel, deadline)
+                        .validate_source_stamps(&[], None, &owner, &cancel, deadline)
                         .map_err(|error| error.status),
                     store
                         .validate_sidechain_dirs(&[], &owner, &cancel, deadline, None)
