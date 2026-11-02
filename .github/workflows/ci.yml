@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "57 9 * * *"
   pull_request:
     branches: [main]
 
@@ -245,7 +247,7 @@ jobs:
           path: dist/*.whl
 
   snapshot-catalog-macos:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule'
     runs-on: macos-15
     timeout-minutes: 15
     steps:
@@ -294,7 +296,7 @@ jobs:
           if-no-files-found: error
 
   snapshot-wheel:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule'
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -326,7 +328,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-15", "macos-15-intel"]') }}
+        os: ${{ fromJSON(github.event_name == 'schedule' && '["ubuntu-latest", "ubuntu-24.04-arm", "macos-15", "macos-15-intel"]' || (github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm"]')) }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
@@ -376,7 +378,7 @@ jobs:
         run: cargo test --release -p cc-transcript-core --no-default-features two_hundred_megabyte_root_completes_in_three_second_steps --lib -- --ignored --test-threads=1
 
   swift:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule'
     runs-on: macos-15
     timeout-minutes: 45
     steps:
