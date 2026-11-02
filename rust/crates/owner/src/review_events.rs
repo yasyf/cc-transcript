@@ -204,6 +204,8 @@ fn page(scope: &mut Scope<'_>, request: &Value, id: &str) -> Result<Value, Failu
         "data": {
             "kind": "review_events",
             "source_revision": revision(&snapshot),
+            "canonical_path": snapshot.canonical_path.to_string_lossy().as_ref(),
+            "mtime_ns": snapshot.stamp.mtime_ns.to_string(),
             "record_schema": "cc-transcript.event/1",
             "records_json": records,
             "event_start": start,

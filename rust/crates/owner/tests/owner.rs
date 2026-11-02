@@ -203,6 +203,21 @@ fn review_events_page_only_events_past_the_watermark() {
     );
     let watermark = first["watermark"].clone();
     let revision = first["source_revision"].clone();
+    assert_eq!(
+        first["canonical_path"],
+        json!(std::fs::canonicalize(&path).unwrap())
+    );
+    assert_eq!(
+        first["mtime_ns"],
+        json!(std::fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string())
+    );
     let idle = owner.review_events(&path, watermark.clone(), 0);
     assert!(positions(&idle).is_empty());
     assert_eq!(
