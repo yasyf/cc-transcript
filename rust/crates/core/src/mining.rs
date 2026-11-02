@@ -1,8 +1,8 @@
 use std::cell::Cell;
-use std::sync::Arc;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::mem::size_of;
+use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use regex::Regex;
@@ -20,17 +20,13 @@ use crate::protocol::{
     embedded_user_text, interrupt_marker, is_bare_interrupt_marker, ANSWERED_PREFIX,
     ANSWERED_TRAILER, DENIAL_KIND_USER_REJECTED, INTERRUPT_MARKER_RE,
 };
-use crate::snapshot::{
-    Cancellation, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
-};
+use crate::snapshot::{Cancellation, SnapshotError, Status, TranscriptSnapshot, WorkLimits};
 use crate::snapshot_memory::value_charge;
 use crate::types::{
     matches_names, tool_use_index, Entry, EntryMeta, Question, ToolResultBlock, ToolUseBlock,
     UserEntry,
 };
 use crate::value::{field, field_bool, field_str};
-
-
 
 #[derive(Clone)]
 enum ConfStage {
@@ -99,7 +95,12 @@ pub struct MiningEvidence {
 
 impl MiningEvidence {
     fn new<const N: usize>(fields: [(&str, Value); N]) -> Self {
-        Self { fields: fields.into_iter().map(|(key, value)| (key.to_owned(), value)).collect() }
+        Self {
+            fields: fields
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        }
     }
 }
 
@@ -129,12 +130,22 @@ impl MiningSignal {
             + self.text.capacity()
             + self.cc_version.as_ref().map_or(0, String::capacity)
             + self.signal.reasons.capacity() * size_of::<String>()
-            + self.signal.reasons.iter().map(String::capacity).sum::<usize>()
+            + self
+                .signal
+                .reasons
+                .iter()
+                .map(String::capacity)
+                .sum::<usize>()
             + self.evidence.fields.capacity() * size_of::<(String, Value)>()
-            + self.evidence.fields.iter().map(|(key, value)| {
-                let charge = value_charge(value);
-                key.capacity() + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
-            }).sum::<usize>()
+            + self
+                .evidence
+                .fields
+                .iter()
+                .map(|(key, value)| {
+                    let charge = value_charge(value);
+                    key.capacity() + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+                })
+                .sum::<usize>()
     }
 }
 
@@ -409,7 +420,10 @@ pub fn compile_spec(spec_json: &str) -> Result<CompiledMiningSpec, String> {
     })
 }
 
-pub fn set_callable_formats(spec: &mut CompiledMiningSpec, formats: Vec<Arc<dyn CallableReviewFormat>>) {
+pub fn set_callable_formats(
+    spec: &mut CompiledMiningSpec,
+    formats: Vec<Arc<dyn CallableReviewFormat>>,
+) {
     spec.review.callable_formats = formats;
 }
 
@@ -828,7 +842,7 @@ fn iter_plan_rejection(
             let trigger = events.nearest_assistant_index(index);
             let sig = calibrated(&spec.calibrated, &text, "embedded_text");
             out.push(build_signal(
-                    events,
+                events,
                 PLAN_REVIEW,
                 DETECTOR_EXIT_PLAN_REJECTION,
                 &user.meta,
@@ -914,7 +928,7 @@ fn iter_tool_denial(
                 tool.name.len() + tool.file_path.as_ref().map_or(0, String::len)
             });
             out.push(build_signal(
-                    events,
+                events,
                 INTERRUPT_REJECTION,
                 DETECTOR_DENIAL,
                 &user.meta,
@@ -1232,7 +1246,7 @@ fn iter_review_comment(
                     + comment.file.as_ref().map_or(0, String::len)
                     + scan.provenance.len();
                 out.push(build_signal(
-                            events,
+                    events,
                     REVIEW_COMMENT,
                     DETECTOR_REVIEW_COMMENT,
                     &user.meta,
@@ -1479,7 +1493,7 @@ fn iter_ask_user_question(
                     + pair.preview.map_or(0, str::len)
                     + pair.notes.map_or(0, str::len);
                 out.push(build_signal(
-                            events,
+                    events,
                     QUESTION_ANSWER,
                     DETECTOR_ASK_USER_QUESTION,
                     &user.meta,
@@ -1499,10 +1513,14 @@ fn iter_ask_user_question(
                             ("recommended_pick", sonic_rs::json!(recommended)),
                         ]);
                         if let Some(preview) = pair.preview {
-                            evidence.fields.push(("preview".to_owned(), sonic_rs::json!(preview)));
+                            evidence
+                                .fields
+                                .push(("preview".to_owned(), sonic_rs::json!(preview)));
                         }
                         if let Some(notes) = pair.notes {
-                            evidence.fields.push(("notes".to_owned(), sonic_rs::json!(notes)));
+                            evidence
+                                .fields
+                                .push(("notes".to_owned(), sonic_rs::json!(notes)));
                         }
                         Ok(evidence)
                     },
@@ -1513,7 +1531,10 @@ fn iter_ask_user_question(
     Ok(())
 }
 
-pub fn mine_entries(entries: Vec<&Entry>, spec: &CompiledMiningSpec) -> MiningResult<Vec<MiningSignal>> {
+pub fn mine_entries(
+    entries: Vec<&Entry>,
+    spec: &CompiledMiningSpec,
+) -> MiningResult<Vec<MiningSignal>> {
     let mut out = Vec::new();
     mine_entries_into(entries, spec, &mut out)?;
     Ok(out)
@@ -1564,48 +1585,47 @@ pub fn prepare_snapshot<'a>(
         )));
     }
     let (entries, texts) = (|| {
-            cancel.check(limits.deadline_unix_ms)?;
-            for chunk in &snapshot.chunks {
-                for charge in &chunk.entry_charges {
-                    cancel.check(limits.deadline_unix_ms)?;
-                    if usage.events == limits.max_events {
-                        return Err(crate::snapshot::SnapshotError::new(
-                            crate::snapshot::Status::EntryLimit,
-                            "mining input event budget exceeded",
-                        ));
-                    }
-                    let bytes = charge
-                        .owned_capacity_bytes
-                        .saturating_add(charge.opaque_dom_accounted_bytes)
-                        .saturating_add(
-                            size_of::<Entry>() + size_of::<&Entry>() + size_of::<String>(),
-                        );
-                    if bytes > limits.max_read_bytes.saturating_sub(usage.input_bytes) {
-                        return Err(crate::snapshot::SnapshotError::new(
-                            crate::snapshot::Status::SourceLimit,
-                            "mining input byte budget exceeded",
-                        ));
-                    }
-                    usage.events += 1;
-                    usage.input_bytes += bytes;
-                }
-            }
-            let mut entries = Vec::with_capacity(usage.events);
-            let mut texts = Vec::with_capacity(usage.events);
-            for entry in snapshot
-                .chunks
-                .iter()
-                .flat_map(|chunk| chunk.entries.iter())
-            {
+        cancel.check(limits.deadline_unix_ms)?;
+        for chunk in &snapshot.chunks {
+            for charge in &chunk.entry_charges {
                 cancel.check(limits.deadline_unix_ms)?;
-                entries.push(entry);
-                texts.push(match entry {
-                    Entry::User(user) => user.content.text(),
-                    _ => String::new(),
-                });
+                if usage.events == limits.max_events {
+                    return Err(crate::snapshot::SnapshotError::new(
+                        crate::snapshot::Status::EntryLimit,
+                        "mining input event budget exceeded",
+                    ));
+                }
+                let bytes = charge
+                    .owned_capacity_bytes
+                    .saturating_add(charge.opaque_dom_accounted_bytes)
+                    .saturating_add(size_of::<Entry>() + size_of::<&Entry>() + size_of::<String>());
+                if bytes > limits.max_read_bytes.saturating_sub(usage.input_bytes) {
+                    return Err(crate::snapshot::SnapshotError::new(
+                        crate::snapshot::Status::SourceLimit,
+                        "mining input byte budget exceeded",
+                    ));
+                }
+                usage.events += 1;
+                usage.input_bytes += bytes;
             }
-            Ok((entries, texts))
-        })().map_err(MiningError::Snapshot)?;
+        }
+        let mut entries = Vec::with_capacity(usage.events);
+        let mut texts = Vec::with_capacity(usage.events);
+        for entry in snapshot
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.entries.iter())
+        {
+            cancel.check(limits.deadline_unix_ms)?;
+            entries.push(entry);
+            texts.push(match entry {
+                Entry::User(user) => user.content.text(),
+                _ => String::new(),
+            });
+        }
+        Ok((entries, texts))
+    })()
+    .map_err(MiningError::Snapshot)?;
     let budget = MiningBudget {
         limits,
         cancel: cancel.clone(),
@@ -1627,7 +1647,12 @@ pub fn mine_prepared_into(
 ) -> MiningResult<()> {
     let events = prepared.events;
     let result = mine_events_impl(&events, spec, out).and_then(|()| events.check());
-    *usage = events.budget.as_ref().expect("prepared mining budget").usage.get();
+    *usage = events
+        .budget
+        .as_ref()
+        .expect("prepared mining budget")
+        .usage
+        .get();
     result
 }
 
@@ -1668,7 +1693,10 @@ mod tests {
 
     fn mining_spec(detectors: &[&str]) -> CompiledMiningSpec {
         let confidence = || CompiledConfSpec {
-            stages: vec![ConfStage::Base { band: 0.9, reason: "base".into() }],
+            stages: vec![ConfStage::Base {
+                band: 0.9,
+                reason: "base".into(),
+            }],
         };
         CompiledMiningSpec {
             detectors: detectors.iter().map(|name| (*name).to_owned()).collect(),
@@ -1691,8 +1719,12 @@ mod tests {
     struct CountFormat(Arc<std::sync::atomic::AtomicUsize>);
 
     impl CallableReviewFormat for CountFormat {
-        fn name(&self) -> &str { "count" }
-        fn bounded(&self) -> bool { true }
+        fn name(&self) -> &str {
+            "count"
+        }
+        fn bounded(&self) -> bool {
+            true
+        }
         fn visit(
             &self,
             _text: &str,
@@ -1719,7 +1751,8 @@ mod tests {
             "type":"user", "sessionId":"s", "uuid":"u", "timestamp":"2026-11-02T00:00:00Z",
             "message":{"role":"user", "content":"ordinary user text"}
         });
-        let entries = crate::parse::parse_bytes(&sonic_rs::to_vec(&raw).unwrap(), |_| true).unwrap();
+        let entries =
+            crate::parse::parse_bytes(&sonic_rs::to_vec(&raw).unwrap(), |_| true).unwrap();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut spec = mining_spec(&[DETECTOR_TRANSCRIPT_MESSAGE, DETECTOR_REVIEW_COMMENT]);
         set_callable_formats(&mut spec, vec![Arc::new(CountFormat(Arc::clone(&calls)))]);
@@ -1730,7 +1763,8 @@ mod tests {
 
     #[test]
     fn question_evidence_keeps_original_field_order_and_optional_fields() {
-        let questions = sonic_rs::json!([{"question":"Which?", "header":"Choice", "options":[{"label":"A"}]}]);
+        let questions =
+            sonic_rs::json!([{"question":"Which?", "header":"Choice", "options":[{"label":"A"}]}]);
         let assistant = sonic_rs::json!({
             "type":"assistant", "sessionId":"s", "uuid":"a", "timestamp":"2026-11-02T00:00:00Z",
             "message":{"role":"assistant", "model":"m", "content":[{"type":"tool_use", "id":"q", "name":"AskUserQuestion", "input":{"questions":&questions}}]}
@@ -1740,14 +1774,37 @@ mod tests {
             "message":{"role":"user", "content":[{"type":"tool_result", "tool_use_id":"q", "content":"answered"}]},
             "toolUseResult":{"questions":&questions, "answers":{"Which?":"A"}, "annotations":{"Which?":{"preview":"p", "notes":"n"}}}
         });
-        let raw = format!("{}\n{}\n", sonic_rs::to_string(&assistant).unwrap(), sonic_rs::to_string(&user).unwrap());
+        let raw = format!(
+            "{}\n{}\n",
+            sonic_rs::to_string(&assistant).unwrap(),
+            sonic_rs::to_string(&user).unwrap()
+        );
         let entries = crate::parse::parse_bytes(raw.as_bytes(), |_| true).unwrap();
-        let rows = mine_entries(entries.iter().collect(), &mining_spec(&[DETECTOR_ASK_USER_QUESTION])).unwrap();
+        let rows = mine_entries(
+            entries.iter().collect(),
+            &mining_spec(&[DETECTOR_ASK_USER_QUESTION]),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].text, "n");
-        assert_eq!(rows[0].evidence.fields.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(), [
-            "question", "header", "multi_select", "option_pick", "picked_labels", "recommended_pick", "preview", "notes",
-        ]);
+        assert_eq!(
+            rows[0]
+                .evidence
+                .fields
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "question",
+                "header",
+                "multi_select",
+                "option_pick",
+                "picked_labels",
+                "recommended_pick",
+                "preview",
+                "notes",
+            ]
+        );
     }
 
     #[test]

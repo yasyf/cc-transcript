@@ -6,9 +6,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyIterator, PyString};
 
 use cc_transcript_core::activity::{lift_session, sample_refs};
-use cc_transcript_core::mining::{self, CallableReviewFormat, MiningError, MiningResult, MiningSignal, ReviewComment};
+use cc_transcript_core::mining::{
+    self, CallableReviewFormat, MiningError, MiningResult, MiningSignal, ReviewComment,
+};
 use cc_transcript_core::parse::parse_bytes;
-use cc_transcript_core::snapshot::{Cancellation, SnapshotError, Status, TranscriptSnapshot, WorkLimits};
+use cc_transcript_core::snapshot::{
+    Cancellation, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
+};
 use cc_transcript_core::types::Entry;
 
 use crate::views::convert::{json_to_py, parse_err};
@@ -51,14 +55,22 @@ impl CallableReviewFormat for CompiledCallableFormat {
     ) -> MiningResult<()> {
         Python::attach(|py| -> PyResult<()> {
             preflight(0).map_err(error)?;
-            if self.pattern.bind(py).call_method1("search", (text,))?.is_none() {
+            if self
+                .pattern
+                .bind(py)
+                .call_method1("search", (text,))?
+                .is_none()
+            {
                 return Ok(());
             }
             let extracted = self.extract.bind(py).call1((text,))?;
             if bounded && extracted.cast::<PyIterator>().is_err() {
                 return Err(crate::snapshots::error(SnapshotError::new(
                     Status::Incomplete,
-                    format!("bounded mining callback {} must return an iterator", self.name),
+                    format!(
+                        "bounded mining callback {} must return an iterator",
+                        self.name
+                    ),
                 )));
             }
             let mut iterator = extracted.try_iter()?;
@@ -68,8 +80,15 @@ impl CallableReviewFormat for CompiledCallableFormat {
                 let item = item?;
                 let comment = item.getattr("comment")?;
                 let file = item.getattr("file")?;
-                let bytes = comment.cast::<PyString>()?.to_str()?.len()
-                    .saturating_add(if file.is_none() { 0 } else { file.cast::<PyString>()?.to_str()?.len() })
+                let bytes = comment
+                    .cast::<PyString>()?
+                    .to_str()?
+                    .len()
+                    .saturating_add(if file.is_none() {
+                        0
+                    } else {
+                        file.cast::<PyString>()?.to_str()?.len()
+                    })
                     .saturating_add(self.name.len());
                 preflight(4096usize.saturating_add(bytes.saturating_mul(6))).map_err(error)?;
                 emit(ReviewComment {
@@ -77,10 +96,12 @@ impl CallableReviewFormat for CompiledCallableFormat {
                     line_start: item.getattr("line_start")?.extract()?,
                     line_end: item.getattr("line_end")?.extract()?,
                     comment: comment.extract()?,
-                }).map_err(error)?;
+                })
+                .map_err(error)?;
             }
             Ok(())
-        }).map_err(|error| MiningError::Callback(Box::new(error)))
+        })
+        .map_err(|error| MiningError::Callback(Box::new(error)))
     }
 }
 
@@ -88,23 +109,43 @@ pub fn attach_callable_formats(
     spec: &mut CompiledMiningSpec,
     formats: Vec<(String, Py<PyAny>, Py<PyAny>)>,
 ) {
-    mining::set_callable_formats(spec, formats.into_iter().map(|(name, pattern, extract)| {
-        Arc::new(CompiledCallableFormat { name, pattern, extract, bounded: false }) as Arc<dyn CallableReviewFormat>
-    }).collect());
+    mining::set_callable_formats(
+        spec,
+        formats
+            .into_iter()
+            .map(|(name, pattern, extract)| {
+                Arc::new(CompiledCallableFormat {
+                    name,
+                    pattern,
+                    extract,
+                    bounded: false,
+                }) as Arc<dyn CallableReviewFormat>
+            })
+            .collect(),
+    );
 }
 
 pub fn attach_bounded_callable_formats(
     spec: &mut CompiledMiningSpec,
     formats: Vec<(String, Py<PyAny>, Py<PyAny>, bool)>,
 ) -> PyResult<()> {
-    let formats = formats.into_iter().map(|(name, pattern, extract, bounded)| {
-        if !bounded {
-            return Err(crate::snapshots::error(SnapshotError::new(
-                Status::Incomplete, format!("unbounded mining callback: {name}"),
-            )));
-        }
-        Ok(Arc::new(CompiledCallableFormat { name, pattern, extract, bounded }) as Arc<dyn CallableReviewFormat>)
-    }).collect::<PyResult<Vec<_>>>()?;
+    let formats = formats
+        .into_iter()
+        .map(|(name, pattern, extract, bounded)| {
+            if !bounded {
+                return Err(crate::snapshots::error(SnapshotError::new(
+                    Status::Incomplete,
+                    format!("unbounded mining callback: {name}"),
+                )));
+            }
+            Ok(Arc::new(CompiledCallableFormat {
+                name,
+                pattern,
+                extract,
+                bounded,
+            }) as Arc<dyn CallableReviewFormat>)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     mining::set_callable_formats(spec, formats);
     Ok(())
 }
@@ -157,8 +198,14 @@ pub fn mine_events<'py>(
     events: &[Bound<'py, PyAny>],
     spec: &CompiledMiningSpec,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let entries = events.iter().map(|event| view_entry(event, "mine")).collect::<PyResult<Vec<_>>>()?;
-    let mut sink = PythonSignalSink { py, rows: Vec::new() };
+    let entries = events
+        .iter()
+        .map(|event| view_entry(event, "mine"))
+        .collect::<PyResult<Vec<_>>>()?;
+    let mut sink = PythonSignalSink {
+        py,
+        rows: Vec::new(),
+    };
     mining::mine_entries_into(entries, spec, &mut sink).map_err(error)?;
     Ok(sink.rows)
 }
@@ -171,8 +218,13 @@ pub fn mine_snapshot<'py>(
     cancel: &Cancellation,
     usage: &mut MiningUsage,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let prepared = py.detach(|| mining::prepare_snapshot(snapshot, spec, limits, cancel, usage)).map_err(error)?;
-    let mut sink = PythonSignalSink { py, rows: Vec::new() };
+    let prepared = py
+        .detach(|| mining::prepare_snapshot(snapshot, spec, limits, cancel, usage))
+        .map_err(error)?;
+    let mut sink = PythonSignalSink {
+        py,
+        rows: Vec::new(),
+    };
     mining::mine_prepared_into(prepared, spec, usage, &mut sink).map_err(error)?;
     Ok(sink.rows)
 }
