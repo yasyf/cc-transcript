@@ -54,7 +54,7 @@ fn registered_catalog_sidechain_batch_removes_only_certified_absent_probes() {
         let deadline = now_ms() + 30_000;
         let before = store.sidechain_path_probes.load(Ordering::Relaxed);
         let checks = store.membership_metadata_checks.load(Ordering::Relaxed);
-        assert!(store.validate_warm_membership(&membership.members, &membership.sidechain_dirs,
+        assert!(store.validate_warm_membership(&membership.members, None, &membership.sidechain_dirs,
             &owner, &cancel, deadline, None).unwrap());
         let old_probes = store.sidechain_path_probes.load(Ordering::Relaxed) - before;
         let old_checks = store.membership_metadata_checks.load(Ordering::Relaxed) - checks;
@@ -64,7 +64,7 @@ fn registered_catalog_sidechain_batch_removes_only_certified_absent_probes() {
         let name_checks = store.sidechain_batch_name_checks.load(Ordering::Relaxed) - names;
         let before = store.sidechain_path_probes.load(Ordering::Relaxed);
         let checks = store.membership_metadata_checks.load(Ordering::Relaxed);
-        assert!(store.validate_warm_membership(&membership.members, &membership.sidechain_dirs,
+        assert!(store.validate_warm_membership(&membership.members, None, &membership.sidechain_dirs,
             &owner, &cancel, deadline, Some(&proof)).unwrap());
         let new_probes = store.sidechain_path_probes.load(Ordering::Relaxed) - before;
         let new_checks = store.membership_metadata_checks.load(Ordering::Relaxed) - checks;

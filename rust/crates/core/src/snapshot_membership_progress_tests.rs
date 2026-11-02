@@ -54,3 +54,28 @@ fn cache_membership_small_rosters_preserve_public_graph_semantics() {
         store.assert_conserved();
     }
 }
+
+#[test]
+fn membership_validation_stats_only_members_active_since_the_cutoff() {
+    let (_source, store, owner, request) = membership_deadline_fixture(4);
+    let (complete, _) =
+        catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+    assert_eq!(complete["status"].as_str(), Some("ok"), "{complete:?}");
+    let key = NativeStore::membership_collection_key(&request, &owner).unwrap();
+    let membership = store.lock_state().positive_membership(&key).unwrap();
+    let cancel = Cancellation::default();
+    let deadline = now_ms() + 30_000;
+    let future = Some(i128::from(now_ms() + 60_000) * 1_000_000);
+    for (since, stamped) in [(None, 4), (Some(1), 4), (future, 0)] {
+        let before = store.membership_metadata_checks.load(Ordering::Relaxed);
+        assert!(store
+            .validate_warm_membership(&membership.members, since, &[], &owner, &cancel, deadline, None)
+            .unwrap());
+        assert_eq!(
+            store.membership_metadata_checks.load(Ordering::Relaxed) - before,
+            stamped,
+            "{since:?}"
+        );
+    }
+    store.assert_conserved();
+}

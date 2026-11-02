@@ -1,7 +1,9 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-use crate::literals::protocol::{AGENT_INJECTION_PATTERN, INTERRUPT_MARKER_PATTERN};
+use crate::literals::protocol::{
+    AGENT_INJECTION_PATTERN, INTERRUPT_MARKER_PATTERN, STRUCTURAL_NOISE_PATTERN,
+};
 use crate::pystr;
 
 pub use crate::literals::protocol::{
@@ -28,6 +30,19 @@ pub static AGENT_INJECTION_RE: Lazy<Regex> = Lazy::new(|| {
 /// leading C0 separators (Python ``\s``, not Rust regex ``\s``) still anchor the banner.
 pub fn is_agent_injection(text: &str) -> bool {
     AGENT_INJECTION_RE.is_match(pystr::lstrip(text))
+}
+
+/// The structural-noise regex (filterspec.py STRUCTURAL_NOISE_RE): the structural and
+/// agent-injection groups compiled case-insensitively.
+pub static STRUCTURAL_NOISE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!("(?i){STRUCTURAL_NOISE_PATTERN}")).expect("structural noise regex")
+});
+
+/// Whether ``text`` opens with structural noise (``STRUCTURAL_NOISE_RE.match``).
+pub fn starts_with_structural_noise(text: &str) -> bool {
+    STRUCTURAL_NOISE_RE
+        .find(text)
+        .is_some_and(|found| found.start() == 0)
 }
 
 /// embedded_user_text (filterspec.py embedded_user_text): the verbatim instruction

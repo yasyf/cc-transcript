@@ -85,7 +85,7 @@ pub struct SessionActivity {
 /// agent-injected relay banner, with non-blank text. Compact-summary exclusion
 /// matches captain-hook, which consumes this probe since the 10.2.0
 /// shared-classifier fix.
-fn opens_turn(user: &UserEntry) -> bool {
+pub fn opens_turn(user: &UserEntry) -> bool {
     !(user.meta.is_meta
         || user.meta.is_sidechain
         || user.meta.is_compact_summary

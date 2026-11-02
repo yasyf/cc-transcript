@@ -35,6 +35,11 @@ jobs:
       - name: Format check (rustfmt)
         run: cargo fmt --check
 
+      - name: Test the snapshot owner binary and its membership bound
+        run: |
+          cargo test --locked -p cc-transcript-owner
+          cargo test --locked -p cc-transcript-core --no-default-features --lib membership_validation_stats_only_members_active_since_the_cutoff
+
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
         with:
@@ -234,11 +239,15 @@ jobs:
 
       - name: Build + smoke-test wheel in a fresh venv
         run: |
+          cargo build --locked --bin cc-transcript-owner
+          mkdir -p cc_transcript._native.data/scripts
+          install -m 755 target/debug/cc-transcript-owner cc_transcript._native.data/scripts/cc-transcript-owner
           uv build
           rm -rf .wheel-smoke
           uv venv --seed .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
           .wheel-smoke/bin/python -c "import cc_transcript; assert cc_transcript.parse(b'').path is None"
+          .wheel-smoke/bin/cc-transcript-owner --build smoke < /dev/null
 
       - name: Upload tested wheel
         uses: actions/upload-artifact@v7

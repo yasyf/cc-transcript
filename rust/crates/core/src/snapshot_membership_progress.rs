@@ -299,6 +299,7 @@ impl NativeStore {
         cancel: &Cancellation,
         remaining: &mut WorkLimits,
     ) -> Result<(), SnapshotError> {
+        let since = active_since_ns(request)?;
         if !self.catalog_membership_valid(
             membership.catalog,
             request,
@@ -307,6 +308,7 @@ impl NativeStore {
             remaining,
         )? || !self.validate_warm_membership(
             &membership.members,
+            since,
             &membership.sidechain_dirs,
             context,
             cancel,
@@ -324,7 +326,6 @@ impl NativeStore {
                 "registered membership changed during preparation",
             ));
         }
-        let since = active_since_ns(request)?;
         if membership
             .members
             .iter()
@@ -529,6 +530,7 @@ impl NativeStore {
                     cancel,
                     remaining,
                 )?;
+                let since = active_since_ns(request)?;
                 let absences = if namespace_valid && revalidate {
                     self.sidechain_absences(
                         cached.catalog,
@@ -544,6 +546,7 @@ impl NativeStore {
                     && (!revalidate
                         || self.validate_warm_membership(
                             &cached.members,
+                            since,
                             &cached.sidechain_dirs,
                             context,
                             cancel,
@@ -563,7 +566,6 @@ impl NativeStore {
                             "registered catalog changed during member validation",
                         ));
                     }
-                    let since = active_since_ns(request)?;
                     if cached
                         .members
                         .iter()

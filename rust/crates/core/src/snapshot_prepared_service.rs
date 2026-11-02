@@ -1176,14 +1176,19 @@ impl NativeStore {
     fn validate_warm_membership(
         &self,
         members: &[PreparedSourceRef],
+        since: Option<i128>,
         sidechain_dirs: &[(PathBuf, Option<SourceStamp>)],
         context: &Value,
         cancel: &Cancellation,
         deadline: u64,
         absences: Option<&SidechainAbsences<'_>>,
     ) -> Result<bool, SnapshotError> {
-        Ok(
-            self.validate_source_stamps(members, context, cancel, deadline)?
+        Ok(self.validate_source_stamps(
+            members.iter().filter(|member| active(member, since)),
+            context,
+            cancel,
+            deadline,
+        )?
                 && self.validate_sidechain_dirs(
                     sidechain_dirs,
                     context,
@@ -1194,9 +1199,9 @@ impl NativeStore {
         )
     }
 
-    fn validate_source_stamps(
+    fn validate_source_stamps<'s>(
         &self,
-        sources: &[PreparedSourceRef],
+        sources: impl IntoIterator<Item = &'s PreparedSourceRef>,
         context: &Value,
         cancel: &Cancellation,
         deadline: u64,
@@ -2283,6 +2288,7 @@ impl NativeStore {
         if complete {
             if !self.validate_warm_membership(
                 &membership.members,
+                since,
                 &membership.sidechain_dirs,
                 context,
                 cancel,
@@ -2860,7 +2866,7 @@ impl NativeStore {
         }
         if cursor.next == total && cursor.input_records.as_ref().is_none_or(VecDeque::is_empty) {
             if !self.validate_source_stamps(
-                &sources,
+                sources.iter(),
                 context,
                 cancel,
                 cursor.remaining.deadline_unix_ms,
