@@ -182,9 +182,9 @@ pub fn mtime_secs(meta: &Metadata) -> f64 {
     }
 }
 
-/// Reads every directory under `roots` and lstats each entry across a bounded
-/// thread pool, without following directory symlinks, so a sequential walk
-/// right after it finds the metadata already in the kernel's vnode cache.
+/// Reads every directory under `roots` and lstats each `*.jsonl` entry across a
+/// bounded thread pool, without following directory symlinks, so a sequential
+/// walk right after it finds the metadata already in the kernel's vnode cache.
 pub fn warm_metadata(roots: &[PathBuf], max_entries: usize, deadline_unix_ms: u64) {
     let state = Mutex::new((roots.to_vec(), 0usize));
     let ready = Condvar::new();
@@ -207,9 +207,10 @@ pub fn warm_metadata(roots: &[PathBuf], max_entries: usize, deadline_unix_ms: u6
                                 examined.fetch_add(1, Ordering::Relaxed);
                                 match entry.file_type() {
                                     Ok(kind) if kind.is_dir() => children.push(entry.path()),
-                                    _ => {
+                                    _ if is_jsonl(&entry.path()) => {
                                         let _ = entry.metadata();
                                     }
+                                    _ => {}
                                 }
                             }
                         }

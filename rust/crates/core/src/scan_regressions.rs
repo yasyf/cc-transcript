@@ -143,6 +143,24 @@ fn explicit_paths_keep_their_order() {
 }
 
 #[test]
+fn discovery_skips_transcripts_that_vanish_under_the_walk() {
+    let fixture = Fixture::new();
+    let kept = fixture.source("kept.jsonl", "match");
+    std::fs::write(fixture.0.join("agent.meta.json"), "{}").unwrap();
+    std::os::unix::fs::symlink(fixture.0.join("gone.jsonl"), fixture.0.join("ghost.jsonl"))
+        .unwrap();
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut scan = ScanSession::new(&store, limits(), Cancellation::default());
+    let mut paths = Vec::new();
+    let result = scan.run(&fixture.plan(vec![]), |path, _, _, _| {
+        paths.push(path.to_owned());
+        Ok(ScanControl::Continue)
+    });
+    assert!(result.complete, "{:?}", result.reason);
+    assert_eq!(paths, vec![kept]);
+}
+
+#[test]
 fn cancellation_prevents_discovery_and_reads() {
     let fixture = Fixture::new();
     let store = NativeStore::new(&json!({})).unwrap();

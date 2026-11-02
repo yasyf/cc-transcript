@@ -11088,7 +11088,10 @@ impl NativeStore {
                     break;
                 };
                 self.authority(&scan.context, Some(&path))?;
-                let metadata = std::fs::metadata(&path).map_err(io_error)?;
+                let metadata = match std::fs::metadata(&path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    metadata => metadata.map_err(io_error)?,
+                };
                 if metadata.is_dir() {
                     let identity = SourceStamp::of(&metadata).identity;
                     if scan.seen_directories.contains(&identity) {
@@ -11134,47 +11137,59 @@ impl NativeStore {
                 scan.examined += 1;
                 usage[17] += 1;
                 let path = entry.path();
-                let symlink = match entry.symlink_hint(self) {
-                    Some(symlink) => symlink,
-                    None => {
-                        entry
-                            .directory
-                            .object_metadata(&entry.name, self)
-                            .map_err(io_error)?
-                            .symlink
-                    }
-                };
-                let canonical = if symlink {
-                    std::fs::canonicalize(&path).map_err(io_error)?
-                } else {
-                    path.clone()
-                };
-                self.authority(&scan.context, Some(&canonical))?;
-                let metadata = std::fs::metadata(&canonical).map_err(io_error)?;
-                if metadata.is_dir() {
-                    if scan
-                        .request
-                        .get("follow_directory_symlinks")
-                        .and_then(Value::as_bool)
-                        == Some(false)
-                        && symlink
-                    {
+                if entry.name_evidence(self).kind == Some(libc::DT_REG) {
+                    if path.extension().is_none_or(|ext| ext != "jsonl") {
                         continue;
                     }
-                    self.extend_projection_reservation(
-                        reservation,
-                        &scan.context,
-                        vec_growth(&scan.roots, 1) + canonical.capacity(),
-                    )?;
-                    let predicted = vec_capacity_for(&scan.roots, 1);
-                    scan.roots.push(canonical);
-                    assert_eq!(scan.roots.capacity(), predicted);
-                    continue;
+                    path
+                } else {
+                    let symlink = match entry.symlink_hint(self) {
+                        Some(symlink) => symlink,
+                        None => {
+                            entry
+                                .directory
+                                .object_metadata(&entry.name, self)
+                                .map_err(io_error)?
+                                .symlink
+                        }
+                    };
+                    let canonical = match symlink.then(|| std::fs::canonicalize(&path)) {
+                        Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                            continue
+                        }
+                        Some(canonical) => canonical.map_err(io_error)?,
+                        None => path.clone(),
+                    };
+                    self.authority(&scan.context, Some(&canonical))?;
+                    let metadata = match std::fs::metadata(&canonical) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        metadata => metadata.map_err(io_error)?,
+                    };
+                    if metadata.is_dir() {
+                        if scan
+                            .request
+                            .get("follow_directory_symlinks")
+                            .and_then(Value::as_bool)
+                            == Some(false)
+                            && symlink
+                        {
+                            continue;
+                        }
+                        self.extend_projection_reservation(
+                            reservation,
+                            &scan.context,
+                            vec_growth(&scan.roots, 1) + canonical.capacity(),
+                        )?;
+                        let predicted = vec_capacity_for(&scan.roots, 1);
+                        scan.roots.push(canonical);
+                        assert_eq!(scan.roots.capacity(), predicted);
+                        continue;
+                    }
+                    if !metadata.is_file() {
+                        continue;
+                    }
+                    path
                 }
-                if !metadata.is_file() {
-                    continue;
-                }
-                path
             };
             if path.extension().is_none_or(|ext| ext != "jsonl") {
                 continue;
@@ -11187,7 +11202,10 @@ impl NativeStore {
                     Some("source discovery budget exhausted".to_owned()),
                 ));
             }
-            let metadata = std::fs::metadata(&path).map_err(io_error)?;
+            let metadata = match std::fs::metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                metadata => metadata.map_err(io_error)?,
+            };
             let stamp = SourceStamp::of(&metadata);
             let fresh = !scan.seen.contains(&stamp.identity);
             if !fresh

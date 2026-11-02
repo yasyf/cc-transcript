@@ -46,6 +46,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cc-transcript grep` decodes only the lines its patterns can match. Each
+  pattern's extracted literals reduce to runs of bytes JSON never escapes, and
+  a line holding none of those runs is validated as a JSON object and counted
+  as an event without being parsed. Tool names declared on skipped lines are
+  still read for `--tool` and for rendered results, and `-C` neighbours are
+  decoded when a window needs them. A pattern with no usable literal, such as
+  `.` or `\d+`, decodes every line as before.
+- A grep whose patterns all have usable literals no longer reads or writes the
+  checkpoint cache under `~/.claude/cc-transcript/scan`, since validating a
+  checkpoint re-read the whole prefix anyway. When its transcript grows during
+  the scan, it rechecks the 64 bytes before the end it read instead of the
+  whole prefix, so a live transcript larger than `max_scan_validate_bytes` no
+  longer fails with `source grew during the scan and its prefix exceeds the
+  validation cap`.
+- Discovery no longer stats directory entries that `readdir` reports as
+  regular files without a `.jsonl` name. A projects tree holds about as many
+  `.json`, `.txt` and `.md` side files as transcripts, and each stat used to
+  cost an inode read under a full vnode cache. Scan discovery also stats the
+  transcripts on 8 threads before its sequential walk, so the walk finds their
+  metadata already cached.
 - When a cached registered membership changed only because some members grew,
   `prepare_graph` and the first `warm_registered` step refresh those members'
   stamps without locating thread ids or listing sidechain directories again. A
@@ -114,6 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Discovery skips a transcript that disappears between `readdir` and its stat,
+  or a `.jsonl` symlink whose target is gone, instead of failing the whole
+  listing or scan with `No such file or directory`.
 - A cancelled `query_graph`, `prepare_graph` or `warm_registered` request now
   stops during the re-check of source parent directories that ends each
   membership validation and each query or warm page. That re-check used to
