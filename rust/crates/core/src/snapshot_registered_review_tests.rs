@@ -248,7 +248,9 @@ fn registered_review_219mb_bounded_preparation_keeps_source_progress_and_warm_re
                     };
                     let window = input.contexts.capture(&input.activity, &anchor, 6, 2)?;
                     assert!(window.trigger.is_some());
-                    Ok(sonic_rs::to_string(&input.mining.signals()?.collect::<Vec<_>>()).unwrap())
+                    let encoded =
+                        sonic_rs::to_string(&input.mining.signals()?.collect::<Vec<_>>()).unwrap();
+                    Ok(encoded)
                 },
             )
             .unwrap();
@@ -276,7 +278,7 @@ fn registered_review_219mb_bounded_preparation_keeps_source_progress_and_warm_re
                 &|_| Ok(false),
                 |frame| {
                     let frame = frame.lock().unwrap();
-                    Ok(sonic_rs::to_string(
+                    let encoded = sonic_rs::to_string(
                         &frame
                             .as_ref()
                             .unwrap()
@@ -284,7 +286,8 @@ fn registered_review_219mb_bounded_preparation_keeps_source_progress_and_warm_re
                             .signals()?
                             .collect::<Vec<_>>(),
                     )
-                    .unwrap())
+                    .unwrap();
+                    Ok(encoded)
                 },
             )
             .unwrap();
