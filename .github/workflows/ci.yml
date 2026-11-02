@@ -12,6 +12,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +24,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Format check (rustfmt)
         run: cargo fmt --check
@@ -241,6 +244,7 @@ jobs:
   snapshot-catalog-macos:
     if: github.event_name != 'pull_request'
     runs-on: macos-15
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -289,6 +293,7 @@ jobs:
   snapshot-wheel:
     if: github.event_name != 'pull_request'
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
@@ -314,10 +319,11 @@ jobs:
 
   packaging-wheel:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest", "ubuntu-24.04-arm"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-15", "macos-15-intel"]') }}
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-15", "macos-15-intel"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v8.2.0
@@ -356,6 +362,7 @@ jobs:
   large-root-benchmark:
     if: contains(github.event.pull_request.labels.*.name, 'large-root-benchmark')
     runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -368,6 +375,7 @@ jobs:
   swift:
     if: github.event_name != 'pull_request'
     runs-on: macos-15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
