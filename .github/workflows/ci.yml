@@ -81,6 +81,23 @@ jobs:
       - name: Test unpublished load charge work on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib -- load_charge_ --nocapture
 
+      - name: Test shared publication admission and unchanged source reuse
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/shared-publication-evidence"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib shared_publication_admission_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/shared-publication-evidence/positive.log"
+          python3 scripts/check_shared_publication_old.py
+
+      - name: Upload shared publication ownership controls
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shared-publication-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/shared-publication-evidence/
+          if-no-files-found: error
+
       - name: Test selective call projection work on Linux
         run: |
           cargo test -p cc-transcript-core --no-default-features --lib -- named_projection_does_not_clone_unrelated_call_payloads --nocapture
@@ -203,6 +220,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test owned transcript catalog operation counts on macOS
         run: cargo test -p cc-transcript-core --no-default-features --lib -- registered_catalog_
+      - name: Test shared publication admission and unchanged source reuse on macOS
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/shared-publication-evidence"
+          cargo test --locked -p cc-transcript-core --no-default-features --lib shared_publication_admission_ -- --nocapture --test-threads=2 2>&1 | tee "${RUNNER_TEMP}/shared-publication-evidence/positive.log"
+          python3 scripts/check_shared_publication_old.py
+      - name: Upload macOS shared publication ownership controls
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shared-publication-macos-${{ github.sha }}
+          path: ${{ runner.temp }}/shared-publication-evidence/
+          if-no-files-found: error
 
   snapshot-wheel:
     runs-on: macos-15
