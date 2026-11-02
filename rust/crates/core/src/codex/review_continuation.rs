@@ -220,7 +220,27 @@ impl CodexReviewContinuation {
         self.entries[position].line_index
     }
     pub fn entry_bound(&self, position: usize) -> usize {
-        self.entry_charges[position] + std::mem::size_of::<Entry>()
+        let previous = position
+            .checked_sub(1)
+            .map_or(0, |index| self.entry_charges[index]);
+        let meta = self.meta.map_or(0, |index| self.entry_charges[index]);
+        let cwd = self
+            .cwds
+            .partition_point(|(index, _)| *index <= position)
+            .checked_sub(1)
+            .map_or(0, |index| self.cwds[index].1.len());
+        let model = self
+            .models
+            .partition_point(|(index, _)| *index <= position)
+            .checked_sub(1)
+            .or_else(|| (!self.models.is_empty()).then_some(0))
+            .map_or(0, |index| self.models[index].1.len());
+        self.entry_charges[position]
+            + previous
+            + meta * 2
+            + cwd
+            + model
+            + std::mem::size_of::<Entry>()
     }
 
     pub fn ingest(&mut self, bytes: &[u8]) -> Result<usize, SnapshotError> {

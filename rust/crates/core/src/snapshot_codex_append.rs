@@ -236,16 +236,46 @@ impl CodexAppendIndex {
     }
 }
 
-fn owned_agent_codex_entry(
-    codex: &crate::codex::CodexReviewContinuation,
-    position: usize,
-) -> Entry {
-    let value = sonic_rs::to_value(&codex.canonical_entry(position))
-        .expect("canonical Codex row serializes");
-    sonic_rs::from_value(&value).expect("canonical Codex row deserializes")
-}
-
 impl NativeStore {
+    fn owned_agent_codex_entry(
+        &self,
+        slot: &LoadSlot,
+        context: &Value,
+        codex: &crate::codex::CodexReviewContinuation,
+        position: usize,
+    ) -> Result<Entry, SnapshotError> {
+        let row_bound = codex.entry_bound(position);
+        let canonical_bound = dom_parse_bound(row_bound)
+            .and_then(|bound| row_bound.checked_mul(4)?.checked_add(bound))
+            .ok_or_else(|| invalid("Codex canonical row bound overflow"))?;
+        self.extend_load_reservation(slot, context, canonical_bound)?;
+        let entry = codex.canonical_entry(position);
+        let mut counted = crate::snapshot_codec::Counter {
+            bytes: 0,
+            limit: usize::MAX,
+        };
+        crate::snapshot_codec::write_json(&mut counted, &entry, usize::MAX)
+            .expect("canonical Codex row serializes");
+        let typed = crate::snapshot_memory::entry_charge(&entry)
+            .owned_capacity_bytes
+            .checked_mul(2)
+            .ok_or_else(|| invalid("Codex row detachment bound overflow"))?;
+        let scratch = dom_parse_bound(counted.bytes)
+            .and_then(|bound| bound.checked_add(counted.bytes))
+            .and_then(|bound| bound.checked_add(typed))
+            .ok_or_else(|| invalid("Codex row detachment bound overflow"))?;
+        self.extend_load_reservation(slot, context, scratch)?;
+        let mut bytes = Vec::with_capacity(counted.bytes);
+        crate::snapshot_codec::write_json(&mut bytes, &entry, counted.bytes)
+            .expect("counted canonical Codex row serializes");
+        assert_eq!(
+            (bytes.len(), bytes.capacity()),
+            (counted.bytes, counted.bytes)
+        );
+        drop(entry);
+        Ok(sonic_rs::from_slice(&bytes).expect("canonical Codex row deserializes"))
+    }
+
     fn lower_agent_codex_source(
         &self,
         slot: &LoadSlot,
@@ -395,21 +425,19 @@ impl NativeStore {
         let start = load.count;
         let stop = (start + events_bound).min(codex.len());
         if start < stop {
-            let bound = (start..stop)
-                .map(|position| codex.entry_bound(position))
-                .sum::<usize>();
-            self.extend_load_reservation(slot, context, bound.saturating_mul(4))?;
             for position in start..stop {
                 cancel.check(deadline)?;
                 let chunk = Arc::new(EntryChunk::new(
                     position,
-                    vec![owned_agent_codex_entry(codex, position)],
+                    vec![self.owned_agent_codex_entry(slot, context, codex, position)?],
                 ));
                 load.fresh_chunk_bytes +=
                     chunk.charge.owned_capacity_bytes + chunk.charge.opaque_dom_accounted_bytes;
                 load.chunks.push(chunk);
+                load.count = position + 1;
+                self.lock_state()
+                    .set_load_charge(slot, Self::unpublished_load_charge(load));
             }
-            load.count = stop;
         }
         if load.count < codex.len() {
             return Ok(false);
@@ -941,6 +969,28 @@ mod codex_append_tests {
         parity(&store, &next, &source, &context);
         assert_eq!(sonic_rs::to_string(&prior.entries()).unwrap(), prior_rows);
         assert!(prior
+            .chunks
+            .iter()
+            .all(|chunk| chunk.entries.arenas().is_empty()));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn agent_raw_owned_escaped_strings_preserve_canonical_payloads() {
+        let message = "\0".repeat(65_536);
+        let source = Source::new(&format!(
+            "{}\n{}\n",
+            json!({"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"escaped"}}),
+            json!({"timestamp":"2026-01-02T03:04:06Z","type":"event_msg","payload":{"type":"user_message","message":message}}),
+        ));
+        let store = store();
+        let context = context();
+        let response = acquire(&store, &source, &context);
+        parity(&store, &response, &source, &context);
+        let snapshot = store
+            .pin(&response["data"]["description"]["handle"], &context)
+            .unwrap();
+        assert!(snapshot
             .chunks
             .iter()
             .all(|chunk| chunk.entries.arenas().is_empty()));
