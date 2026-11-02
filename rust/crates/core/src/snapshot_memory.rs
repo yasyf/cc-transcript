@@ -501,6 +501,10 @@ pub fn entry_charge(entry: &Entry) -> MemoryCharge {
     entry.heap_charge()
 }
 
+pub(crate) fn tool_use_charge(tool: &ToolUseBlock) -> MemoryCharge {
+    tool.heap_charge()
+}
+
 pub fn value_charge(value: &Value) -> MemoryCharge {
     #[cfg(test)]
     count_dom_work(1);

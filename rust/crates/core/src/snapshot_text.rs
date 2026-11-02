@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Serialize;
 
@@ -17,10 +18,144 @@ pub struct TextUsage {
     pub output_bytes: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct SourceFacts {
     pub cwds: Vec<String>,
     pub first_user_contains: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFactsIndex {
+    token: String,
+    prefixes: Vec<usize>,
+    seen: HashSet<String>,
+    first_user_seen: bool,
+    facts: SourceFacts,
+    #[serde(skip)]
+    accounted: AtomicUsize,
+    #[serde(skip)]
+    false_encoded: AtomicUsize,
+    #[cfg(test)]
+    #[serde(skip)]
+    size_audits: AtomicUsize,
+}
+
+impl SourceFactsIndex {
+    pub fn new(token: &str) -> Self {
+        Self {
+            token: token.to_owned(),
+            prefixes: prefixes(token.as_bytes()),
+            seen: HashSet::new(),
+            first_user_seen: false,
+            facts: SourceFacts::default(),
+            accounted: AtomicUsize::new(0),
+            false_encoded: AtomicUsize::new(0),
+            #[cfg(test)]
+            size_audits: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn facts(&self) -> &SourceFacts {
+        &self.facts
+    }
+
+    pub fn accounted_bytes(&self) -> usize {
+        let cached = self.accounted.load(Ordering::Relaxed);
+        if cached != 0 {
+            return cached;
+        }
+        let bytes = size_of::<Self>()
+            + self.token.capacity()
+            + self.prefixes.capacity() * size_of::<usize>()
+            + self.seen.capacity() * size_of::<String>()
+            + self.seen.iter().map(String::capacity).sum::<usize>()
+            + self.facts.cwds.capacity() * size_of::<String>()
+            + self.facts.cwds.iter().map(String::capacity).sum::<usize>();
+        self.accounted.store(bytes, Ordering::Relaxed);
+        bytes
+    }
+
+    fn false_encoded_bytes(&self) -> Result<usize, SnapshotError> {
+        let cached = self.false_encoded.load(Ordering::Relaxed);
+        if cached != 0 {
+            return Ok(cached);
+        }
+        let bytes = snapshot_codec::encoded_size(&self.facts, usize::MAX)?
+            + usize::from(self.facts.first_user_contains);
+        #[cfg(test)]
+        self.size_audits.fetch_add(1, Ordering::Relaxed);
+        self.false_encoded.store(bytes, Ordering::Relaxed);
+        Ok(bytes)
+    }
+
+    pub fn append<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = &'a Entry>,
+        limits: &WorkLimits,
+        cancel: &Cancellation,
+        usage: &mut TextUsage,
+    ) -> Result<(), SnapshotError> {
+        cancel.check(limits.deadline_unix_ms)?;
+        let mut false_encoded = self.false_encoded_bytes()?;
+        output(usage, limits, false_encoded, 1)?;
+        let mut cwds = Vec::new();
+        let mut seen = HashSet::new();
+        let mut first_user_seen = self.first_user_seen;
+        let mut first_user_contains = self.facts.first_user_contains;
+        for entry in entries {
+            cancel.check(limits.deadline_unix_ms)?;
+            read(usage, limits, size_of::<usize>(), 1)?;
+            if let Some(cwd) = entry.meta().and_then(|meta| meta.cwd.as_deref()) {
+                read(usage, limits, cwd.len(), 0)?;
+                if !self.seen.contains(cwd) && seen.insert(cwd) {
+                    let bytes = snapshot_codec::encoded_size(
+                        cwd,
+                        limits.max_output_bytes.saturating_sub(usage.output_bytes),
+                    )?
+                    .saturating_add(usize::from(!self.facts.cwds.is_empty() || !cwds.is_empty()));
+                    output(usage, limits, bytes, 0)?;
+                    false_encoded += bytes;
+                    cwds.push(cwd);
+                }
+            }
+            if !first_user_seen {
+                if let Entry::User(user) = entry {
+                    first_user_seen = true;
+                    if self.token.is_empty() {
+                        continue;
+                    }
+                    let parts = TextParts::user(&user.content);
+                    read(
+                        usage,
+                        limits,
+                        parts.blocks().saturating_mul(size_of::<usize>()),
+                        0,
+                    )?;
+                    read(usage, limits, parts.bytes(), 0)?;
+                    first_user_contains = parts.contains(self.token.as_bytes(), &self.prefixes);
+                }
+            }
+        }
+        cancel.check(limits.deadline_unix_ms)?;
+        let mut accounted = self.accounted_bytes();
+        let old_seen_capacity = self.seen.capacity();
+        let old_cwds_capacity = self.facts.cwds.capacity();
+        for cwd in cwds {
+            let key = cwd.to_owned();
+            let value = cwd.to_owned();
+            accounted += key.capacity() + value.capacity();
+            self.seen.insert(key);
+            self.facts.cwds.push(value);
+        }
+        accounted += (self.seen.capacity() - old_seen_capacity) * size_of::<String>()
+            + (self.facts.cwds.capacity() - old_cwds_capacity) * size_of::<String>();
+        self.first_user_seen = first_user_seen;
+        self.facts.first_user_contains = first_user_contains;
+        self.accounted.store(accounted, Ordering::Relaxed);
+        self.false_encoded.store(false_encoded, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -215,59 +350,17 @@ pub fn source_facts(
     let limits = &capped;
     cancel.check(limits.deadline_unix_ms)?;
     read(usage, limits, token.len(), 0)?;
-    let mut facts = SourceFacts {
-        cwds: Vec::new(),
-        first_user_contains: false,
-    };
-    output(
-        usage,
+    let mut index = SourceFactsIndex::new(token);
+    index.append(
+        snapshot
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.entries.iter()),
         limits,
-        snapshot_codec::encoded_size(&facts, limits.max_output_bytes)?,
-        1,
+        cancel,
+        usage,
     )?;
-    let prefixes = prefixes(token.as_bytes());
-    let mut seen = HashSet::new();
-    let mut first_user_seen = false;
-    for entry in snapshot
-        .chunks
-        .iter()
-        .flat_map(|chunk| chunk.entries.iter())
-    {
-        cancel.check(limits.deadline_unix_ms)?;
-        read(usage, limits, size_of::<usize>(), 1)?;
-        if let Some(cwd) = entry.meta().and_then(|meta| meta.cwd.as_deref()) {
-            read(usage, limits, cwd.len(), 0)?;
-            if !seen.contains(cwd) {
-                let bytes = snapshot_codec::encoded_size(
-                    cwd,
-                    limits.max_output_bytes.saturating_sub(usage.output_bytes),
-                )?
-                .saturating_add(usize::from(!facts.cwds.is_empty()));
-                output(usage, limits, bytes, 0)?;
-                seen.insert(cwd);
-                facts.cwds.push(cwd.to_owned());
-            }
-        }
-        if !first_user_seen {
-            if let Entry::User(user) = entry {
-                first_user_seen = true;
-                if token.is_empty() {
-                    continue;
-                }
-                let parts = TextParts::user(&user.content);
-                read(
-                    usage,
-                    limits,
-                    parts.blocks().saturating_mul(size_of::<usize>()),
-                    0,
-                )?;
-                read(usage, limits, parts.bytes(), 0)?;
-                facts.first_user_contains = parts.contains(token.as_bytes(), &prefixes);
-            }
-        }
-    }
-    cancel.check(limits.deadline_unix_ms)?;
-    let encoded = snapshot_codec::encode(&facts, limits.max_output_bytes)?;
+    let encoded = snapshot_codec::encode(index.facts(), limits.max_output_bytes)?;
     usage.output_bytes = encoded.len();
     Ok(encoded)
 }
@@ -391,13 +484,146 @@ pub fn staging_bytes(limits: &WorkLimits, token_bytes: usize) -> usize {
                 .min(limits.max_output_bytes)
                 .saturating_mul(64),
         )
-        .saturating_add(token_bytes.saturating_mul(size_of::<usize>()))
+        .saturating_add(token_bytes.saturating_mul(size_of::<usize>() + 1))
         .saturating_add(8192)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn limits() -> WorkLimits {
+        WorkLimits {
+            max_read_bytes: 65536,
+            max_source_read_bytes: 65536,
+            max_events: 100,
+            max_items: 100,
+            max_output_bytes: 65536,
+            max_discovery_entries: 100,
+            max_sources: 2,
+            deadline_unix_ms: u64::MAX,
+        }
+    }
+
+    fn user(uuid: &str, text: &str, cwd: &str) -> Entry {
+        let raw = sonic_rs::json!({
+            "type":"user", "sessionId":"review-source", "uuid":uuid,
+            "timestamp":"2026-11-02T00:00:00Z", "cwd":cwd,
+            "message":{"role":"user","content":text}
+        });
+        crate::parse::parse_bytes(&sonic_rs::to_vec(&raw).unwrap(), |_| true)
+            .unwrap()
+            .pop()
+            .unwrap()
+    }
+
+    #[test]
+    fn source_facts_survive_persistence_and_append_without_revisiting_old_users() {
+        let first = user("first", "ordinary first user", "/first");
+        let second = user("second", "reviewer-marker", "/second");
+        let repeated = user("third", "reviewer-marker", "/first");
+        let cancel = Cancellation::default();
+        let mut index = SourceFactsIndex::new("reviewer-marker");
+        index
+            .append([&first], &limits(), &cancel, &mut TextUsage::default())
+            .unwrap();
+        let encoded = sonic_rs::to_vec(&index).unwrap();
+        let mut index: SourceFactsIndex = sonic_rs::from_slice(&encoded).unwrap();
+        let mut usage = TextUsage::default();
+        index
+            .append([&second, &repeated], &limits(), &cancel, &mut usage)
+            .unwrap();
+        assert_eq!(usage.events, 2);
+        assert_eq!(index.facts().cwds, ["/first", "/second"]);
+        assert!(!index.facts().first_user_contains);
+        let size_audits = index.size_audits.load(Ordering::Relaxed);
+        let mut unchanged = TextUsage::default();
+        index
+            .append([], &limits(), &cancel, &mut unchanged)
+            .unwrap();
+        assert_eq!((unchanged.events, unchanged.read_bytes), (0, 0));
+        assert_eq!(index.size_audits.load(Ordering::Relaxed), size_audits);
+    }
+
+    #[test]
+    fn source_facts_true_match_preserves_false_preflight_budget() {
+        let first = user("first", "reviewer-marker", "/first");
+        let mut index = SourceFactsIndex::new("reviewer-marker");
+        index
+            .append(
+                [&first],
+                &limits(),
+                &Cancellation::default(),
+                &mut TextUsage::default(),
+            )
+            .unwrap();
+        let actual = snapshot_codec::encoded_size(index.facts(), usize::MAX).unwrap();
+        let tight = WorkLimits {
+            max_output_bytes: actual,
+            ..limits()
+        };
+        let error = index
+            .append(
+                [],
+                &tight,
+                &Cancellation::default(),
+                &mut TextUsage::default(),
+            )
+            .unwrap_err();
+        assert_eq!(error.status, Status::OutputLimit);
+        let exact = WorkLimits {
+            max_output_bytes: actual + 1,
+            ..limits()
+        };
+        index
+            .append(
+                [],
+                &exact,
+                &Cancellation::default(),
+                &mut TextUsage::default(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn source_facts_staging_accounts_for_owned_token_and_prefixes() {
+        let token_bytes = 65536;
+        let tight = WorkLimits {
+            max_output_bytes: 64,
+            max_events: 1,
+            ..limits()
+        };
+        assert!(staging_bytes(&tight, token_bytes) >= token_bytes * (size_of::<usize>() + 1));
+    }
+
+    #[test]
+    fn source_facts_budget_failure_preserves_committed_state() {
+        let first = user("first", "reviewer-marker", "/first");
+        let mut index = SourceFactsIndex::new("reviewer-marker");
+        let before = sonic_rs::to_vec(&index).unwrap();
+        let exhausted = WorkLimits {
+            max_read_bytes: 0,
+            ..limits()
+        };
+        assert!(index
+            .append(
+                [&first],
+                &exhausted,
+                &Cancellation::default(),
+                &mut TextUsage::default()
+            )
+            .is_err());
+        assert_eq!(sonic_rs::to_vec(&index).unwrap(), before);
+        index
+            .append(
+                [&first],
+                &limits(),
+                &Cancellation::default(),
+                &mut TextUsage::default(),
+            )
+            .unwrap();
+        assert!(index.facts().first_user_contains);
+    }
 
     #[test]
     fn streaming_contains_matches_exact_joined_text_across_empty_and_unicode_parts() {

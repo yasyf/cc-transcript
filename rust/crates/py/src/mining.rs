@@ -42,6 +42,15 @@ impl CallableReviewFormat for CompiledCallableFormat {
         &self.name
     }
 
+    fn fingerprint(&self) -> [u8; 32] {
+        let mut fingerprint = [0; 32];
+        let width = std::mem::size_of::<usize>();
+        fingerprint[..width].copy_from_slice(&(self.pattern.as_ptr() as usize).to_le_bytes());
+        fingerprint[width..2 * width]
+            .copy_from_slice(&(self.extract.as_ptr() as usize).to_le_bytes());
+        fingerprint
+    }
+
     fn bounded(&self) -> bool {
         self.bounded
     }

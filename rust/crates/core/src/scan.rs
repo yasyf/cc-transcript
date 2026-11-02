@@ -69,6 +69,14 @@ impl<'store> ScanBudget<'store> {
     pub fn new(store: &'store NativeStore, limits: WorkLimits) -> Self {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let context = json!({"claimant":format!("cli-scan-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)),"admission":"background","authority":{"kind":"user","effective_uid":unsafe { libc::geteuid() }.to_string()},"registry_generation":store.default_registry_generation()});
+        Self::with_context(store, limits, context)
+    }
+
+    pub(crate) fn with_context(
+        store: &'store NativeStore,
+        limits: WorkLimits,
+        context: Value,
+    ) -> Self {
         Self {
             limits,
             progress: ScanProgress::default(),
