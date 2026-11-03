@@ -429,7 +429,7 @@ fn warm_with(store: &NativeStore, mut request: Value, rounds: usize, owner: &Val
     let mut background = owner.clone();
     background.insert("work_class", json!("background"));
     for _ in 0..rounds {
-        let reply = store.request(&request, &background, &Cancellation::default());
+        let reply = store.test_request(&request, &background, &Cancellation::default());
         assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
         if reply["data"]["complete"].as_bool() == Some(true) {
             return;
@@ -456,7 +456,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
     let owner = context_for("scaling", false);
     let root = settle(
         &store,
-        store.request(
+        store.test_request(
             &acquire(&scenario.root.path),
             &owner,
             &Cancellation::default(),
@@ -467,7 +467,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
     warm(&store, scenario, &owner);
     let prepared = settle(
         &store,
-        store.request(
+        store.test_request(
             &prepare_request(&root, &scenario.ids(), &scenario.roots(), &[]),
             &owner,
             &Cancellation::default(),
@@ -478,7 +478,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
     let graph = prepared["data"]["handle"].clone();
     let negative = settle(
         &store,
-        store.request(
+        store.test_request(
             &graph_query(&graph, missing_tool(), json!([])),
             &owner,
             &Cancellation::default(),
@@ -498,7 +498,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
 fn warm_hit(store: &NativeStore, path: &Path, owner: &Value) {
     let response = settle(
         store,
-        store.request(&acquire(path), owner, &Cancellation::default()),
+        store.test_request(&acquire(path), owner, &Cancellation::default()),
         owner,
     );
     release_lease(store, &ok_handle(&response), owner);
@@ -828,7 +828,7 @@ fn measured(store: &NativeStore, operation: impl FnOnce()) -> Measured {
 
 fn cached_hit(store: &NativeStore, path: &Path, owner: &Value, label: &str) -> Measured {
     measured(store, || {
-        let response = store.request(&acquire(path), owner, &Cancellation::default());
+        let response = store.test_request(&acquire(path), owner, &Cancellation::default());
         assert_eq!(
             response["status"].as_str(),
             Some("ok"),
@@ -880,7 +880,7 @@ fn paged_costs(store: &NativeStore, request: Value, owner: &Value) -> (Value, Ve
     loop {
         let mut reply = None;
         costs.push(measured(store, || {
-            reply = Some(store.request(&next, owner, &Cancellation::default()));
+            reply = Some(store.test_request(&next, owner, &Cancellation::default()));
         }));
         let reply = reply.unwrap();
         match reply["cursor"].as_str() {
@@ -8221,7 +8221,7 @@ fn concurrent_acquire_pin_release_and_drop_churn_stays_conserved() {
     let sources: Vec<_> = (0..3)
         .map(|index| Arc::new(LedgerSource::new(&lines(index * 4..index * 4 + 4))))
         .collect();
-    let store = Arc::new(store_with(256, 4, &[]));
+    let store = Arc::new(agent_store_with(256, 4, &[]));
     let (done, finished) = mpsc::channel();
     let workers: Vec<_> = (0..4)
         .map(|worker| {
@@ -8238,7 +8238,7 @@ fn concurrent_acquire_pin_release_and_drop_churn_stays_conserved() {
                     }
                     let response = settle(
                         &store,
-                        store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+                        store.test_request(&acquire(&source.path), &owner, &Cancellation::default()),
                         &owner,
                     );
                     let handle = ok_handle(&response);
@@ -8534,7 +8534,7 @@ fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
     let mut every_hit = Vec::new();
     for count in SCALING_COUNTS {
         let scenario = scaling_scenario(count);
-        let warmed = warmed_registry(prepared_store(), &scenario);
+        let warmed = warmed_registry(agent_store_with(4096, 2048, &[]), &scenario);
         let (store, owner) = (&warmed.store, &warmed.owner);
         assert!(
             ledger(store)[GENERATIONS] > count,
@@ -8568,7 +8568,7 @@ fn f2_a_thousand_cached_hits_do_the_same_retained_work() {
     let count = 923;
     let scenario = scaling_scenario(count);
     let warmed = warmed_registry(
-        store_with(4096, 2048, &[("max_lease_ms", 600_000)]),
+        agent_store_with(4096, 2048, &[("max_lease_ms", 600_000)]),
         &scenario,
     );
     let (store, owner) = (&warmed.store, &warmed.owner);
@@ -8607,7 +8607,7 @@ fn f2_a_thousand_cached_hits_do_the_same_retained_work() {
 fn f2_graph_pages_cost_bounded_work_per_page_request() {
     for count in SCALING_COUNTS {
         let scenario = scaling_scenario(count);
-        let warmed = warmed_registry(prepared_store(), &scenario);
+        let warmed = warmed_registry(agent_store_with(4096, 2048, &[]), &scenario);
         let (store, owner, graph) = (&warmed.store, &warmed.owner, &warmed.graph);
         assert!(
             ledger(store)[GENERATIONS] > count,
@@ -8619,7 +8619,7 @@ fn f2_graph_pages_cost_bounded_work_per_page_request() {
             let Measured { work, copies, .. } = measured(store, || {
                 let reply = settle(
                     store,
-                    store.request(
+                    store.test_request(
                         &graph_query(graph, marker_tool(), json!([])),
                         owner,
                         &Cancellation::default(),
