@@ -3,8 +3,9 @@ use std::sync::Arc;
 use cc_transcript_core::snapshot::{
     Cancellation, NativeStore, SnapshotError, Status, TranscriptSnapshot,
 };
-use cc_transcript_core::snapshot_codec::{self, EventWire, MAX_RECORDS, MAX_RECORD_BYTES};
+use cc_transcript_core::snapshot_codec::{self, Bound, EventWire, MAX_RECORDS, MAX_RECORD_BYTES};
 use cc_transcript_core::snapshot_input::native_input;
+use sha2::{Digest, Sha256};
 use sonic_rs::{json, JsonValueTrait, Value};
 
 use crate::frame::MAX_FRAME_BYTES;
@@ -17,18 +18,21 @@ const PAGE_ENVELOPE_BYTES: usize = 16 * 1024;
 struct Mark {
     source: String,
     position: usize,
+    digest: String,
 }
 
 impl Mark {
     fn encode(&self) -> String {
-        format!("v2:{}:{}", self.source, self.position)
+        format!("v3:{}:{}:{}", self.source, self.position, self.digest)
     }
 
     fn decode(token: &str) -> Option<Self> {
-        let (source, position) = token.strip_prefix("v2:")?.rsplit_once(':')?;
+        let (rest, digest) = token.strip_prefix("v3:")?.rsplit_once(':')?;
+        let (source, position) = rest.rsplit_once(':')?;
         Some(Self {
             source: source.to_owned(),
             position: position.parse().ok()?,
+            digest: digest.to_owned(),
         })
     }
 }
@@ -50,6 +54,21 @@ fn record(snapshot: &TranscriptSnapshot, position: usize) -> Result<String, Snap
         &EventWire::new(position, &chunk.entries[position - chunk.start]),
         MAX_RECORD_BYTES,
     )
+}
+
+fn digest(snapshot: &TranscriptSnapshot, position: usize) -> Result<String, SnapshotError> {
+    if position == 0 {
+        return Ok(String::new());
+    }
+    let chunk = &snapshot.chunks[snapshot
+        .chunks
+        .partition_point(|chunk| chunk.start < position)
+        - 1];
+    let encoded = snapshot_codec::encode_bounded(
+        &EventWire::new(position - 1, &chunk.entries[position - 1 - chunk.start]),
+        Bound::budget("review event digest", usize::MAX),
+    )?;
+    Ok(format!("{:x}", Sha256::digest(encoded.as_bytes()))[..16].to_owned())
 }
 
 fn revision(snapshot: &TranscriptSnapshot) -> String {
@@ -84,11 +103,20 @@ fn charge(snapshot: &TranscriptSnapshot, position: usize, output_bytes: usize) -
     }
 }
 
-fn resumed(snapshot: &TranscriptSnapshot, token: Option<&str>) -> Option<usize> {
-    token
-        .and_then(Mark::decode)
-        .filter(|mark| mark.source == source(snapshot) && mark.position <= snapshot.event_count)
-        .map(|mark| mark.position)
+fn resumed(
+    snapshot: &TranscriptSnapshot,
+    token: Option<&str>,
+) -> Result<Option<usize>, SnapshotError> {
+    let Some(mark) = token.and_then(Mark::decode) else {
+        return Ok(None);
+    };
+    if mark.source != source(snapshot)
+        || mark.position > snapshot.event_count
+        || mark.digest != digest(snapshot, mark.position)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(mark.position))
 }
 
 pub fn serve(
@@ -150,7 +178,7 @@ fn page(scope: &mut Scope<'_>, request: &Value, id: &str) -> Result<Value, Failu
         .get("context_events")
         .and_then(|count| count.as_u64())
         .map_or(0, |count| usize::try_from(count).unwrap_or(usize::MAX));
-    let resumed = resumed(&snapshot, token);
+    let resumed = resumed(&snapshot, token).map_err(|error| scope.fail(error))?;
     let fresh = resumed.unwrap_or(0);
     let start = fresh.saturating_sub(context_events);
     let budget = MAX_FRAME_BYTES - PAGE_ENVELOPE_BYTES;
@@ -193,6 +221,7 @@ fn page(scope: &mut Scope<'_>, request: &Value, id: &str) -> Result<Value, Failu
     let watermark = Mark {
         source: source(&snapshot),
         position,
+        digest: digest(&snapshot, position).map_err(|error| scope.fail(error))?,
     };
     scope.materialize(used);
     scope.checkpoint()?;
@@ -230,13 +259,14 @@ mod tests {
         let mark = Mark {
             source: "1:2:0:0".to_owned(),
             position: 42,
+            digest: "00ff".to_owned(),
         };
         let decoded = Mark::decode(&mark.encode()).unwrap();
         assert_eq!(
-            (decoded.source, decoded.position),
-            ("1:2:0:0".to_owned(), 42)
+            (decoded.source, decoded.position, decoded.digest),
+            ("1:2:0:0".to_owned(), 42, "00ff".to_owned())
         );
-        assert!(Mark::decode("v1:1:2:0:0:42:00ff").is_none());
-        assert!(Mark::decode("v2:1:2:0:0:x").is_none());
+        assert!(Mark::decode("v2:1:2:0:0:42").is_none());
+        assert!(Mark::decode("v3:1:2:0:0:x:00ff").is_none());
     }
 }

@@ -243,7 +243,7 @@ fn review_events_page_only_events_past_the_watermark() {
     );
     assert_ne!(appended["source_revision"], revision);
 
-    let foreign = owner.review_events(&path, json!("v2:0:0:0:0:3"), 1);
+    let foreign = owner.review_events(&path, json!("v3:0:0:0:0:3:00ff"), 1);
     assert_eq!(positions(&foreign), [0, 1, 2, 3, 4]);
     assert_eq!(
         bounds(&foreign),
@@ -272,6 +272,21 @@ fn review_events_refuse_a_revision_the_source_no_longer_extends() {
     let restarted = owner.review_events(&path, first["watermark"].clone(), 0);
     assert_eq!(positions(&restarted), [0]);
     assert_eq!(restarted["reset"], json!(true));
+}
+
+#[test]
+fn review_events_restart_a_source_rewritten_in_place_after_an_owner_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("session.jsonl");
+    std::fs::write(&path, user("u0") + &user("u1")).unwrap();
+    let first = Owner::start().review_events(&path, json!(null), 0);
+    std::fs::write(&path, user("v0") + &user("v1") + &user("v2")).unwrap();
+    let rewritten = Owner::start().review_events(&path, first["watermark"].clone(), 0);
+    assert_eq!(positions(&rewritten), [0, 1, 2]);
+    assert_eq!(
+        bounds(&rewritten),
+        (json!(0), json!(0), json!(true), json!(true))
+    );
 }
 
 #[test]
