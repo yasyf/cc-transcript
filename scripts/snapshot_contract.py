@@ -453,6 +453,14 @@ class PreparedGlobPredicate(WireModel):
     subagents: Literal[True]
 
 
+class PreparedSourceEditPredicate(WireModel):
+    kind: Literal["has_source_edit"]
+    root: Text | None
+    exclude_suffixes: Annotated[list[Text], Field(max_length=256)]
+    exclude_prefixes: Annotated[list[Text], Field(max_length=256)]
+    subagents: Literal[True]
+
+
 class PreparedOverridePredicate(WireModel):
     kind: Literal["has_override"]
     token: Text
@@ -475,6 +483,7 @@ PreparedQuery = Annotated[
     | PreparedRegexPredicate
     | PreparedListPredicate
     | PreparedGlobPredicate
+    | PreparedSourceEditPredicate
     | PreparedOverridePredicate
     | PreparedErrorPredicate,
     Field(discriminator="kind"),

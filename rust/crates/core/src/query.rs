@@ -10,6 +10,7 @@
 //! methods port the self-session branch only (sidechain recursion is `subagents=False`).
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use regex::Regex;
 use sonic_rs::Value;
@@ -140,7 +141,15 @@ impl FileRef {
 
     /// Whether the path names a Python test file.
     pub fn is_test(&self) -> bool {
-        self.matches(&TEST_PATTERNS)
+        static PATTERNS: LazyLock<[Regex; 3]> = LazyLock::new(|| {
+            TEST_PATTERNS.map(|glob| {
+                Regex::new(&glob_to_regex(glob)).expect("translated glob is valid regex")
+            })
+        });
+        let name = pure_name(&self.path);
+        PATTERNS
+            .iter()
+            .any(|pattern| pattern.is_match(&self.path) || pattern.is_match(name))
     }
 
     /// The file extension including the leading dot (e.g. `.py`), or `""`.
