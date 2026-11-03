@@ -95,6 +95,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked -p cc-transcript-core --no-default-features --lib membership_cutoff_ -- --nocapture
 
+      - name: Test review admission of a large transcript under the default cap on Linux
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p cc-transcript-core --no-default-features --lib review_admission_ -- --nocapture
+
       - name: Test registered review continuation on Linux
         if: ${{ !cancelled() }}
         env:
