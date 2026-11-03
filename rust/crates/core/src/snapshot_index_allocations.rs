@@ -297,12 +297,14 @@ impl AllocationSet {
         let count = self.len().saturating_add(inserts);
         let width = size_of::<usize>() + size_of::<Arc<AllocationOwner>>() + 4 * size_of::<usize>();
         let bound = (count.saturating_mul(8) + 64).saturating_mul(width);
-        let nodes = bound.saturating_add(
-            inserts
-                .saturating_mul(count.max(1).ilog2() as usize + 4)
-                .saturating_mul(64 * width)
-                .min(bound),
-        );
+        let nodes = bound
+            .saturating_sub((self.len().saturating_mul(8) + 64).saturating_mul(width))
+            .saturating_add(
+                inserts
+                    .saturating_mul(count.max(1).ilog2() as usize + 4)
+                    .saturating_mul(64 * width)
+                    .min(bound),
+            );
         let queue = if state.queue.len().saturating_add(inserts) > state.queue.capacity() {
             state
                 .queue
@@ -320,20 +322,11 @@ impl AllocationSet {
         } else {
             0
         };
-        let registry = state
-            .bytes()
-            .saturating_sub(self.registry.admitted_bytes.load(Ordering::Acquire))
-            .saturating_add(queue)
+        let registry = queue
             .saturating_add(table)
             .saturating_add(inserts.saturating_mul(2 * arc_bytes::<AllocationOwner>()));
-        let pending = state
-            .queue
-            .len()
-            .saturating_add(inserts)
-            .saturating_mul(2 * size_of::<Arc<AllocationOwner>>());
         nodes
             .saturating_add(registry)
-            .saturating_add(pending)
             .saturating_add(arc_bytes::<()>())
     }
 

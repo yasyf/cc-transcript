@@ -95,6 +95,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked -p cc-transcript-core --no-default-features --lib membership_cutoff_ -- --nocapture
 
+      - name: Test review admission of a large transcript under the default cap on Linux
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p cc-transcript-core --no-default-features --lib review_admission_ -- --nocapture
+
       - name: Test registered review continuation on Linux
         if: ${{ !cancelled() }}
         env:
@@ -125,9 +129,11 @@ jobs:
         run: cargo test -p cc-transcript-py --lib
 
       - name: Test unpublished load charge work on Linux
+        if: ${{ !cancelled() }}
         run: cargo test -p cc-transcript-core --no-default-features --lib -- load_charge_ --nocapture
 
       - name: Test shared publication admission and unchanged source reuse
+        if: ${{ !cancelled() }}
         env:
           CARGO_BUILD_JOBS: "2"
         run: |
@@ -155,6 +161,7 @@ jobs:
           cargo test -p cc-transcript-core --no-default-features --lib -- call_lookup_matches_linear_oracle_across_append_boundaries --nocapture
 
       - name: Test scalar admission work on Linux
+        if: ${{ !cancelled() }}
         run: cargo test -p cc-transcript-core --no-default-features --lib -- admission_report_ --nocapture
 
       - name: Test prepared-facts disk cache on Linux
@@ -164,6 +171,7 @@ jobs:
         run: cargo test -p cc-transcript-core --no-default-features --lib -- location_
 
       - name: Test source cache ownership on Linux
+        if: ${{ !cancelled() }}
         run: |
           cargo test -p cc-transcript-core --no-default-features --lib -- pressure_ --nocapture
           cargo test -p cc-transcript-core --no-default-features --lib -- cache_ --nocapture

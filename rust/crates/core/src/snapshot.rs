@@ -5276,7 +5276,7 @@ impl NativeStore {
                 let seed = Self::carried(&mut state, &lineage, &snapshot.chunks);
                 let mut stage = ClassifierStage::seeded(seed.as_deref());
                 let retain_committed = snapshot.provisional_tail && stage.indexed == committed;
-                let ownership_reserve = stage.activity.pending_allocation_reservation();
+                let ownership_reserve = stage.activity.shared_ownership_reservation();
                 let accounted = stage.accounted_bytes();
                 let stored = key.clone();
                 let additional = CLASSIFIER_SLOT_BYTES
@@ -5419,7 +5419,7 @@ impl NativeStore {
                 .append_tail(&snapshot.range(start..stop), flags.as_deref());
             stage.indexed = stop;
             if snapshot.provisional_tail && stop == committed {
-                let ownership_reserve = stage.activity.pending_allocation_reservation();
+                let ownership_reserve = stage.activity.shared_ownership_reservation();
                 {
                     let mut state = self.lock_state();
                     self.admit_memory(&mut state, context, ownership_reserve)?;
@@ -9660,6 +9660,20 @@ impl NativeStore {
         after.saturating_sub(fence.capacity())
     }
 
+    fn indexed_payload_bytes(entry: &Entry) -> usize {
+        entry
+            .tool_uses()
+            .map(|tool| {
+                let charge = crate::snapshot_memory::tool_use_charge(tool);
+                charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes
+            })
+            .sum::<usize>()
+            + match entry {
+                Entry::User(user) => user.content.text_len(),
+                _ => 0,
+            }
+    }
+
     fn unindexed(
         chunks: &[Arc<EntryChunk>],
         indexed: usize,
@@ -9924,9 +9938,9 @@ impl NativeStore {
             let (bytes, calls, results, uuid_max, result_max) =
                 Self::unindexed(&load.chunks, load.indexed, stop).fold(
                     (0usize, 0usize, 0usize, 0usize, 0usize),
-                    |(bytes, calls, results, uuid_max, result_max), (entry, charge)| {
+                    |(bytes, calls, results, uuid_max, result_max), (entry, _)| {
                         (
-                            bytes + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
+                            bytes + Self::indexed_payload_bytes(entry),
                             calls + entry.tool_uses().count(),
                             results + entry.tool_results().count(),
                             uuid_max.max(
@@ -9966,7 +9980,11 @@ impl NativeStore {
             } else {
                 extension
             };
-            self.extend_load_reservation(slot, context, extension)?;
+            self.extend_load_reservation(
+                slot,
+                context,
+                extension.saturating_sub(read_bound.saturating_add(decode_bound)),
+            )?;
             let entries: Vec<&Entry> = Self::unindexed(&load.chunks, load.indexed, stop)
                 .map(|(entry, _)| entry)
                 .collect();
@@ -12933,6 +12951,7 @@ mod tests {
     include!("snapshot_skill_demand_tests.rs");
     include!("snapshot_compact_codex_tests.rs");
     include!("snapshot_registered_review_tests.rs");
+    include!("snapshot_review_admission_tests.rs");
     include!("snapshot_hydrate_budget_tests.rs");
     include!("snapshot_interactions_tests.rs");
     include!("snapshot_interaction_api_tests.rs");

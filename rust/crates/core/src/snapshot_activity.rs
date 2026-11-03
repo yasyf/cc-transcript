@@ -432,6 +432,13 @@ impl ActivityIndex {
         self.ensure_allocation_owners();
     }
 
+    pub(crate) fn shared_ownership_reservation(&self) -> usize {
+        self.allocation_owners.get().map_or_else(
+            || AllocationSet::cold_reservation(self.allocation_count_bound()),
+            |_| 0,
+        )
+    }
+
     fn ensure_allocation_owners(&self) -> &AllocationSet {
         self.allocation_owners.get_or_init(|| {
             let mut owners = AllocationSet::default();
