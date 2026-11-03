@@ -13,7 +13,6 @@ parsing a command pulls in no Python module or bash grammar on the hook hot path
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Literal
@@ -71,7 +70,7 @@ from cc_transcript.ids import ToolDigest as ToolDigest
 from cc_transcript.ids import tool_digest as tool_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from typing import Any
 
 TOOL_ALIASES: dict[str, str] = {
@@ -143,14 +142,14 @@ class FallbackCall:
 
     Attributes:
         name: The tool name exactly as invoked.
-        raw: The original input mapping, verbatim.
+        raw: The original input, verbatim.
         error: The JSON-serialization failure this call degraded from. A
             :class:`FallbackCall` the parse functions build always carries a
             non-None error; excluded from equality and repr.
     """
 
     name: str
-    raw: Mapping[str, Any]
+    raw: Mapping[str, Any] | str | None
     error: str | None = field(default=None, compare=False, repr=False)
 
     def matches(self, spec: str) -> bool:
@@ -229,8 +228,6 @@ def parse_tool_call(
         >>> call.new
         'y'
     """
-    if not isinstance(input, Mapping):
-        return _native.toolcall_parse_view(name, json.dumps(input), on_error)
     try:
         return _native.toolcall_parse_view(name, json.dumps(input), on_error)
     except (TypeError, ValueError) as exc:
