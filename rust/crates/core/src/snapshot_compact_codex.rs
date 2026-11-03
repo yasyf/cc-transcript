@@ -398,9 +398,6 @@ impl NativeStore {
         cancel: &Cancellation,
         usage: &mut [u64; 20],
     ) -> Result<Option<PreparedSourceOutcome<'_>>, SnapshotError> {
-        if !self.agent_sources {
-            return Ok(None);
-        }
         let Some(previous) = self.previous_compact_codex(stamp, context, classifier)? else {
             return Ok(None);
         };

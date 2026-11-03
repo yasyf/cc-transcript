@@ -8738,7 +8738,7 @@ impl NativeStore {
                         })
                         .or_else(|| state.source_spine(stamp))
                 } else {
-                    None
+                    state.source_spine(stamp)
                 };
                 let agent_codex = if self.agent_sources {
                     previous.as_ref().and_then(|snapshot| {
@@ -9124,7 +9124,22 @@ impl NativeStore {
                         if let Some((_, bytes)) = &pledge {
                             state.transient_bytes += bytes;
                         }
-                        state.set_load_charge(&slot, pending_charge);
+                        let settled = if publishing {
+                            0
+                        } else {
+                            slot.index_registry
+                                .lock()
+                                .expect("load index registry")
+                                .clone()
+                                .map_or(0, |witness| {
+                                    let growth = witness.allocation().map_or(0, |allocation| {
+                                        state.ledger.shared.registry_growth_bytes(allocation)
+                                    });
+                                    state.ledger.shared.settle_existing_index_registry(&witness);
+                                    growth
+                                })
+                        };
+                        state.set_load_charge(&slot, pending_charge - settled);
                         lease = pledge.map(|(token, bytes)| {
                             (token, ProjectionReservation { store: self, bytes })
                         });
