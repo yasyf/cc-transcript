@@ -14871,7 +14871,13 @@ mod tests {
                     owner,
                     &Cancellation::default(),
                 )
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{error:?} at page {:?}: {:?}",
+                        pages.last(),
+                        store.take_admission_refusal()
+                    )
+                });
         }
         (
             store.pin(&reply["description"]["handle"], owner).unwrap(),
@@ -15841,7 +15847,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "publication now charges growth and extends its reservation, but a one-event append still hits accounted storage admission at a 64 MiB cap; the holder is not yet known"]
     fn carried_labels_publish_within_the_page_reservation() {
         let source = Source::new(&users(0..5000));
         let store = NativeStore::new_agent(&json!({"max_events_per_step":4096,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":64,"reserved_hook_leases":1})).unwrap();
