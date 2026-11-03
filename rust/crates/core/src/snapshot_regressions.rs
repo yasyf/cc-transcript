@@ -104,7 +104,7 @@ fn resume(store: &NativeStore, response: &Value, owner: &Value, cancel: &Cancell
         Some("incomplete"),
         "{response:?}"
     );
-    store.request(
+    store.test_request(
         &json!({"schema":SCHEMA,"id":"race-resume","operation":"resume",
         "cursor":response["cursor"]}),
         owner,
@@ -509,7 +509,12 @@ fn old_generation_first_lift_after_append_preserves_each_classifier_and_late_res
         "timestamp":"2026-01-02T03:04:07Z","message":{"content":[{"type":"tool_result","tool_use_id":"edit","content":"done"}]}})
     );
     let source = RaceSource::new(&[user("a"), tool, user("b")].concat());
-    let store = race_store();
+    let store = NativeStore::new_agent(
+        &json!({"max_read_bytes_per_step":128,"max_events_per_step":2,
+        "max_entry_bytes":8192,"max_retained_bytes":32*1024*1024,
+        "reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1}),
+    )
+    .unwrap();
     let owner = context(&store, &source, "reader");
     store
         .register_classifier(
@@ -535,14 +540,14 @@ fn old_generation_first_lift_after_append_preserves_each_classifier_and_late_res
         .unwrap();
     let old_response = finish(
         &store,
-        store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+        store.request_agent(&acquire(&source.path), &owner, &Cancellation::default()),
         &owner,
     );
     let old = pin(&store, &old_response, &owner);
     source.append(&[result, user("c")].concat());
     let new_response = finish(
         &store,
-        store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+        store.request_agent(&acquire(&source.path), &owner, &Cancellation::default()),
         &owner,
     );
     let new = pin(&store, &new_response, &owner);

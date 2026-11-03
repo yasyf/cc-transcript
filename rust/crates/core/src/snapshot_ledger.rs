@@ -246,6 +246,7 @@ pub enum LedgerEvent {
     Chunk(usize),
     IndexAllocation(usize, usize),
     IndexRegistry(usize),
+    IndexRegistryChanged(usize),
     UnpublishedLoad(usize),
 }
 
@@ -279,6 +280,14 @@ impl ReleaseQueue {
 pub struct LedgerHook(OnceLock<(Weak<ReleaseQueue>, LedgerEvent)>);
 
 impl LedgerHook {
+    pub(crate) fn notify(&self, event: LedgerEvent) {
+        if let Some((queue, _)) = self.0.get() {
+            if let Some(queue) = queue.upgrade() {
+                queue.push(event);
+            }
+        }
+    }
+
     pub(crate) fn arm(&self, queue: &Arc<ReleaseQueue>, event: LedgerEvent) {
         let (armed_queue, armed_event) = self.0.get_or_init(|| (Arc::downgrade(queue), event));
         assert!(

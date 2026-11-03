@@ -119,7 +119,8 @@ impl AllocationOwner {
 
 impl Drop for AllocationOwner {
     fn drop(&mut self) {
-        if self.pending.swap(false, Ordering::AcqRel) {
+        let pending = self.pending.swap(false, Ordering::AcqRel);
+        if pending {
             self.registry
                 .pending_bytes
                 .fetch_sub(self.bytes, Ordering::AcqRel);
@@ -132,6 +133,11 @@ impl Drop for AllocationOwner {
         {
             state.unqueue(self.id);
             state.owners.remove(&self.id);
+        }
+        if pending {
+            self.registry
+                .hook
+                .notify(LedgerEvent::IndexRegistryChanged(self.registry_id()));
         }
     }
 }
