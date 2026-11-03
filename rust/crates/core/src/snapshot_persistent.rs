@@ -148,7 +148,7 @@ impl<K: Ord + Clone + Borrow<str>, V: Clone> Tree<K, V> {
         previous: Option<&Self>,
         _key_allocation: fn(&K) -> Option<(usize, usize)>,
     ) -> usize {
-        if previous.is_some_and(|previous| self.entries.ptr_eq(&previous.entries)) {
+        if previous.is_some_and(|previous| Arc::ptr_eq(&self.metadata, &previous.metadata)) {
             0
         } else {
             Self::metadata_bound(self.len(), self.max_key_bytes)
@@ -259,7 +259,7 @@ impl<T: Clone> Vector<T> {
         ))
     }
     pub(crate) fn bytes_since(&self, previous: Option<&Self>) -> usize {
-        if previous.is_some_and(|previous| self.entries.ptr_eq(&previous.entries)) {
+        if previous.is_some_and(|previous| Arc::ptr_eq(&self.metadata, &previous.metadata)) {
             0
         } else {
             Self::metadata_bound(self.len())
