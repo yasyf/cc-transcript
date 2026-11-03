@@ -14600,16 +14600,20 @@ mod tests {
         id: &str,
         owner: &Value,
     ) -> Arc<TranscriptSnapshot> {
-        let response = finish(
-            store,
-            store.test_request(
-                &classifier_acquire(path, id, 1024 * 1024),
+        loop {
+            let response = finish(
+                store,
+                store.test_request(
+                    &classifier_acquire(path, id, 1024 * 1024),
+                    owner,
+                    &Cancellation::default(),
+                ),
                 owner,
-                &Cancellation::default(),
-            ),
-            owner,
-        );
-        store.pin(handle(&response), owner).unwrap()
+            );
+            if response["status"].as_str() != Some("changed") {
+                return store.pin(handle(&response), owner).unwrap();
+            }
+        }
     }
 
     fn users(range: Range<usize>) -> String {

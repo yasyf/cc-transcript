@@ -2998,6 +2998,7 @@ impl NativeStore {
                 | "has_tool"
                 | "has_command"
                 | "has_edit_to"
+                | "has_source_edit"
                 | "has_read"
                 | "has_skill"
                 | "has_override"

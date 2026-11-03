@@ -9,6 +9,10 @@ PRIMARY_ONLY_PREDICATES = [
     pytest.param({"kind": "has_command_regex", "pattern": "git", "subagents": True}, id="regex"),
     pytest.param({"kind": "has_edit_to", "values": ["*.rs"], "subagents": True}, id="edit-glob"),
     pytest.param({"kind": "has_read_glob", "values": ["*.rs"], "subagents": True}, id="read-glob"),
+    pytest.param(
+        {"kind": "has_source_edit", "root": None, "exclude_suffixes": [], "exclude_prefixes": [], "subagents": True},
+        id="source-edit",
+    ),
     pytest.param({"kind": "deep_predicate_inputs", "order": "forward"}, id="inputs"),
 ]
 

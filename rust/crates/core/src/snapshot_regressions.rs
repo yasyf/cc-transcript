@@ -644,19 +644,27 @@ struct Family {
 
 impl Family {
     fn new(store: NativeStore) -> Self {
-        let source = RaceSource::new(
+        let members: Vec<(&str, String)> =
+            MEMBERS.iter().map(|name| (*name, member(name))).collect();
+        Self::with(
+            store,
             &[
                 user("root"),
                 call("root-read", "Read", json!({"file_path":"root.rs"})),
             ]
             .concat(),
-        );
+            &members,
+        )
+    }
+
+    fn with(store: NativeStore, root: &str, members: &[(&str, String)]) -> Self {
+        let source = RaceSource::new(root);
         let owner = context(&store, &source, "observer");
-        let members: Vec<PathBuf> = MEMBERS
+        let members: Vec<PathBuf> = members
             .iter()
-            .map(|name| {
+            .map(|(name, contents)| {
                 let path = source.directory.join(format!("{name}.jsonl"));
-                std::fs::write(&path, member(name)).unwrap();
+                std::fs::write(&path, contents).unwrap();
                 path
             })
             .collect();
@@ -1363,6 +1371,51 @@ fn glob_and_regex_kinds_answer_only_as_the_primary_while_the_other_eight_settle_
     );
     assert_eq!(
         family.ask(matched, None)["data"],
+        json!({"kind":"scalar","value":true})
+    );
+}
+
+#[test]
+fn has_source_edit_reaches_subagents_and_ignores_what_the_predicate_excludes() {
+    let query = json!({"kind":"has_source_edit","root":null,"exclude_suffixes":[".md"],
+        "exclude_prefixes":["docs"],"subagents":true});
+    let excluded = [
+        user("root"),
+        call(
+            "root-docs",
+            "Edit",
+            json!({"file_path":"docs/guide.py","old_string":"a","new_string":"b"}),
+        ),
+        call(
+            "root-prose",
+            "Write",
+            json!({"file_path":"notes.md","content":"x"}),
+        ),
+        call(
+            "root-test",
+            "Write",
+            json!({"file_path":"pkg/tests/test_app.py","content":"x"}),
+        ),
+        call("root-read", "Read", json!({"file_path":"src/app.py"})),
+    ]
+    .concat();
+    let quiet = Family::with(swift_store(), &excluded, &[]);
+    assert_eq!(
+        quiet.ask(query.clone(), None)["data"],
+        json!({"kind":"scalar","value":false})
+    );
+    let member = [
+        user("member"),
+        call(
+            "member-write",
+            "Write",
+            json!({"file_path":"src/app.py","content":"x"}),
+        ),
+    ]
+    .concat();
+    let edited = Family::with(swift_store(), &excluded, &[("member", member)]);
+    assert_eq!(
+        edited.ask(query, None)["data"],
         json!({"kind":"scalar","value":true})
     );
 }

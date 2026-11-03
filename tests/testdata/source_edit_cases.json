@@ -1,0 +1,32 @@
+{
+  "exclude_suffixes": [".md", ".json", ".toml"],
+  "exclude_prefixes": ["docs", ".claude", ".github"],
+  "cases": [
+    {"path": "src/app.py", "root": "/fixture-root", "expected": true},
+    {"path": "../outside/app.py", "root": "/fixture-root", "expected": true},
+    {"path": "/fixture-root/src/app.py", "root": "/fixture-root", "expected": true},
+    {"path": "/elsewhere/src/app.py", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root-sibling/app.py", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root/../elsewhere/app.py", "root": "/fixture-root", "expected": false},
+    {"path": "/elsewhere/../fixture-root/app.py", "root": "/fixture-root", "expected": true},
+    {"path": "/anywhere/app.py", "root": null, "expected": true},
+    {"path": "/fixture-root/README.md", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root/settings.toml", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root/Makefile", "root": "/fixture-root", "expected": true},
+    {"path": "/fixture-root/.env", "root": "/fixture-root", "expected": true},
+    {"path": "/fixture-root/archive.md.gz", "root": "/fixture-root", "expected": true},
+    {"path": "/fixture-root/pkg/test_app.py", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root/conftest.py", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root/tests/helpers/fake.py", "root": "/fixture-root", "expected": false},
+    {"path": "tests/test_app.py", "root": null, "expected": false},
+    {"path": "test_app.py", "root": null, "expected": true},
+    {"path": "/fixture-root/tests/data.txt", "root": "/fixture-root", "expected": true},
+    {"path": "/fixture-root/docs/guide.py", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root/docs-site/page.py", "root": "/fixture-root", "expected": false},
+    {"path": "/fixture-root/subdocs/page.py", "root": "/fixture-root", "expected": true},
+    {"path": "docsite/page.py", "root": null, "expected": false},
+    {"path": "documents/page.py", "root": null, "expected": true},
+    {"path": ".github/workflows/run.sh", "root": null, "expected": false},
+    {"path": "/fixture-root/.claude/hooks/style.py", "root": "/fixture-root", "expected": false}
+  ]
+}

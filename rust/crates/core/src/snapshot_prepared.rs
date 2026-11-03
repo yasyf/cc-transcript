@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
+
 use regex::Regex;
 use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, Value};
 
@@ -46,6 +49,101 @@ fn call_paths(call: &Value) -> Result<&sonic_rs::Array, SnapshotError> {
         .and_then(|items| items.get(1))
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("prepared call paths missing"))
+}
+
+fn resolved(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find_map(|ancestor| {
+            Some((
+                std::fs::canonicalize(ancestor).ok()?,
+                path.strip_prefix(ancestor).ok()?,
+            ))
+        })
+        .map_or_else(
+            || path.to_path_buf(),
+            |(base, rest)| {
+                rest.components().fold(base, |mut resolved, component| {
+                    match component {
+                        Component::ParentDir => {
+                            resolved.pop();
+                        }
+                        Component::Normal(name) => resolved.push(name),
+                        _ => {}
+                    }
+                    resolved
+                })
+            },
+        )
+}
+
+pub(crate) struct SourceEditFilter<'q> {
+    root: Option<PathBuf>,
+    exclude_suffixes: Vec<&'q str>,
+    exclude_prefixes: Vec<&'q str>,
+}
+
+impl<'q> SourceEditFilter<'q> {
+    pub(crate) fn of(query: &'q Value) -> Result<Self, SnapshotError> {
+        let root = query
+            .get("root")
+            .ok_or_else(|| invalid("missing or invalid root"))?;
+        Ok(Self {
+            root: if root.is_null() {
+                None
+            } else {
+                Some(resolved(Path::new(string(query, "root")?)))
+            },
+            exclude_suffixes: strings(query, "exclude_suffixes")?,
+            exclude_prefixes: strings(query, "exclude_prefixes")?,
+        })
+    }
+
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        let file = FileRef::new(path);
+        !self
+            .exclude_suffixes
+            .iter()
+            .any(|suffix| *suffix == file.suffix())
+            && !file.under(&self.exclude_prefixes)
+            && !file.is_test()
+            && self.in_project(path)
+    }
+
+    fn in_project(&self, path: &str) -> bool {
+        let path = Path::new(path);
+        !path.is_absolute()
+            || self
+                .root
+                .as_ref()
+                .is_none_or(|root| resolved(path).starts_with(root))
+    }
+}
+
+fn any_source_edit(
+    calls: &sonic_rs::Array,
+    filter: &SourceEditFilter<'_>,
+) -> Result<bool, SnapshotError> {
+    let mut edit_tools: HashMap<&str, bool> = HashMap::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for call in calls.iter() {
+        let Some(tool) = call_name(call) else {
+            continue;
+        };
+        if !*edit_tools
+            .entry(tool)
+            .or_insert_with(|| tool_name_matches(tool, "Edit|Write"))
+        {
+            continue;
+        }
+        if call_paths(call)?
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|path| seen.insert(path) && filter.matches(path))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -427,6 +525,7 @@ impl PreparedFacts {
                             .is_some_and(|path| FileRef::new(path).matches(&globs))
                     })
             }
+            "has_source_edit" => any_source_edit(calls, &SourceEditFilter::of(query)?)?,
             "has_command" => {
                 #[cfg(feature = "command")]
                 {
@@ -562,5 +661,41 @@ mod tests {
         assert!(restored.serves(FactsNeed::Skills));
         assert!(!restored.serves(FactsNeed::Index));
         assert!(!restored.serves(FactsNeed::Full));
+    }
+
+    #[test]
+    fn source_edit_filter_gives_the_answers_python_is_pinned_to() {
+        let table: Value = sonic_rs::from_str(include_str!(
+            "../../../../tests/testdata/source_edit_cases.json"
+        ))
+        .unwrap();
+        for case in table["cases"].as_array().unwrap().iter() {
+            let query = json!({"root":case["root"],"exclude_suffixes":table["exclude_suffixes"],
+                "exclude_prefixes":table["exclude_prefixes"]});
+            assert_eq!(
+                SourceEditFilter::of(&query)
+                    .unwrap()
+                    .matches(case["path"].as_str().unwrap()),
+                case["expected"].as_bool().unwrap(),
+                "{case:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_edit_filter_resolves_symlinks_like_python_path_resolve() {
+        let directory = std::env::temp_dir().join(format!("cc-source-edit-{}", std::process::id()));
+        let real = directory.join("real");
+        let link = directory.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let query = json!({"root":link.to_str().unwrap(),"exclude_suffixes":Vec::<&str>::new(),
+            "exclude_prefixes":Vec::<&str>::new()});
+        let filter = SourceEditFilter::of(&query).unwrap();
+        assert!(filter.matches(real.join("app.py").to_str().unwrap()));
+        assert!(filter.matches(link.join("missing/app.py").to_str().unwrap()));
+        assert!(!filter.matches(directory.join("app.py").to_str().unwrap()));
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }
