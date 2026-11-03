@@ -524,7 +524,10 @@ impl Owner {
         for key in ADMISSION_REFUSAL_FIELDS {
             fields.push((key, Field::Json(lookup(&report, key))));
         }
-        fields.push(("heap_in_use_bytes", Field::Json(json!(log::heap_in_use_bytes()))));
+        fields.push((
+            "heap_in_use_bytes",
+            Field::Json(json!(log::heap_in_use_bytes())),
+        ));
         log::info("snapshot admission refused", &fields);
     }
 
