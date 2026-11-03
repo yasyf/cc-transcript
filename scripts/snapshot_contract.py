@@ -158,6 +158,14 @@ class ListPredicate(WireModel):
     subagents: bool
 
 
+class SourceEditPredicate(WireModel):
+    kind: Literal["has_source_edit"]
+    root: Text | None
+    exclude_suffixes: Annotated[list[Text], Field(max_length=256)]
+    exclude_prefixes: Annotated[list[Text], Field(max_length=256)]
+    subagents: bool
+
+
 class OverridePredicate(WireModel):
     kind: Literal["has_override"]
     token: Text
@@ -281,6 +289,7 @@ class Render(WireModel):
 Query = Annotated[
     ToolPredicate
     | ListPredicate
+    | SourceEditPredicate
     | OverridePredicate
     | PendingNamedTask
     | ErrorPredicate

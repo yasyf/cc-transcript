@@ -8,10 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `query_graph` answers `has_source_edit`: whether a session or its subagents
-  edited a file with Edit or Write that is not a test, is not excluded by
+- `query` and `query_graph` answer `has_source_edit`: whether a session edited
+  a file with Edit or Write that is not a test, is not excluded by
   `exclude_suffixes` or `exclude_prefixes`, and lies under `root`, without
-  paging predicate inputs to the client.
+  paging predicate inputs to the client. `subagents` selects the root alone or
+  the root and its subagents.
 - An `acquire` description carries `model`, the model id on the window's
   latest assistant event that is not `<synthetic>`, or `null` before the first
   reply. `Session.model` answers the same for a local session, so a hook reads

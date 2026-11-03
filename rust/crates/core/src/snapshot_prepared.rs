@@ -76,14 +76,14 @@ fn resolved(path: &Path) -> PathBuf {
         )
 }
 
-struct SourceEditFilter<'q> {
+pub(crate) struct SourceEditFilter<'q> {
     root: Option<PathBuf>,
     exclude_suffixes: Vec<&'q str>,
     exclude_prefixes: Vec<&'q str>,
 }
 
 impl<'q> SourceEditFilter<'q> {
-    fn of(query: &'q Value) -> Result<Self, SnapshotError> {
+    pub(crate) fn of(query: &'q Value) -> Result<Self, SnapshotError> {
         let root = query
             .get("root")
             .ok_or_else(|| invalid("missing or invalid root"))?;
@@ -98,7 +98,7 @@ impl<'q> SourceEditFilter<'q> {
         })
     }
 
-    fn matches(&self, path: &str) -> bool {
+    pub(crate) fn matches(&self, path: &str) -> bool {
         let file = FileRef::new(path);
         !self
             .exclude_suffixes

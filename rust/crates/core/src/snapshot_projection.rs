@@ -16,7 +16,7 @@ use crate::snapshot::{
 };
 use crate::snapshot_codec::{self, EventWire, FileRefRecord, ToolUseWire, TurnWire, TURN_CODEC};
 use crate::snapshot_ledger::hashbrown_tier;
-use crate::snapshot_prepared::FactsNeed;
+use crate::snapshot_prepared::{FactsNeed, SourceEditFilter};
 use crate::toolcall::{
     expand_tool_names, tool_name_matches, with_registry, ToolCall, ToolRegistrySnapshot,
 };
@@ -2216,6 +2216,7 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
     let name = match kind {
         "has_tool" => Some(string(query, "pattern")?),
         "has_read" | "has_read_glob" => Some("Read"),
+        "has_source_edit" => Some("Edit|Write"),
         "has_skill" | "has_skill_suffix" => Some("Skill"),
         "has_command_regex" => Some("Bash"),
         "has_pending_tool" => {
@@ -2240,6 +2241,18 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
         "has_tool" => scalar(json!(session.has_tool(pattern()?)), work),
         "has_read" => scalar(json!(session.has_read(pattern()?)), work),
         "has_edit_to" => scalar(json!(session.has_edit_to(&values()?)), work),
+        "has_source_edit" => {
+            let filter = SourceEditFilter::of(query)?;
+            scalar(
+                json!(session
+                    .tool_calls()
+                    .named("Edit|Write")
+                    .files()
+                    .iter()
+                    .any(|file| filter.matches(&file.path))),
+                work,
+            )
+        }
         "has_skill" => scalar(json!(session.has_skill(&values()?)), work),
         "has_edit" => scalar(json!(!session.edited_files().is_empty()), work),
         "has_error" => scalar(json!(session.count_failures() != 0), work),
@@ -3494,6 +3507,12 @@ mod tests {
             json!({"kind":"has_read","pattern":"example.rs","subagents":true}),
             json!({"kind":"has_read_glob","values":["**/*.rs"],"subagents":true}),
             json!({"kind":"has_edit_to","values":["**/change.rs"],"subagents":true}),
+            json!({"kind":"has_source_edit","root":null,"exclude_suffixes":[".md"],
+                "exclude_prefixes":["docs"],"subagents":true}),
+            json!({"kind":"has_source_edit","root":null,"exclude_suffixes":[".rs"],
+                "exclude_prefixes":["docs"],"subagents":true}),
+            json!({"kind":"has_source_edit","root":null,"exclude_suffixes":[".md"],
+                "exclude_prefixes":["src"],"subagents":true}),
             json!({"kind":"has_skill","values":["repo:review"],"subagents":true}),
             json!({"kind":"has_skill","values":["repo:failed"],"subagents":true}),
             json!({"kind":"has_skill_suffix","values":["review"],"subagents":true}),
