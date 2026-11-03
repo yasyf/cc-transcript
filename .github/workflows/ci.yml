@@ -98,7 +98,8 @@ jobs:
       - name: Grade every snapshot test against the admission change
         if: ${{ !cancelled() }}
         continue-on-error: true
-        run: cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot::tests:: -- --test-threads=4 2>&1 | tail -80
+        run: |
+          cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot::tests:: -- --test-threads=4 2>&1 | tail -120
 
       - name: Test review admission of a large transcript under the default cap on Linux
         if: ${{ !cancelled() }}
