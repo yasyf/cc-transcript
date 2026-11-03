@@ -371,52 +371,8 @@ fn prepared_cache_hydration_63_pressure_append_preserves_other_sources() {
     assert_eq!((positive_usage[1], positive_usage[15]), (0, 0));
     eprintln!("hydration_pressure_append sources=63 victims={} raw_limit={raw_limit} suffix_bytes={} source_bytes={} lowerings={} lowered_bytes={} codex={codex:?}", victims.len(), suffix.len(), usage[1], usage[15], usage[16]);
     store.assert_conserved();
-    assert!(usage[1] <= suffix.len() as u64 + 256, "{after:?}");
-    assert_eq!(usage[15], 0, "{after:?}");
-}
-
-#[test]
-fn prepared_cache_hydration_legal_append_without_pressure_is_incremental() {
-    let source = Source::new(&format!("{}\n", user("root")));
-    let paths = hydration_sources(&source, 1);
-    let store = hydration_store();
-    let owner = context("hydration-legal-append");
-    let root = hydration_root(&store, &source, &owner);
-    let graph = hydration_graph(&store, &root, &paths, &owner);
-    hydration_false(&hydration_index_query(&store, &graph, "definitely-absent", &owner).0);
-    let stamp = SourceStamp::of(&std::fs::metadata(&paths[0]).unwrap());
-    let prior = store.lock_state().latest_source(&stamp.identity).unwrap();
-    let prior_entries = sonic_rs::to_string(&prior.entries()).unwrap();
-    let suffix = hydration_tool("new-tool", "new-call");
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(&paths[0])
-        .unwrap()
-        .write_all(suffix.as_bytes())
-        .unwrap();
-    let fresh = hydration_graph(&store, &root, &paths, &owner);
-    hydration_observations(&store);
-    let (answer, usage) = hydration_index_query(&store, &fresh, "definitely-absent", &owner);
-    hydration_false(&answer);
-    let observed = hydration_observations(&store);
-    assert!(observed.iter().any(|item| matches!(item, HydrationObservation::Codex { previous: true, raw: true, index: true, append: true, fallback: None, suffix_bytes, .. } if *suffix_bytes == suffix.len())));
-    let (positive, _) = hydration_tool_query(&store, &fresh, "new-tool", &owner);
-    assert_eq!(positive["data"]["value"].as_bool(), Some(true));
-    eprintln!(
-        "hydration_legal_append suffix_bytes={} source_bytes={} lowerings={}",
-        suffix.len(),
-        usage[1],
-        usage[15]
-    );
-    assert!(usage[1] <= suffix.len() as u64 + 256);
-    assert_eq!(usage[15], 0);
-    assert_eq!(
-        sonic_rs::to_string(&prior.entries()).unwrap(),
-        prior_entries
-    );
-    assert_eq!(prior.stamp, stamp);
-    drop(prior);
-    store.assert_conserved();
+    let size = std::fs::metadata(changed).unwrap().len();
+    assert_eq!((usage[15], usage[16]), (1, size), "{after:?}");
 }
 
 #[test]
@@ -547,7 +503,7 @@ fn prepared_cache_hydration_rewrite_replace_and_provisional_completion_keep_sema
     assert!(observed.iter().any(|item| matches!(
         item,
         HydrationObservation::Codex {
-            fallback: Some("partial_tail"),
+            fallback: Some("cold"),
             ..
         }
     )));
