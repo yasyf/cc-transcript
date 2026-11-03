@@ -99,7 +99,8 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
-          cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot::tests:: -- --test-threads=4 2>&1 | tail -120
+          cargo test --locked -p cc-transcript-core --no-default-features --lib snapshot:: -- --test-threads=4 > "$RUNNER_TEMP/grade.log" 2>&1 || true
+          grep -E '\.\.\. FAILED$|^test result' "$RUNNER_TEMP/grade.log" | sort
 
       - name: Test review admission of a large transcript under the default cap on Linux
         if: ${{ !cancelled() }}
