@@ -216,6 +216,30 @@ fn cache_warm923_validation_sources_remain_charged_after_graph_removal() {
 }
 
 #[test]
+fn cache_warm923_query_after_the_graph_lapsed_is_a_stale_handle() {
+    let (_scenario, store, owner, graph) = warm923_validation_fixture(3);
+    {
+        let state = store.lock_state();
+        let mut prepared = state.prepared_graphs[graph["graph_id"].as_str().unwrap()]
+            .lock()
+            .unwrap();
+        let lapsed = now_ms() - 1;
+        prepared.expires = lapsed;
+        prepared.remaining.deadline_unix_ms = lapsed;
+    }
+    let response = store.request(
+        &graph_query(&graph, marker_tool(), json!([])),
+        &owner,
+        &Cancellation::default(),
+    );
+    assert_eq!(
+        response["status"].as_str(),
+        Some("stale_handle"),
+        "{response:?}"
+    );
+}
+
+#[test]
 fn cache_warm923_removed_graph_cannot_publish_validated_evidence() {
     let (_scenario, store, owner, graph) = warm923_validation_fixture(3);
     let id = graph["graph_id"].as_str().unwrap().to_owned();

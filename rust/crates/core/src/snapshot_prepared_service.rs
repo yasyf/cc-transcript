@@ -2411,6 +2411,9 @@ impl NativeStore {
         let mut state = self.lock_state();
         let shared = state.prepared_graphs.get(token).cloned()?;
         let graph = shared.lock().expect("prepared graph");
+        if graph.expires <= now_ms() {
+            return None;
+        }
         let root = PreparedRootValidation {
             stamp: graph.root.stamp,
             deadline: graph.remaining.deadline_unix_ms,
