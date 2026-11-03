@@ -46,15 +46,6 @@ fn retained_total(store: &NativeStore, owner: &Value) -> u64 {
         .unwrap()
 }
 
-fn release_lease(store: &NativeStore, response: &Value, owner: &Value) {
-    let released = store.test_request(
-        &json!({"schema":SCHEMA,"id":"release","operation":"release","kind":"lease","owner_epoch":store.owner_epoch,"token":handle(response)["lease_id"]}),
-        owner,
-        &Cancellation::default(),
-    );
-    assert_eq!(released["status"].as_str(), Some("ok"), "{released:?}");
-}
-
 #[test]
 fn review_admission_resumes_a_large_transcript_of_small_turns_under_the_default_cap() {
     let source = small_turn_transcript(64 * 1024 * 1024);
@@ -85,7 +76,7 @@ fn review_admission_resumes_a_large_transcript_of_small_turns_under_the_default_
     assert!(resumes > 1);
     let settled = retained_total(&store, &owner);
     assert!(settled <= available);
-    release_lease(&store, &response, &owner);
+    release_lease(&store, handle(&response), &owner);
     for _ in 0..3 {
         let warm = finish_prepared(
             &store,
@@ -98,7 +89,7 @@ fn review_admission_resumes_a_large_transcript_of_small_turns_under_the_default_
         );
         assert_eq!(warm["status"].as_str(), Some("ok"), "{warm:?}");
         assert_eq!(retained_total(&store, &owner), settled);
-        release_lease(&store, &warm, &owner);
+        release_lease(&store, handle(&warm), &owner);
     }
     store.assert_conserved();
 }
