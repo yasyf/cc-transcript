@@ -1,5 +1,6 @@
 use std::ops::Range;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
@@ -25,6 +26,33 @@ pub const CORE_SCHEMA: &str = "cc-transcript.snapshot/1";
 pub const HOST_SCHEMA: &str = "captain.transcript/1";
 const MAX_REGISTRY_GENERATIONS: usize = 64;
 const SLOW_REQUEST_MS: f64 = 100.0;
+const REFUSAL_LOG_INTERVAL_MS: u64 = 1_000;
+const ADMISSION_REFUSAL_FIELDS: [&str; 24] = [
+    "refusals",
+    "reason",
+    "foreground",
+    "cap_bytes",
+    "additional_bytes",
+    "total_bytes",
+    "entry_bytes",
+    "index_bytes",
+    "pending_bytes",
+    "classifier_bytes",
+    "label_bytes",
+    "projection_bytes",
+    "discovery_bytes",
+    "graph_bytes",
+    "metadata_bytes",
+    "owned_bytes",
+    "transient_bytes",
+    "live_generations",
+    "leases",
+    "waiters",
+    "loads",
+    "parked_loads",
+    "parked_load_bytes",
+    "cache_owners",
+];
 const LOGGED_USAGE: [&str; 16] = [
     "source_opens",
     "source_bytes_read",
@@ -79,6 +107,8 @@ type RegistryKey = (String, String, String);
 pub struct Owner {
     pub store: NativeStore,
     registry_generations: Mutex<Vec<(RegistryKey, String)>>,
+    started: Instant,
+    last_refusal_log_ms: AtomicU64,
 }
 
 fn invalid(reason: impl Into<String>) -> SnapshotError {
@@ -195,6 +225,8 @@ impl Owner {
         Ok(Self {
             store,
             registry_generations: Mutex::new(Vec::new()),
+            started: Instant::now(),
+            last_refusal_log_ms: AtomicU64::new(0),
         })
     }
 
@@ -414,6 +446,9 @@ impl Owner {
         path: ExecutionPath,
     ) -> Value {
         let elapsed = elapsed_ms(started);
+        if response["status"].as_str() == Some("retained_limit") {
+            self.log_admission_refusal();
+        }
         let usage = &response["usage"];
         let paged = request
             .get("cursor")
@@ -469,6 +504,28 @@ impl Owner {
             log::info("snapshot request completed", &fields);
         }
         response
+    }
+
+    fn log_admission_refusal(&self) {
+        let now = self.started.elapsed().as_millis() as u64;
+        let last = self.last_refusal_log_ms.load(Ordering::Relaxed);
+        if now < last.saturating_add(REFUSAL_LOG_INTERVAL_MS)
+            || self
+                .last_refusal_log_ms
+                .compare_exchange(last, now.max(1), Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        let Some(report) = self.store.take_admission_refusal() else {
+            return;
+        };
+        let mut fields = vec![("pid", Field::Json(json!(std::process::id())))];
+        for key in ADMISSION_REFUSAL_FIELDS {
+            fields.push((key, Field::Json(lookup(&report, key))));
+        }
+        fields.push(("heap_in_use_bytes", Field::Json(json!(log::heap_in_use_bytes()))));
+        log::info("snapshot admission refused", &fields);
     }
 
     pub fn discard(&self, response: &Value, context: &Value) -> Result<(), SnapshotError> {

@@ -150,3 +150,27 @@ pub fn info(message: &str, fields: &[(&'static str, Field)]) {
     );
     let _ = std::io::stderr().lock().write_all(line.as_bytes());
 }
+
+#[cfg(target_os = "macos")]
+pub fn heap_in_use_bytes() -> Option<usize> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct MallocStatistics {
+        blocks_in_use: u32,
+        size_in_use: usize,
+        max_size_in_use: usize,
+        size_allocated: usize,
+    }
+    extern "C" {
+        fn malloc_zone_statistics(zone: *mut std::ffi::c_void, stats: *mut MallocStatistics);
+    }
+    let mut stats = MallocStatistics::default();
+    // SAFETY: a null zone asks libmalloc to total every zone into the caller's struct.
+    unsafe { malloc_zone_statistics(std::ptr::null_mut(), &mut stats) };
+    Some(stats.size_in_use)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn heap_in_use_bytes() -> Option<usize> {
+    None
+}
