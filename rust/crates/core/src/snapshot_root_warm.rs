@@ -739,10 +739,10 @@ mod root_warm_tests {
     fn an_appending_root_finishes_its_pinned_revision_without_rereading() {
         let (directory, path) = source(4 * 1024 * 1024);
         let pinned_size = std::fs::metadata(&path).unwrap().len();
-        let store = NativeStore::new(&json!({"max_read_bytes_per_step":1024*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let store = NativeStore::new_agent(&json!({"max_read_bytes_per_step":1024*1024,"max_retained_bytes":128*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let context = context("appending-warm");
         let request = warm_request(&path, 1024 * 1024);
-        let first = store.request(&request, &context, &Cancellation::default());
+        let first = store.request_agent(&request, &context, &Cancellation::default());
         assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
         assert_eq!(first["data"]["complete"].as_bool(), Some(false));
         std::fs::OpenOptions::new()
@@ -755,7 +755,7 @@ mod root_warm_tests {
         let mut total_read = first["usage"]["source_bytes_read"].as_u64().unwrap();
         let mut finished = false;
         for _ in 0..24 {
-            let reply = store.request(&request, &context, &Cancellation::default());
+            let reply = store.request_agent(&request, &context, &Cancellation::default());
             assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
             assert_eq!(reply["data"]["source_revision"], revision);
             total_read += reply["usage"]["source_bytes_read"].as_u64().unwrap();

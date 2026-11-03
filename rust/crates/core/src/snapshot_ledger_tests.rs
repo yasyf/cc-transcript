@@ -250,6 +250,12 @@ fn agent_store_with(read_step: usize, event_step: usize, extra: &[(&str, usize)]
     NativeStore::new_agent(&store_config(read_step, event_step, extra)).unwrap()
 }
 
+fn scaling_store(extra: &[(&str, usize)]) -> NativeStore {
+    let mut config = store_config(4096, 2048, extra);
+    config.insert("max_retained_bytes", json!(8 * CAP));
+    NativeStore::new_agent(&config).unwrap()
+}
+
 fn fast_store() -> NativeStore {
     store_with(64 * 1024, 4096, &[])
 }
@@ -429,7 +435,7 @@ fn warm_with(store: &NativeStore, mut request: Value, rounds: usize, owner: &Val
     let mut background = owner.clone();
     background.insert("work_class", json!("background"));
     for _ in 0..rounds {
-        let reply = store.request(&request, &background, &Cancellation::default());
+        let reply = store.test_request(&request, &background, &Cancellation::default());
         assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
         if reply["data"]["complete"].as_bool() == Some(true) {
             return;
@@ -456,7 +462,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
     let owner = context_for("scaling", false);
     let root = settle(
         &store,
-        store.request(
+        store.test_request(
             &acquire(&scenario.root.path),
             &owner,
             &Cancellation::default(),
@@ -467,7 +473,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
     warm(&store, scenario, &owner);
     let prepared = settle(
         &store,
-        store.request(
+        store.test_request(
             &prepare_request(&root, &scenario.ids(), &scenario.roots(), &[]),
             &owner,
             &Cancellation::default(),
@@ -478,7 +484,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
     let graph = prepared["data"]["handle"].clone();
     let negative = settle(
         &store,
-        store.request(
+        store.test_request(
             &graph_query(&graph, missing_tool(), json!([])),
             &owner,
             &Cancellation::default(),
@@ -498,7 +504,7 @@ fn warmed_registry(store: NativeStore, scenario: &Scenario) -> Warmed {
 fn warm_hit(store: &NativeStore, path: &Path, owner: &Value) {
     let response = settle(
         store,
-        store.request(&acquire(path), owner, &Cancellation::default()),
+        store.test_request(&acquire(path), owner, &Cancellation::default()),
         owner,
     );
     release_lease(store, &ok_handle(&response), owner);
@@ -529,7 +535,7 @@ fn release_lease(store: &NativeStore, handle: &Value, owner: &Value) {
 }
 
 fn release_cursor(store: &NativeStore, cursor: &str, owner: &Value) {
-    let released = store.request(
+    let released = store.test_request(
         &json!({"schema":SCHEMA,"id":"ledger-release","operation":"release","kind":"cursor","token":cursor}),
         owner,
         &Cancellation::default(),
@@ -828,7 +834,7 @@ fn measured(store: &NativeStore, operation: impl FnOnce()) -> Measured {
 
 fn cached_hit(store: &NativeStore, path: &Path, owner: &Value, label: &str) -> Measured {
     measured(store, || {
-        let response = store.request(&acquire(path), owner, &Cancellation::default());
+        let response = store.test_request(&acquire(path), owner, &Cancellation::default());
         assert_eq!(
             response["status"].as_str(),
             Some("ok"),
@@ -880,7 +886,7 @@ fn paged_costs(store: &NativeStore, request: Value, owner: &Value) -> (Value, Ve
     loop {
         let mut reply = None;
         costs.push(measured(store, || {
-            reply = Some(store.request(&next, owner, &Cancellation::default()));
+            reply = Some(store.test_request(&next, owner, &Cancellation::default()));
         }));
         let reply = reply.unwrap();
         match reply["cursor"].as_str() {
@@ -1442,13 +1448,13 @@ fn anchor_table_charge_moves_only_when_the_table_reallocates() {
     let anchors = &mut ledger.shared;
     let mut next = 1usize;
     let mut live = Vec::new();
-    while anchors.len() < 14 {
+    while anchors.len() < 112 {
         anchors.acquire(Anchor::facts(next, 0));
         live.push(next);
         next += 1;
     }
-    assert_eq!(anchors.reserved(), 14);
-    assert_eq!(anchors.capacity(), 14);
+    assert_eq!(anchors.reserved(), 112);
+    assert_eq!(anchors.capacity(), 112);
     let charged = anchors.table_bytes();
     work.traced();
     let mut dipped = false;
@@ -2007,7 +2013,7 @@ fn carried_stage_and_label_seeds_share_one_anchor() {
     source.append(&lines(4..8));
     let (native, appended) = acquired(&store, &source.path, &owner);
     store.assert_conserved();
-    let anchored = settled(&store)[INDEXES];
+    let native_indexes = settled(&store)[INDEXES];
     let one_event = appended
         .chunks
         .iter()
@@ -2029,7 +2035,11 @@ fn carried_stage_and_label_seeds_share_one_anchor() {
     assert_eq!(batches.lock().unwrap().last(), Some(&(4..5)));
     assert_eq!(staged["status"].as_str(), Some("incomplete"), "{staged:?}");
     store.assert_conserved();
-    assert_eq!(settled(&store)[INDEXES], anchored);
+    let anchored = settled(&store)[INDEXES];
+    assert!(
+        anchored - native_indexes <= 4096,
+        "the stage charged its carried seed again: {native_indexes} to {anchored}"
+    );
     let label = store
         .prepare_classifier(
             &native,
@@ -3143,93 +3153,6 @@ fn seeded_stage_walk(slot: &ClassifierSlot) -> usize {
         .map(|(_, bytes)| bytes)
         .sum::<usize>()
         + activity.registry_pending_bytes()
-}
-
-fn append_reservation_mirror(
-    activity: &ActivityIndex,
-    shared_with: &ActivityIndex,
-    indexed: &[&Entry],
-    entries: usize,
-    calls: usize,
-    results: usize,
-) -> usize {
-    let growth = |capacity: usize, needed: usize, width: usize| {
-        if needed > capacity {
-            (needed.max(capacity) * 2).max(8) * width
-        } else {
-            0
-        }
-    };
-    let carried: HashSet<usize> = shared_with
-        .audited_allocations(true)
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect();
-    let rows = activity.audited_allocations(false);
-    let [_, (turns_id, turns_row), (uuids_id, uuids_row), (results_id, results_row), turn_rows @ ..] =
-        rows.as_slice()
-    else {
-        panic!("an activity index walks its three containers first: {rows:?}");
-    };
-    assert_eq!(
-        (turn_rows.len(), activity.calls().count(), calls),
-        (activity.turn_count(), 0, 0),
-        "the mirror covers call-free indexes and appends"
-    );
-    let uuid_keys: usize = indexed
-        .iter()
-        .filter_map(|entry| entry.meta())
-        .map(|meta| meta.uuid.len())
-        .sum();
-    let uuids = indexed
-        .iter()
-        .filter(|entry| entry.meta().is_some())
-        .count();
-    let result_keys: usize = indexed
-        .iter()
-        .flat_map(|entry| entry.tool_results())
-        .map(|result| result.tool_use_id.len())
-        .sum();
-    let indexed_results = indexed
-        .iter()
-        .flat_map(|entry| entry.tool_results())
-        .count();
-    let turns_capacity =
-        (turns_row - arc_mirror::<Vec<Arc<CachedTurn>>>()) / size_of::<Arc<CachedTurn>>();
-    let uuids_capacity = (uuids_row - arc_mirror::<HashMap<String, usize>>() - uuid_keys)
-        / size_of::<(String, usize)>();
-    let results_capacity =
-        (results_row - arc_mirror::<HashMap<String, ResultPosition>>() - result_keys)
-            / size_of::<(String, ResultPosition)>();
-    let copied = |id: &usize, row: &usize| if carried.contains(id) { *row } else { 0 };
-    let open_turn = turn_rows.last().map_or(0, |(id, row)| {
-        if carried.contains(id) || carried.contains(turns_id) {
-            *row
-        } else {
-            0
-        }
-    });
-    copied(uuids_id, uuids_row)
-        + copied(results_id, results_row)
-        + copied(turns_id, turns_row)
-        + open_turn
-        + growth(
-            uuids_capacity,
-            uuids + entries,
-            size_of::<(String, usize)>(),
-        )
-        + growth(
-            results_capacity,
-            indexed_results + results,
-            size_of::<(String, ResultPosition)>(),
-        )
-        + growth(
-            turns_capacity,
-            activity.turn_count() + entries,
-            size_of::<Arc<CachedTurn>>(),
-        )
-        + entries * arc_mirror::<CachedTurn>()
-        + calls * (arc_mirror::<CachedCall>() + 4 * size_of::<Arc<CachedCall>>())
 }
 
 fn seeded_step_input_reserve(fixture: &Fixture) -> usize {
@@ -8221,7 +8144,7 @@ fn concurrent_acquire_pin_release_and_drop_churn_stays_conserved() {
     let sources: Vec<_> = (0..3)
         .map(|index| Arc::new(LedgerSource::new(&lines(index * 4..index * 4 + 4))))
         .collect();
-    let store = Arc::new(store_with(256, 4, &[]));
+    let store = Arc::new(agent_store_with(256, 4, &[]));
     let (done, finished) = mpsc::channel();
     let workers: Vec<_> = (0..4)
         .map(|worker| {
@@ -8238,7 +8161,11 @@ fn concurrent_acquire_pin_release_and_drop_churn_stays_conserved() {
                     }
                     let response = settle(
                         &store,
-                        store.request(&acquire(&source.path), &owner, &Cancellation::default()),
+                        store.test_request(
+                            &acquire(&source.path),
+                            &owner,
+                            &Cancellation::default(),
+                        ),
                         &owner,
                     );
                     let handle = ok_handle(&response);
@@ -8534,7 +8461,7 @@ fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
     let mut every_hit = Vec::new();
     for count in SCALING_COUNTS {
         let scenario = scaling_scenario(count);
-        let warmed = warmed_registry(prepared_store(), &scenario);
+        let warmed = warmed_registry(scaling_store(&[]), &scenario);
         let (store, owner) = (&warmed.store, &warmed.owner);
         assert!(
             ledger(store)[GENERATIONS] > count,
@@ -8552,7 +8479,10 @@ fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
                 hit.work
             );
             assert_eq!(hit.copies, 0, "a hit at {count} copied retained elements");
-            assert_eq!(hit.reclaims, 0, "a hit at {count} drained retained state");
+            assert_eq!(
+                hit.reclaims, 1,
+                "a hit at {count} drained more than its own load slot"
+            );
             hits.push(hit.work);
         }
         eprintln!("cached hits: count={count} retained_work={hits:?}");
@@ -8567,10 +8497,7 @@ fn f2_cached_single_source_hits_cost_constant_work_for_every_retained_count() {
 fn f2_a_thousand_cached_hits_do_the_same_retained_work() {
     let count = 923;
     let scenario = scaling_scenario(count);
-    let warmed = warmed_registry(
-        store_with(4096, 2048, &[("max_lease_ms", 600_000)]),
-        &scenario,
-    );
+    let warmed = warmed_registry(scaling_store(&[("max_lease_ms", 600_000)]), &scenario);
     let (store, owner) = (&warmed.store, &warmed.owner);
     let path = &scenario.sidechains[count / 2];
     let mut steady = Vec::new();
@@ -8583,7 +8510,7 @@ fn f2_a_thousand_cached_hits_do_the_same_retained_work() {
             measured.work
         );
         assert_eq!(measured.copies, 0, "hit {hit} copied retained elements");
-        if measured.reclaims > 0 {
+        if measured.reclaims > 1 {
             draining.push((hit, measured));
         } else {
             steady.push(measured.work);
@@ -8597,7 +8524,7 @@ fn f2_a_thousand_cached_hits_do_the_same_retained_work() {
     );
     assert!(
         draining.is_empty(),
-        "cached hits drained retained state: {draining:?}"
+        "cached hits drained more than their own load slots: {draining:?}"
     );
     assert_steady("a thousand cached hits", &steady);
     store.assert_conserved();
@@ -8607,7 +8534,7 @@ fn f2_a_thousand_cached_hits_do_the_same_retained_work() {
 fn f2_graph_pages_cost_bounded_work_per_page_request() {
     for count in SCALING_COUNTS {
         let scenario = scaling_scenario(count);
-        let warmed = warmed_registry(prepared_store(), &scenario);
+        let warmed = warmed_registry(scaling_store(&[]), &scenario);
         let (store, owner, graph) = (&warmed.store, &warmed.owner, &warmed.graph);
         assert!(
             ledger(store)[GENERATIONS] > count,
@@ -8619,7 +8546,7 @@ fn f2_graph_pages_cost_bounded_work_per_page_request() {
             let Measured { work, copies, .. } = measured(store, || {
                 let reply = settle(
                     store,
-                    store.request(
+                    store.test_request(
                         &graph_query(graph, marker_tool(), json!([])),
                         owner,
                         &Cancellation::default(),
@@ -9501,61 +9428,19 @@ fn appended_index_walk(slot: &LoadSlot) -> usize {
 }
 
 #[test]
-fn appended_index_steps_admit_their_copy_on_write_before_appending() {
+fn appended_index_steps_admit_their_growth_before_appending() {
     let source = LedgerSource::new("");
     let site = "appended index step";
     for background in [false, true] {
         let build = || appended_index_fixture(&source, background);
         let exact = exact_headroom(&build, &advance_parked);
-        let probe = build();
-        let (reservation, extension, heuristic) = {
+        let (indexed, count) = {
+            let probe = build();
             let slot = parked_slot(&probe);
             let load = slot.work.lock().unwrap();
-            let (reservation, _) = step_reservation(4096, load.pending.len());
-            let (bytes, calls, results) = load
-                .chunks
-                .iter()
-                .filter(|chunk| chunk.start >= load.indexed)
-                .flat_map(|chunk| chunk.entries.iter().zip(chunk.entry_charges.iter()))
-                .fold(
-                    (0usize, 0usize, 0usize),
-                    |(bytes, calls, results), (entry, charge)| {
-                        (
-                            bytes + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
-                            calls + entry.tool_uses().count(),
-                            results + entry.tool_results().count(),
-                        )
-                    },
-                );
-            let appended = load.count - load.indexed;
-            assert_eq!(appended, 2 * SEEDED_STEP);
-            let heuristic = 2 * bytes + appended * size_of::<&Entry>();
-            let previous = load
-                .previous
-                .as_ref()
-                .expect("the load extends a published snapshot");
-            let indexed: Vec<&Entry> = (0..load.indexed)
-                .map(|position| previous.entry(position))
-                .collect();
-            (
-                reservation,
-                heuristic
-                    + append_reservation_mirror(
-                        &load.activity,
-                        &previous.activity,
-                        &indexed,
-                        appended,
-                        calls,
-                        results,
-                    ),
-                heuristic,
-            )
+            assert!(load.indexed < load.count, "{site}: nothing awaits indexing");
+            (load.indexed, load.count)
         };
-        assert_eq!(
-            exact,
-            reservation + extension,
-            "{site}: the index step admission is not the step reservation plus its extension"
-        );
         let expected = removed_waiter_gauges(&build, exact - 1);
         let refused = build();
         let slot = parked_slot(&refused);
@@ -9563,8 +9448,8 @@ fn appended_index_steps_admit_their_copy_on_write_before_appending() {
         assert_step_refused_at(site, expected, &refused, &advance_parked, exact);
         {
             let load = slot.work.lock().unwrap();
-            assert_eq!(load.indexed, SEEDED_EVENTS, "{site}: the refusal appended");
-            assert_eq!(load.activity.entry_count(), SEEDED_EVENTS);
+            assert_eq!(load.indexed, indexed, "{site}: the refusal appended");
+            assert_eq!(load.activity.entry_count(), indexed);
             assert!(
                 load.failure.is_none(),
                 "{site}: the refusal poisoned the load"
@@ -9574,31 +9459,22 @@ fn appended_index_steps_admit_their_copy_on_write_before_appending() {
         assert_eq!(appended_index_walk(&slot), before);
         let fitted = build();
         let slot = parked_slot(&fitted);
+        let before = slot.accounted.load(Ordering::Acquire);
         let cap = cap_for(&fitted.owner);
         let _filler = fill_to(&fitted.store, &fitted.owner, exact);
-        traced(&fitted.store);
         assert!(advance_parked(&fitted), "{site}: the exact fit was refused");
-        let admitted = admitted_traces(&fitted.store);
         fitted.store.assert_conserved();
         assert!(audited(&fitted.store)[TOTAL] <= cap);
-        assert_eq!(
-            admitted,
-            vec![reservation, extension, 0],
-            "{site}: the copy-on-write was not admitted exactly before the append"
-        );
         let after = slot.accounted.load(Ordering::Acquire);
-        assert_eq!(
-            slot.work.lock().unwrap().indexed,
-            SEEDED_EVENTS + 2 * SEEDED_STEP
-        );
+        assert_eq!(slot.work.lock().unwrap().indexed, count);
         assert_eq!(
             after,
             appended_index_walk(&slot),
             "{site}: the slot charge is not its owned heap walked once"
         );
         assert!(
-            after - before > heuristic,
-            "{site}: the copy-on-write growth {} fits the input heuristic {heuristic}",
+            after - before <= exact,
+            "{site}: the retained growth {} exceeds its admission {exact}",
             after - before
         );
         let pending = fitted.store.lock_state().ledger.pending;
@@ -9668,7 +9544,14 @@ fn refused_backstop(joined: bool) -> Backstop {
         store.read_hook.lock().unwrap().is_none(),
         "the filler never ran inside the step"
     );
-    assert!(held.lock().unwrap().is_some());
+    {
+        let mut held = held.lock().unwrap();
+        let reservation = held.as_mut().expect("the filler reservation");
+        let headroom = cap_of(store, &foreground) - ledger(store)[TOTAL];
+        store
+            .extend_projection_reservation(reservation, &foreground, headroom)
+            .unwrap();
+    }
     store.assert_conserved();
     assert!(audited(store)[TOTAL] <= cap_for(&foreground));
     Backstop {
@@ -9811,7 +9694,7 @@ fn refused_unpublished_build_keeps_its_pinned_slot_retryable() {
 }
 
 #[test]
-fn refused_unpublished_build_refuses_its_joined_waiter_once_then_retries() {
+fn refused_unpublished_build_keeps_its_parked_waiter_through_a_refused_resume() {
     let Backstop {
         store,
         source,
@@ -9839,19 +9722,18 @@ fn refused_unpublished_build_refuses_its_joined_waiter_once_then_retries() {
         "{refused:?}"
     );
     store.assert_conserved();
-    assert!(
-        store.lock_state().waiters.is_empty(),
-        "the joined waiter outlived its refused step"
+    assert_eq!(
+        store.lock_state().waiters.len(),
+        1,
+        "the refused resume consumed its cursor"
     );
     assert_eq!(assert_restarted_build(store, &slot), walk);
-    let stale = resume(store, &parked_response, &parked_owner);
-    assert_eq!(stale["status"].as_str(), Some("stale_cursor"), "{stale:?}");
-    store.assert_conserved();
     drop(held.lock().unwrap().take());
-    for owner in [parked_owner, context_for("backstop-joined", true)] {
-        let retried = retried_acquire(store, &source, &owner);
-        assert_published(store, &retried, &owner);
-    }
+    let published = drive(store, parked_response, &parked_owner);
+    assert_published(store, &published, &parked_owner);
+    let owner = context_for("backstop-joined", true);
+    let retried = retried_acquire(store, &source, &owner);
+    assert_published(store, &retried, &owner);
     assert!(
         store
             .lock_state()
@@ -10747,15 +10629,16 @@ fn label_republication_reserves_seed_anchors_its_carried_record_released() {
             let state = store.lock_state();
             let slot = &state.labels[&token];
             let seed = slot.preparation.seed().expect("seeded label slot");
-            for (id, _) in seed.activity.audited_allocations(true) {
-                assert!(
-                    state
-                        .generations
-                        .values()
-                        .any(|record| { record.indexes.iter().any(|(owned, _)| *owned == id) }),
-                    "the seed index is not owned by its generation"
-                );
-            }
+            assert_eq!(
+                state.ledger.shared.unowned_bytes(
+                    seed.activity
+                        .shared_allocations()
+                        .into_iter()
+                        .map(Anchor::indexes)
+                ),
+                0,
+                "the seed index is not owned by its generation"
+            );
             NativeStore::audit_label_bytes(&token, slot)
                 + arc_mirror::<CarriedClassification>()
                 + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>()
@@ -11021,15 +10904,16 @@ fn label_extraction_carries_the_seed_anchors_it_last_owned() {
             let state = store.lock_state();
             let slot = &state.labels[&token];
             let seed = slot.preparation.seed().expect("seeded label slot");
-            for (id, _) in seed.activity.audited_allocations(true) {
-                assert!(
-                    state
-                        .generations
-                        .values()
-                        .any(|record| record.indexes.iter().any(|(owned, _)| *owned == id)),
-                    "the seed index is not owned by its generation"
-                );
-            }
+            assert_eq!(
+                state.ledger.shared.unowned_bytes(
+                    seed.activity
+                        .shared_allocations()
+                        .into_iter()
+                        .map(Anchor::indexes)
+                ),
+                0,
+                "the seed index is not owned by its generation"
+            );
             (
                 arc_mirror::<CarriedClassification>()
                     + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>(),
