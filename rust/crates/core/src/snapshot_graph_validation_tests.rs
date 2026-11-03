@@ -216,7 +216,7 @@ fn cache_warm923_validation_sources_remain_charged_after_graph_removal() {
 }
 
 #[test]
-fn a_query_after_the_prepared_graph_lapsed_is_a_stale_handle() {
+fn cache_warm923_query_after_the_graph_lapsed_is_a_stale_handle() {
     let (_scenario, store, owner, graph) = warm923_validation_fixture(3);
     {
         let state = store.lock_state();
