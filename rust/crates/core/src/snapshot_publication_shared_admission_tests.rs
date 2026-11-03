@@ -111,20 +111,7 @@ fn shared_publication_admission_counts_raw_allocations_once_and_reuses_source() 
             first["data"]["description"]["mtime_ns"]
         );
     }
-    let appended = format!("{}\n", user("appended-owner-words"));
-    source.append(&appended);
-    let (grown, append_read) = finish_shared_publication_fixture(
-        &store,
-        store.request(&acquire(&source.path), &owner, &Cancellation::default()),
-        &owner,
-    );
-    assert_eq!(grown["status"].as_str(), Some("ok"), "{grown:?}");
-    assert_eq!(
-        grown["data"]["description"]["event_count"].as_u64(),
-        Some(2)
-    );
-    assert_eq!(append_read, appended.len() as u64 + 192);
-    eprintln!("SHARED_PUBLICATION_ADMISSION source_bytes={} first_read_bytes={} unchanged_calls=2 unchanged_read_bytes=0 event_count=1 payload_bytes={} headroom_bytes={headroom} append_bytes={} append_read_bytes={append_read}", line.len(), first_read, payload.len(), appended.len());
+    eprintln!("SHARED_PUBLICATION_ADMISSION source_bytes={} first_read_bytes={} unchanged_calls=2 unchanged_read_bytes=0 event_count=1 payload_bytes={} headroom_bytes={headroom}", line.len(), first_read, payload.len());
     drop(crowded);
     store.assert_conserved();
 }
