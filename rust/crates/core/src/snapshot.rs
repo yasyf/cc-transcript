@@ -4829,6 +4829,7 @@ impl NativeStore {
                 )
         };
         let pledge = pledge + state.leases.growth(1);
+        let retained_base = retained;
         let retained = retained
             + pledge
             + state.generations.growth_for(&key)
@@ -4858,6 +4859,7 @@ impl NativeStore {
                         }
                 });
         if retained > reservation.bytes {
+            eprintln!("PROBE publish retained={retained} reservation={} base={} pledge={pledge} growth_for={} shared_growth={} unowned={} registry={} carried_charged={} carried_growth={} carried_unowned={} carried_registry={} entries={} indexes={}/{} pending={} events={}", reservation.bytes, retained_base, state.generations.growth_for(&key), state.ledger.shared.growth(anchors()), state.ledger.shared.unowned_bytes(generation.pending_anchors()), state.ledger.shared.registry_growth_bytes(generation.index_registry), carried.as_ref().map_or(0,|(lineage,candidate,_,_)|charged_bytes(lineage,candidate)), carried.as_ref().map_or(0,|(lineage,candidate,_,_)|state.carried_growth(lineage,candidate)), carried.as_ref().map_or(0,|(_,candidate,pending,registry)|state.ledger.shared.unowned_bytes(candidate.publication_anchors(pending,*registry).filter(|anchor|!published.contains(&anchor.id)))), carried.as_ref().map_or(0,|(_,_,_,registry)|state.ledger.shared.registry_growth_bytes(*registry)), generation.entries.len(), generation.indexes.len(), generation.indexes.iter().map(|(_,b)|*b).sum::<usize>(), generation.pending_indexes.len(), snapshot.event_count);
             return Err(SnapshotError::new(
                 Status::RetainedLimit,
                 "derived classifier publication exceeds reservation",
