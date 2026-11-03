@@ -307,7 +307,13 @@ fn agent_codex_cancel_and_exact_refusal_never_publish_a_successor() {
         old_stamp
     );
     store.assert_conserved();
-    let used = NativeStore::retained_total(&mut store.lock_state());
+    let used = {
+        let mut state = store.lock_state();
+        while let Some(victim) = state.next_cache_victim() {
+            state.evict_cache_owner(victim);
+        }
+        NativeStore::retained_total(&mut state)
+    };
     let hold = store
         .reserve_projection(&owner, store.memory_cap(&owner).unwrap() - used)
         .unwrap();
@@ -374,25 +380,6 @@ fn agent_codex_capacity_boundary_preserves_the_unique_continuation_and_charges_g
     }
 }
 
-fn compact_read_countdown(
-    store: Weak<NativeStore>,
-    remaining: usize,
-    action: Arc<dyn Fn() + Send + Sync>,
-) -> Arc<dyn Fn() + Send + Sync> {
-    Arc::new(move || {
-        if remaining == 1 {
-            action();
-        } else {
-            let owner = store.upgrade().unwrap();
-            *owner.read_hook.lock().unwrap() = Some(compact_read_countdown(
-                store.clone(),
-                remaining - 1,
-                Arc::clone(&action),
-            ));
-        }
-    })
-}
-
 #[test]
 fn agent_codex_final_seal_parent_swap_rejects_positive_and_keeps_old_facts() {
     let source = Source::new(&format!("{}\n", user("root")));
@@ -406,7 +393,7 @@ fn agent_codex_final_seal_parent_swap_rejects_positive_and_keeps_old_facts() {
     std::fs::write(&path, hydration_codex(0)).unwrap();
     std::fs::write(&replacement_path, hydration_codex(7)).unwrap();
     let paths = vec![path.clone()];
-    let store = Arc::new(agent_hydration_store());
+    let store = agent_hydration_store();
     let owner = context("compact-parent-swap");
     let root = hydration_root(&store, &source, &owner);
     let graph = hydration_graph(&store, &root, &paths, &owner);
@@ -438,7 +425,7 @@ fn agent_codex_final_seal_parent_swap_rejects_positive_and_keeps_old_facts() {
     let switched = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&switched);
     let opened = path.clone();
-    let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+    *store.read_hook.lock().unwrap() = Some(Arc::new(move || {
         std::fs::rename(&parent, &parked).unwrap();
         std::fs::rename(&replacement, &parent).unwrap();
         assert_eq!(
@@ -447,9 +434,7 @@ fn agent_codex_final_seal_parent_swap_rejects_positive_and_keeps_old_facts() {
         );
         assert_ne!(SourceStamp::of(&std::fs::metadata(&opened).unwrap()), stamp);
         observed.store(true, Ordering::Release);
-    });
-    *store.read_hook.lock().unwrap() =
-        Some(compact_read_countdown(Arc::downgrade(&store), 4, action));
+    }));
     let (answer, _) = hydration_tool_query(&store, &fresh, "swap-positive", &owner);
     assert!(switched.load(Ordering::Acquire));
     assert_eq!(answer["status"].as_str(), Some("changed"), "{answer:?}");
