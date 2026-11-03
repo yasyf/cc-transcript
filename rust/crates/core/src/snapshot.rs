@@ -7050,9 +7050,6 @@ impl NativeStore {
         context: &Value,
         additional: usize,
     ) -> Result<(), SnapshotError> {
-        if additional == 0 {
-            return Ok(());
-        }
         let cap = self.memory_cap(context)?;
         let bookkeeping = cfg!(debug_assertions).then(|| Self::bookkeeping_bytes(state));
         if Self::retained_total(state).saturating_add(additional) <= cap {

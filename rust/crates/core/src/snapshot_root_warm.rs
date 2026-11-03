@@ -125,7 +125,7 @@ impl NativeStore {
                             .map_or(stalled, |(_, touched)| (*touched).min(stalled))
                     };
                     let growth = state.prepared_load_growth(&stamp.identity);
-                    if self.admit_memory(&mut state, context, growth).is_ok() {
+                    if growth == 0 || self.admit_memory(&mut state, context, growth).is_ok() {
                         state.insert_prepared_load(stamp.identity, Arc::clone(slot), touched);
                     }
                 }
