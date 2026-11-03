@@ -2236,6 +2236,8 @@ pub(crate) struct StoreState {
     loads: Table<SourceIdentity, Arc<LoadSlot>>,
     skill_admissions: Arc<AtomicUsize>,
     prepared_loads: Table<SourceIdentity, (Arc<LoadSlot>, u64)>,
+    last_refusal: Option<AdmissionRefusal>,
+    admission_refusals: u64,
     leases: Ledgered<String, Lease>,
     waiters: Ledgered<String, Waiter>,
     projections: Ledgered<String, ProjectionCursor>,
@@ -2290,6 +2292,7 @@ pub(crate) struct StoreState {
 }
 
 const TOUCH_TTL_MS: u64 = 30 * 60_000;
+pub(crate) const STALLED_PREPARED_LOAD_MS: u64 = 60_000;
 const EXPIRED_QUERY_TOMBSTONES: usize = 1024;
 const FACT_READ_WAIT_SLICE: Duration = Duration::from_millis(25);
 
@@ -2321,6 +2324,8 @@ impl StoreState {
             loads: Table::new(work.clone()),
             skill_admissions: Arc::new(AtomicUsize::new(0)),
             prepared_loads: Table::new(work.clone()),
+            last_refusal: None,
+            admission_refusals: 0,
             leases: Ledgered::new(work.clone()),
             waiters: Ledgered::new(work.clone()),
             projections: Ledgered::new(work.clone()),
@@ -3159,6 +3164,28 @@ impl StoreState {
         Some(slot)
     }
 
+    fn evict_idle_prepared_load(&mut self) -> bool {
+        let Some(identity) = self
+            .prepared_loads
+            .iter()
+            .filter(|(_, (slot, _))| Arc::strong_count(slot) <= 2)
+            .min_by_key(|(_, (_, touched))| *touched)
+            .map(|(identity, _)| *identity)
+        else {
+            return false;
+        };
+        self.prepared_loads.remove(&identity);
+        if self
+            .loads
+            .get(&identity)
+            .is_some_and(|slot| Arc::strong_count(slot) == 1)
+        {
+            self.remove_load(&identity);
+        }
+        self.drain();
+        true
+    }
+
     fn retain_loads(&mut self, mut keep: impl FnMut(&SourceIdentity, &Arc<LoadSlot>) -> bool) {
         let mut detached = Vec::new();
         self.loads.retain(|identity, slot| {
@@ -3589,6 +3616,7 @@ impl StoreState {
     }
 }
 
+#[derive(Clone, Copy)]
 struct GaugeTerms {
     entries: usize,
     indexes: usize,
@@ -3631,6 +3659,24 @@ impl GaugeTerms {
             "retained_total_accounted_bytes": total,
             "active_leases": state.leases.len(), "pending_loads": state.loads.len(), "live_generations": self.live_generations})
     }
+}
+
+#[derive(Clone, Copy)]
+struct AdmissionRefusal {
+    reason: &'static str,
+    foreground: bool,
+    cap: usize,
+    additional: usize,
+    terms: GaugeTerms,
+    total: usize,
+    owned: usize,
+    transient: usize,
+    leases: usize,
+    waiters: usize,
+    loads: usize,
+    parked_loads: usize,
+    parked_load_bytes: usize,
+    cache_owners: usize,
 }
 
 pub type ClassifierCallback =
@@ -4750,7 +4796,6 @@ impl NativeStore {
         snapshot: Arc<TranscriptSnapshot>,
         mut generation: GenerationRecord,
         classifier: Value,
-        seed: Option<&CarriedClassification>,
         carried: Option<((SourceIdentity, String), CarriedClassification)>,
         source_handle: &Value,
         context: &Value,
@@ -4774,33 +4819,7 @@ impl NativeStore {
             }
             (lineage, candidate, pending, registry)
         });
-        let shared: HashSet<_> = snapshot
-            .chunks
-            .iter()
-            .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
-            .collect();
-        let seeded: HashSet<_> = seed
-            .into_iter()
-            .flat_map(|seed| {
-                seed.activity
-                    .shared_allocations()
-                    .into_iter()
-                    .map(|(id, _)| id)
-            })
-            .collect();
-        let retained = generation
-            .entries
-            .iter()
-            .filter(|(id, _)| !shared.contains(id))
-            .map(|(_, charge)| charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
-            .sum::<usize>()
-            + generation
-                .indexes
-                .iter()
-                .filter(|(id, _)| !seeded.contains(id))
-                .map(|(_, bytes)| *bytes)
-                .sum::<usize>()
-            + generation.entries.capacity() * size_of::<(usize, MemoryCharge)>()
+        let record = generation.entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + generation.indexes.capacity() * size_of::<(usize, usize)>()
             + size_of::<GenerationRecord>()
             + snapshot.id.capacity();
@@ -4829,39 +4848,45 @@ impl NativeStore {
                 )
         };
         let pledge = pledge + state.leases.growth(1);
-        let retained = retained
-            + pledge
-            + state.generations.growth_for(&key)
-            + state.ledger.shared.growth(anchors())
-            + state
-                .ledger
-                .shared
-                .unowned_bytes(generation.pending_anchors())
-            + state
-                .ledger
-                .shared
-                .registry_growth_bytes(generation.index_registry)
-            + carried
-                .as_ref()
-                .map_or(0, |(lineage, candidate, pending, registry)| {
-                    charged_bytes(lineage, candidate)
-                        + state.carried_growth(lineage, candidate)
-                        + state.ledger.shared.unowned_bytes(
-                            candidate
-                                .publication_anchors(pending, *registry)
-                                .filter(|anchor| !published.contains(&anchor.id)),
-                        )
-                        + if registry.0 == generation.index_registry.0 {
-                            0
-                        } else {
-                            state.ledger.shared.registry_growth_bytes(*registry)
-                        }
-                });
-        if retained > reservation.bytes {
-            return Err(SnapshotError::new(
-                Status::RetainedLimit,
-                "derived classifier publication exceeds reservation",
-            ));
+        let required = |state: &StoreState| {
+            record
+                + pledge
+                + state.generations.growth_for(&key)
+                + state.ledger.shared.growth(anchors())
+                + state
+                    .ledger
+                    .shared
+                    .unowned_bytes(generation.publication_anchors())
+                + state
+                    .ledger
+                    .shared
+                    .registry_growth_bytes(generation.index_registry)
+                + carried
+                    .as_ref()
+                    .map_or(0, |(lineage, candidate, pending, registry)| {
+                        charged_bytes(lineage, candidate)
+                            + state.carried_growth(lineage, candidate)
+                            + state.ledger.shared.unowned_bytes(
+                                candidate
+                                    .publication_anchors(pending, *registry)
+                                    .filter(|anchor| !published.contains(&anchor.id)),
+                            )
+                            + if registry.0 == generation.index_registry.0 {
+                                0
+                            } else {
+                                state.ledger.shared.registry_growth_bytes(*registry)
+                            }
+                    })
+        };
+        let mut retained = required(&state);
+        while retained > reservation.bytes {
+            self.extend_projection_reservation_in(
+                &mut state,
+                reservation,
+                context,
+                retained - reservation.bytes,
+            )?;
+            retained = required(&state);
         }
         state.ledger.shared.reserve(anchors());
         state.register_generation(&snapshot, generation);
@@ -4968,7 +4993,6 @@ impl NativeStore {
         if preparation.complete() {
             let work = preparation.usage();
             let classifier = preparation.derived_classifier();
-            let seed = preparation.seed().cloned();
             let (snapshot, carried) = preparation.finish(&binding, cancel)?;
             self.extend_projection_reservation(
                 &mut reservation,
@@ -4980,7 +5004,6 @@ impl NativeStore {
                 snapshot,
                 generation,
                 classifier,
-                seed.as_deref(),
                 carried.map(|carried| (lineage, carried)),
                 handle,
                 context,
@@ -5103,7 +5126,6 @@ impl NativeStore {
                     &binding.registry_generation,
                 ),
             );
-            let seed = slot.preparation.seed().cloned();
             let (snapshot, carried) = slot.preparation.finish(&binding, cancel)?;
             self.extend_projection_reservation(
                 &mut reservation,
@@ -5115,7 +5137,6 @@ impl NativeStore {
                 snapshot,
                 generation,
                 classifier,
-                seed.as_deref(),
                 carried.map(|carried| (lineage, carried)),
                 &source_handle,
                 context,
@@ -6949,6 +6970,70 @@ impl NativeStore {
             && context.get("work_class").and_then(Value::as_str) != Some("background"))
     }
 
+    fn note_refusal(
+        state: &mut StoreState,
+        reason: &'static str,
+        foreground: bool,
+        cap: usize,
+        additional: usize,
+    ) {
+        let terms = Self::gauge_terms(state);
+        let (_, _, total) = terms.totals(state);
+        state.admission_refusals += 1;
+        state.last_refusal = Some(AdmissionRefusal {
+            reason,
+            foreground,
+            cap,
+            additional,
+            terms,
+            total,
+            owned: state.owned.accounted_bytes(),
+            transient: state.transient_bytes,
+            leases: state.leases.len(),
+            waiters: state.waiters.len(),
+            loads: state.loads.len(),
+            parked_loads: state.prepared_loads.len(),
+            parked_load_bytes: state
+                .prepared_loads
+                .iter()
+                .map(|(_, (slot, _))| slot.accounted.load(Ordering::Acquire))
+                .sum(),
+            cache_owners: state.cache_order.len(),
+        });
+    }
+
+    pub fn take_admission_refusal(&self) -> Option<Value> {
+        let mut state = self.lock_state();
+        let refusal = state.last_refusal.take()?;
+        let refusals = std::mem::take(&mut state.admission_refusals);
+        Some(json!({
+            "refusals": refusals,
+            "reason": refusal.reason,
+            "foreground": refusal.foreground,
+            "cap_bytes": refusal.cap,
+            "additional_bytes": refusal.additional,
+            "total_bytes": refusal.total,
+            "entry_bytes": refusal.terms.entries,
+            "index_bytes": refusal.terms.indexes,
+            "pending_bytes": refusal.terms.pending,
+            "classifier_bytes": refusal.terms.classifier,
+            "label_bytes": refusal.terms.label,
+            "projection_bytes": refusal.terms.projections,
+            "discovery_bytes": refusal.terms.discovery,
+            "graph_bytes": refusal.terms.graph,
+            "metadata_bytes": refusal.terms.metadata,
+            "owned_bytes": refusal.owned,
+            "transient_bytes": refusal.transient,
+            "live_generations": refusal.terms.live_generations,
+            "leases": refusal.leases,
+            "waiters": refusal.waiters,
+            "loads": refusal.loads,
+            "parked_loads": refusal.parked_loads,
+            "parked_load_bytes": refusal.parked_load_bytes,
+            "cache_owners": refusal.cache_owners,
+        }))
+    }
+
     fn memory_cap(&self, context: &Value) -> Result<usize, SnapshotError> {
         Ok(if Self::foreground_admission(context)? {
             self.config.retained
@@ -6969,6 +7054,11 @@ impl NativeStore {
             state.ledger.shared.work().admitted(additional);
             return Ok(());
         }
+        let foreground = Self::foreground_admission(context)?;
+        while foreground
+            && Self::retained_total(state).saturating_add(additional) > cap
+            && state.evict_idle_prepared_load()
+        {}
         while Self::retained_total(state).saturating_add(additional) > cap {
             let Some(owner) = state.next_cache_victim() else {
                 break;
@@ -6980,10 +7070,9 @@ impl NativeStore {
                 bookkeeping.is_some_and(|before| Self::bookkeeping_bytes(state) <= before),
                 "a refused admission grew retained bookkeeping"
             );
-            return Err(SnapshotError::new(
-                Status::RetainedLimit,
-                "accounted storage admission exhausted",
-            ));
+            const REASON: &str = "accounted storage admission exhausted";
+            Self::note_refusal(state, REASON, foreground, cap, additional);
+            return Err(SnapshotError::new(Status::RetainedLimit, REASON));
         }
         state.ledger.shared.work().admitted(additional);
         Ok(())
@@ -8714,16 +8803,17 @@ impl NativeStore {
                 usage[8] += 1;
                 (Arc::clone(slot), false)
             } else {
-                let cap = if Self::foreground_admission(context)? {
+                let foreground = Self::foreground_admission(context)?;
+                let cap = if foreground {
                     self.config.loads
                 } else {
                     self.config.loads.saturating_sub(self.config.hook_loads)
                 };
+                while foreground && state.loads.len() >= cap && state.evict_idle_prepared_load() {}
                 if state.loads.len() >= cap {
-                    return Err(SnapshotError::new(
-                        Status::RetainedLimit,
-                        "preparation admission exhausted",
-                    ));
+                    const REASON: &str = "preparation admission exhausted";
+                    Self::note_refusal(&mut state, REASON, foreground, cap, 0);
+                    return Err(SnapshotError::new(Status::RetainedLimit, REASON));
                 }
                 let registry_generation = str_field(context, "registry_generation")?;
                 let record = LOAD_SLOT_BYTES
@@ -15751,7 +15841,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "publish_label_generation charges shared index metadata and the shared registry again; the admission fix re-enables this"]
+    #[ignore = "publication now charges growth and extends its reservation, but a one-event append still hits accounted storage admission at a 64 MiB cap; the holder is not yet known"]
     fn carried_labels_publish_within_the_page_reservation() {
         let source = Source::new(&users(0..5000));
         let store = NativeStore::new_agent(&json!({"max_events_per_step":4096,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":64,"reserved_hook_leases":1})).unwrap();

@@ -52,7 +52,7 @@ impl NativeStore {
                     state.remove_load(&identity);
                 }
             }
-            if let Some((slot, touched)) = state.prepared_loads.get_mut(&current.identity) {
+            if let Some((slot, _)) = state.prepared_loads.get_mut(&current.identity) {
                 if Self::matches_prefix(current, slot.stamp)
                     && slot.path == path
                     && slot.registry_generation == str_field(context, "registry_generation")?
@@ -61,7 +61,6 @@ impl NativeStore {
                         now_ms().saturating_add(self.config.preparation),
                         Ordering::Release,
                     );
-                    *touched = now_ms();
                     Some(Arc::clone(slot))
                 } else {
                     state.prepared_loads.remove(&current.identity);
@@ -73,6 +72,7 @@ impl NativeStore {
             }
         };
         let stamp = pinned.as_ref().map_or(current, |slot| slot.stamp);
+        let usage_before = (usage[1], usage[3]);
         let outcome = if let Some(slot) = pinned {
             self.resume_warm_root(
                 slot,
@@ -87,19 +87,24 @@ impl NativeStore {
             self.acquire(request, context, cancel, usage)
         };
         let pending = outcome.as_ref().ok().and_then(|(data, token, _)| {
-            token
-                .clone()
-                .map(|token| (token, data["reservation"]["load_id"].as_str().map(str::to_owned)))
+            token.clone().map(|token| {
+                (
+                    token,
+                    data["reservation"]["load_id"].as_str().map(str::to_owned),
+                )
+            })
         });
         if let Some((token, _)) = &pending {
-            self.lock_state()
-                .waiters
-                .remove(token);
+            self.lock_state().waiters.remove(token);
         }
         let (slot, stamp) = {
             let mut state = self.lock_state();
             let slot = match pending.as_ref().and_then(|(_, load_id)| load_id.as_deref()) {
-                Some(load_id) => state.loads.values().find(|slot| slot.id == load_id).cloned(),
+                Some(load_id) => state
+                    .loads
+                    .values()
+                    .find(|slot| slot.id == load_id)
+                    .cloned(),
                 None => state.loads.get(&stamp.identity).cloned(),
             };
             let stamp = slot.as_ref().map_or(stamp, |slot| slot.stamp);
@@ -109,9 +114,19 @@ impl NativeStore {
                 })
             {
                 if let Some(slot) = &slot {
+                    let now = now_ms();
+                    let touched = if (usage[1], usage[3]) != usage_before {
+                        now
+                    } else {
+                        let stalled = now.saturating_sub(TOUCH_TTL_MS - STALLED_PREPARED_LOAD_MS);
+                        state
+                            .prepared_loads
+                            .get(&stamp.identity)
+                            .map_or(stalled, |(_, touched)| (*touched).min(stalled))
+                    };
                     let growth = state.prepared_load_growth(&stamp.identity);
-                    if self.admit_memory(&mut state, context, growth).is_ok() {
-                        state.insert_prepared_load(stamp.identity, Arc::clone(slot), now_ms());
+                    if growth == 0 || self.admit_memory(&mut state, context, growth).is_ok() {
+                        state.insert_prepared_load(stamp.identity, Arc::clone(slot), touched);
                     }
                 }
             } else {
@@ -142,9 +157,7 @@ impl NativeStore {
         let handle = &data["description"]["handle"];
         let lease_id = str_field(handle, "lease_id")?;
         let snapshot = self.renew_scope_for_work(handle, context, bounds.deadline_unix_ms);
-        self.lock_state()
-            .leases
-            .remove(lease_id);
+        self.lock_state().leases.remove(lease_id);
         let snapshot = match snapshot {
             Ok(scope) => scope.snapshot,
             Err(error) if error.status == Status::Deadline => return Ok(progress(false)),
@@ -271,7 +284,10 @@ mod root_warm_tests {
     #[test]
     fn large_claude_source_reserves_only_one_read_step() {
         let (directory, path) = source(1024);
-        File::create(&path).unwrap().set_len(16 * 1024 * 1024).unwrap();
+        File::create(&path)
+            .unwrap()
+            .set_len(16 * 1024 * 1024)
+            .unwrap();
         let store = NativeStore::new(&json!({"max_read_bytes_per_step":8*1024*1024,"max_entry_bytes":32*1024*1024,"max_source_bytes":32*1024*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":16*1024*1024,"max_leases":16,"reserved_hook_leases":1})).unwrap();
         let request = warm_request(&path, 8 * 1024 * 1024);
         let context = context("step-reservation");
@@ -377,7 +393,8 @@ mod root_warm_tests {
             built = warm(1024 * 1024);
         }
         assert_eq!(built["data"]["complete"].as_bool(), Some(true), "{built:?}");
-        let stamp = SourceStamp::of(&std::fs::metadata(std::fs::canonicalize(&path).unwrap()).unwrap());
+        let stamp =
+            SourceStamp::of(&std::fs::metadata(std::fs::canonicalize(&path).unwrap()).unwrap());
         let key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
             stamp,
             context["registry_generation"].as_str().unwrap(),
@@ -588,7 +605,10 @@ mod root_warm_tests {
         }
         assert!(finished);
         assert!(total_read >= size - start + 128, "{total_read}");
-        assert!(total_read <= size - start + 128 + 256 * 1024, "{total_read}");
+        assert!(
+            total_read <= size - start + 128 + 256 * 1024,
+            "{total_read}"
+        );
         let mut acquire = request.clone();
         acquire.insert("operation", json!("acquire"));
         let acquired = store.request(&acquire, &context, &Cancellation::default());
@@ -640,7 +660,11 @@ mod root_warm_tests {
             &context,
             &Cancellation::default(),
         );
-        assert_eq!(whole_warm["status"].as_str(), Some("source_limit"), "{whole_warm:?}");
+        assert_eq!(
+            whole_warm["status"].as_str(),
+            Some("source_limit"),
+            "{whole_warm:?}"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -654,8 +678,8 @@ mod root_warm_tests {
         let first = store.request(&request, &context, &Cancellation::default());
         assert_eq!(first["status"].as_str(), Some("ok"), "{first:?}");
         assert_eq!(first["data"]["complete"].as_bool(), Some(false));
-        let old_base = std::fs::metadata(&path).unwrap().len() / (512 * 1024) * (512 * 1024)
-            - 1024 * 1024;
+        let old_base =
+            std::fs::metadata(&path).unwrap().len() / (512 * 1024) * (512 * 1024) - 1024 * 1024;
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -691,7 +715,11 @@ mod root_warm_tests {
         let step = |request: &Value| {
             let reply = store.request(request, &context, &Cancellation::default());
             assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
-            assert_eq!(reply["data"]["complete"].as_bool(), Some(false), "{reply:?}");
+            assert_eq!(
+                reply["data"]["complete"].as_bool(),
+                Some(false),
+                "{reply:?}"
+            );
             reply["data"]["source_offset"].as_u64().unwrap()
         };
         step(&whole);
@@ -714,6 +742,158 @@ mod root_warm_tests {
         advances(&whole, whole_offset);
         advances(&window, window_offset);
         assert_eq!(store.state.lock().unwrap().prepared_loads.len(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn hook_context(claimant: &str) -> Value {
+        let mut context = context(claimant);
+        context.insert("work_class", json!("foreground"));
+        context
+    }
+
+    fn acquire_request(path: &Path) -> Value {
+        let mut request = warm_request(path, 256 * 1024);
+        request.insert("id", json!("hook-acquire"));
+        request.insert("operation", json!("acquire"));
+        request
+    }
+
+    fn parked(store: &NativeStore, path: &Path, context: &Value) -> SourceIdentity {
+        let reply = store.request(
+            &warm_request(path, 256 * 1024),
+            context,
+            &Cancellation::default(),
+        );
+        assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+        assert_eq!(
+            reply["data"]["complete"].as_bool(),
+            Some(false),
+            "{reply:?}"
+        );
+        let metadata = std::fs::metadata(path).unwrap();
+        SourceStamp::of(&metadata).identity
+    }
+
+    #[test]
+    fn a_hook_takes_the_slot_of_the_least_recently_touched_parked_load() {
+        let sources: Vec<_> = (0..3).map(|_| source(2 * 1024 * 1024)).collect();
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_retained_bytes":256*1024*1024,"reserved_hook_accounted_bytes":4096,"max_pending_loads":2,"reserved_hook_loads":0,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let warm = context("parked-slots");
+        let oldest = parked(&store, &sources[0].1, &warm);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let newest = parked(&store, &sources[1].1, &warm);
+
+        let refused = store.request(
+            &warm_request(&sources[2].1, 256 * 1024),
+            &warm,
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            refused["status"].as_str(),
+            Some("retained_limit"),
+            "{refused:?}"
+        );
+        {
+            let state = store.state.lock().unwrap();
+            assert_eq!(
+                state.prepared_loads.len(),
+                2,
+                "background keeps parked progress"
+            );
+        }
+        let report = store.take_admission_refusal().expect("refusal report");
+        assert_eq!(
+            report["reason"].as_str(),
+            Some("preparation admission exhausted")
+        );
+        assert_eq!(report["parked_loads"].as_u64(), Some(2));
+        assert_eq!(report["foreground"].as_bool(), Some(false));
+        assert!(store.take_admission_refusal().is_none());
+
+        let hook = store.request(
+            &acquire_request(&sources[2].1),
+            &hook_context("parked-slots"),
+            &Cancellation::default(),
+        );
+        assert_ne!(hook["status"].as_str(), Some("retained_limit"), "{hook:?}");
+        let state = store.state.lock().unwrap();
+        assert!(!state.prepared_loads.contains_key(&oldest));
+        assert!(state.prepared_loads.contains_key(&newest));
+        drop(state);
+        for (directory, _) in sources {
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn parked_bytes_give_way_to_a_hook_but_not_to_background_work() {
+        let (directory, path) = source(2 * 1024 * 1024);
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let warm = context("parked-bytes");
+        let identity = parked(&store, &path, &warm);
+        let mut state = store.state.lock().unwrap();
+        let foreground = hook_context("parked-bytes");
+        let background_cap = store.memory_cap(&warm).unwrap();
+        let hook_cap = store.memory_cap(&foreground).unwrap();
+        let background = store.admit_memory(&mut state, &warm, background_cap + 1);
+        assert_eq!(background.unwrap_err().status, Status::RetainedLimit);
+        assert!(state.prepared_loads.contains_key(&identity));
+        let retained = NativeStore::retained_total(&mut state);
+        store
+            .admit_memory(&mut state, &foreground, hook_cap - retained + 1)
+            .unwrap();
+        assert!(!state.prepared_loads.contains_key(&identity));
+        assert!(!state.loads.contains_key(&identity));
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn re_warming_a_parked_load_that_cannot_advance_does_not_keep_it_alive() {
+        let (directory, path) = source(2 * 1024 * 1024);
+        let store = NativeStore::new(&json!({"max_read_bytes_per_step":256*1024,"max_retained_bytes":256*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":16,"reserved_hook_leases":1})).unwrap();
+        let warm = context("stalled-park");
+        let identity = parked(&store, &path, &warm);
+        let slot = Arc::clone(
+            &store
+                .state
+                .lock()
+                .unwrap()
+                .prepared_loads
+                .get(&identity)
+                .unwrap()
+                .0,
+        );
+        let before = now_ms();
+        let (held, wait) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let busy = slot.work.lock().unwrap();
+                held.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                drop(busy);
+            });
+            wait.recv().unwrap();
+            let reply = store.request(
+                &warm_request(&path, 256 * 1024),
+                &warm,
+                &Cancellation::default(),
+            );
+            assert_eq!(reply["status"].as_str(), Some("ok"), "{reply:?}");
+            assert_eq!(
+                reply["usage"]["source_bytes_read"].as_u64(),
+                Some(0),
+                "{reply:?}"
+            );
+        });
+        drop(slot);
+        let mut state = store.state.lock().unwrap();
+        let touched = state.prepared_loads.get(&identity).unwrap().1;
+        assert!(touched + TOUCH_TTL_MS <= now_ms() + STALLED_PREPARED_LOAD_MS);
+        NativeStore::prune_at(&mut state, before + STALLED_PREPARED_LOAD_MS + 5_000);
+        assert!(!state.prepared_loads.contains_key(&identity));
+        assert!(!state.loads.contains_key(&identity));
+        drop(state);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -816,7 +996,14 @@ mod root_warm_tests {
         assert!(called.load(Ordering::Relaxed) > 0);
         let state = store.state.lock().unwrap();
         assert!(Arc::ptr_eq(
-            &state.generations.get(state.latest.values().next().unwrap()).unwrap().cached.as_ref().unwrap().snapshot,
+            &state
+                .generations
+                .get(state.latest.values().next().unwrap())
+                .unwrap()
+                .cached
+                .as_ref()
+                .unwrap()
+                .snapshot,
             &physical
         ));
         let custom_key = crate::snapshot_prepared_disk::PreparedDiskKey::new(
