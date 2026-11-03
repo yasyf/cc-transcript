@@ -59,7 +59,7 @@ def canonical_json(value: object) -> bytes:
     return "".join(canonical_parts(value)).encode()
 
 
-def tool_digest(tool_name: str, tool_input: Mapping[str, Any]) -> ToolDigest:
+def tool_digest(tool_name: str, tool_input: Mapping[str, Any] | str | None) -> ToolDigest:
     """Digest a tool call's content into the cross-language join key.
 
     Computed over the raw input mapping only — never the tool-use id, which
