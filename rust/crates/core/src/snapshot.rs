@@ -4796,7 +4796,6 @@ impl NativeStore {
         snapshot: Arc<TranscriptSnapshot>,
         mut generation: GenerationRecord,
         classifier: Value,
-        seed: Option<&CarriedClassification>,
         carried: Option<((SourceIdentity, String), CarriedClassification)>,
         source_handle: &Value,
         context: &Value,
@@ -4820,33 +4819,7 @@ impl NativeStore {
             }
             (lineage, candidate, pending, registry)
         });
-        let shared: HashSet<_> = snapshot
-            .chunks
-            .iter()
-            .map(|chunk| Arc::as_ptr(&chunk.entries) as usize)
-            .collect();
-        let seeded: HashSet<_> = seed
-            .into_iter()
-            .flat_map(|seed| {
-                seed.activity
-                    .shared_allocations()
-                    .into_iter()
-                    .map(|(id, _)| id)
-            })
-            .collect();
-        let retained = generation
-            .entries
-            .iter()
-            .filter(|(id, _)| !shared.contains(id))
-            .map(|(_, charge)| charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
-            .sum::<usize>()
-            + generation
-                .indexes
-                .iter()
-                .filter(|(id, _)| !seeded.contains(id))
-                .map(|(_, bytes)| *bytes)
-                .sum::<usize>()
-            + generation.entries.capacity() * size_of::<(usize, MemoryCharge)>()
+        let record = generation.entries.capacity() * size_of::<(usize, MemoryCharge)>()
             + generation.indexes.capacity() * size_of::<(usize, usize)>()
             + size_of::<GenerationRecord>()
             + snapshot.id.capacity();
@@ -4875,39 +4848,45 @@ impl NativeStore {
                 )
         };
         let pledge = pledge + state.leases.growth(1);
-        let retained = retained
-            + pledge
-            + state.generations.growth_for(&key)
-            + state.ledger.shared.growth(anchors())
-            + state
-                .ledger
-                .shared
-                .unowned_bytes(generation.pending_anchors())
-            + state
-                .ledger
-                .shared
-                .registry_growth_bytes(generation.index_registry)
-            + carried
-                .as_ref()
-                .map_or(0, |(lineage, candidate, pending, registry)| {
-                    charged_bytes(lineage, candidate)
-                        + state.carried_growth(lineage, candidate)
-                        + state.ledger.shared.unowned_bytes(
-                            candidate
-                                .publication_anchors(pending, *registry)
-                                .filter(|anchor| !published.contains(&anchor.id)),
-                        )
-                        + if registry.0 == generation.index_registry.0 {
-                            0
-                        } else {
-                            state.ledger.shared.registry_growth_bytes(*registry)
-                        }
-                });
-        if retained > reservation.bytes {
-            return Err(SnapshotError::new(
-                Status::RetainedLimit,
-                "derived classifier publication exceeds reservation",
-            ));
+        let required = |state: &StoreState| {
+            record
+                + pledge
+                + state.generations.growth_for(&key)
+                + state.ledger.shared.growth(anchors())
+                + state
+                    .ledger
+                    .shared
+                    .unowned_bytes(generation.publication_anchors())
+                + state
+                    .ledger
+                    .shared
+                    .registry_growth_bytes(generation.index_registry)
+                + carried
+                    .as_ref()
+                    .map_or(0, |(lineage, candidate, pending, registry)| {
+                        charged_bytes(lineage, candidate)
+                            + state.carried_growth(lineage, candidate)
+                            + state.ledger.shared.unowned_bytes(
+                                candidate
+                                    .publication_anchors(pending, *registry)
+                                    .filter(|anchor| !published.contains(&anchor.id)),
+                            )
+                            + if registry.0 == generation.index_registry.0 {
+                                0
+                            } else {
+                                state.ledger.shared.registry_growth_bytes(*registry)
+                            }
+                    })
+        };
+        let mut retained = required(&state);
+        while retained > reservation.bytes {
+            self.extend_projection_reservation_in(
+                &mut state,
+                reservation,
+                context,
+                retained - reservation.bytes,
+            )?;
+            retained = required(&state);
         }
         state.ledger.shared.reserve(anchors());
         state.register_generation(&snapshot, generation);
@@ -5026,7 +5005,6 @@ impl NativeStore {
                 snapshot,
                 generation,
                 classifier,
-                seed.as_deref(),
                 carried.map(|carried| (lineage, carried)),
                 handle,
                 context,
@@ -5161,7 +5139,6 @@ impl NativeStore {
                 snapshot,
                 generation,
                 classifier,
-                seed.as_deref(),
                 carried.map(|carried| (lineage, carried)),
                 &source_handle,
                 context,
@@ -8837,10 +8814,7 @@ impl NativeStore {
                 } else {
                     self.config.loads.saturating_sub(self.config.hook_loads)
                 };
-                while foreground
-                    && state.loads.len() >= cap
-                    && state.evict_idle_prepared_load()
-                {}
+                while foreground && state.loads.len() >= cap && state.evict_idle_prepared_load() {}
                 if state.loads.len() >= cap {
                     const REASON: &str = "preparation admission exhausted";
                     Self::note_refusal(&mut state, REASON, foreground, cap, 0);
@@ -15872,7 +15846,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "publish_label_generation charges shared index metadata and the shared registry again; the admission fix re-enables this"]
     fn carried_labels_publish_within_the_page_reservation() {
         let source = Source::new(&users(0..5000));
         let store = NativeStore::new_agent(&json!({"max_events_per_step":4096,"max_retained_bytes":64*1024*1024,"reserved_hook_accounted_bytes":4096,"max_leases":64,"reserved_hook_leases":1})).unwrap();
