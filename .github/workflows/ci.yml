@@ -257,7 +257,7 @@ jobs:
           cargo build --locked --bin cc-transcript-owner
           mkdir -p cc_transcript._native.data/scripts
           install -m 755 target/debug/cc-transcript-owner cc_transcript._native.data/scripts/cc-transcript-owner
-          uv build
+          uv build --wheel
           rm -rf .wheel-smoke
           uv venv --seed .wheel-smoke
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
