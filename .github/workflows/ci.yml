@@ -231,6 +231,12 @@ jobs:
       - name: Test native hydrate limit reasons and consumed work on Linux
         run: cargo test -p cc-transcript-core --no-default-features --lib snapshot::tests::hydrate_ -- --nocapture --test-threads=1
 
+      - name: Test the whole core library on Linux
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo test --locked -p cc-transcript-core --no-default-features --lib
+
       - name: Generate native type stubs
         env:
           PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
