@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use crate::snapshot_ledger::arc_slice_bytes;
 
+pub const SLOTS_PER_ENTRY: usize = 3;
+
 #[derive(Debug)]
 pub(crate) struct Counted<T> {
     value: T,
@@ -49,7 +51,7 @@ impl<K: Ord + Clone + Borrow<str>, V: Clone> Tree<K, V> {
             return 5 * size_of::<usize>();
         }
         let width = size_of::<K>() + size_of::<Counted<V>>() + 4 * size_of::<usize>();
-        (len.saturating_mul(8) + 64)
+        (len.saturating_mul(SLOTS_PER_ENTRY) + 64)
             .saturating_mul(width)
             .saturating_add(len.saturating_mul(max_key_bytes))
     }
@@ -210,7 +212,7 @@ impl<T: Clone> Vector<T> {
         if len == 0 {
             return 5 * size_of::<usize>();
         }
-        (len.saturating_mul(8) + 256)
+        (len.saturating_mul(SLOTS_PER_ENTRY) + 256)
             .saturating_mul(size_of::<Counted<T>>() + 4 * size_of::<usize>())
     }
 
@@ -382,7 +384,8 @@ mod tests {
         assert_eq!(tree.max_key_bytes, expected_max);
         let metadata = tree.allocations(string_allocation).next().unwrap().1;
         let width = size_of::<Arc<str>>() + size_of::<Counted<usize>>() + 4 * size_of::<usize>();
-        let expected_metadata = (tree.len() * 8 + 64) * width + tree.len() * expected_max;
+        let expected_metadata =
+            (tree.len() * SLOTS_PER_ENTRY + 64) * width + tree.len() * expected_max;
         assert_eq!(metadata, expected_metadata);
         let incoming_max = arc_slice_mirror::<u8>(8195);
         assert_eq!(

@@ -1580,7 +1580,8 @@ impl ActivityIndex {
                 if len == 0 {
                     5 * size_of::<usize>()
                 } else {
-                    (len * 8 + root) * (width + 4 * size_of::<usize>())
+                    (len * crate::snapshot_persistent::SLOTS_PER_ENTRY + root)
+                        * (width + 4 * size_of::<usize>())
                 }
             };
             allocations.extend([

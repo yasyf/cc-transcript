@@ -50,6 +50,7 @@ pub mod snapshot_ledger;
 pub mod snapshot_memory;
 pub mod snapshot_owned;
 mod snapshot_persistent;
+pub use snapshot_persistent::SLOTS_PER_ENTRY;
 pub mod snapshot_prepared;
 pub mod snapshot_prepared_disk;
 pub mod snapshot_projection;
