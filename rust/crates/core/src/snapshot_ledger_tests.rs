@@ -535,7 +535,7 @@ fn release_lease(store: &NativeStore, handle: &Value, owner: &Value) {
 }
 
 fn release_cursor(store: &NativeStore, cursor: &str, owner: &Value) {
-    let released = store.request(
+    let released = store.test_request(
         &json!({"schema":SCHEMA,"id":"ledger-release","operation":"release","kind":"cursor","token":cursor}),
         owner,
         &Cancellation::default(),
@@ -9544,7 +9544,14 @@ fn refused_backstop(joined: bool) -> Backstop {
         store.read_hook.lock().unwrap().is_none(),
         "the filler never ran inside the step"
     );
-    assert!(held.lock().unwrap().is_some());
+    {
+        let mut held = held.lock().unwrap();
+        let reservation = held.as_mut().expect("the filler reservation");
+        let headroom = cap_of(store, &foreground) - ledger(store)[TOTAL];
+        store
+            .extend_projection_reservation(reservation, &foreground, headroom)
+            .unwrap();
+    }
     store.assert_conserved();
     assert!(audited(store)[TOTAL] <= cap_for(&foreground));
     Backstop {
@@ -10627,15 +10634,16 @@ fn label_republication_reserves_seed_anchors_its_carried_record_released() {
             let state = store.lock_state();
             let slot = &state.labels[&token];
             let seed = slot.preparation.seed().expect("seeded label slot");
-            for (id, _) in seed.activity.audited_allocations(true) {
-                assert!(
-                    state.generations.values().any(|record| {
-                        record.indexes.iter().any(|(owned, _)| *owned == id)
-                            || record.pending_indexes.iter().any(|owner| owner.id == id)
-                    }),
-                    "the seed index is not owned by its generation"
-                );
-            }
+            assert_eq!(
+                state.ledger.shared.unowned_bytes(
+                    seed.activity
+                        .shared_allocations()
+                        .into_iter()
+                        .map(Anchor::indexes)
+                ),
+                0,
+                "the seed index is not owned by its generation"
+            );
             NativeStore::audit_label_bytes(&token, slot)
                 + arc_mirror::<CarriedClassification>()
                 + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>()
@@ -10901,15 +10909,16 @@ fn label_extraction_carries_the_seed_anchors_it_last_owned() {
             let state = store.lock_state();
             let slot = &state.labels[&token];
             let seed = slot.preparation.seed().expect("seeded label slot");
-            for (id, _) in seed.activity.audited_allocations(true) {
-                assert!(
-                    state.generations.values().any(|record| {
-                        record.indexes.iter().any(|(owned, _)| *owned == id)
-                            || record.pending_indexes.iter().any(|owner| owner.id == id)
-                    }),
-                    "the seed index is not owned by its generation"
-                );
-            }
+            assert_eq!(
+                state.ledger.shared.unowned_bytes(
+                    seed.activity
+                        .shared_allocations()
+                        .into_iter()
+                        .map(Anchor::indexes)
+                ),
+                0,
+                "the seed index is not owned by its generation"
+            );
             (
                 arc_mirror::<CarriedClassification>()
                     + seed.prefix.capacity() * size_of::<Arc<EntryChunk>>(),

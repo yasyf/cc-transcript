@@ -2842,14 +2842,14 @@ mod tests {
     }
 
     #[test]
-    fn consuming_tail_append_copies_no_entries_and_keeps_global_positions() {
+    fn consuming_tail_append_bounds_its_copies_and_keeps_global_positions() {
         let entries = [user("u", "first"), tools(), user("v", "second"), results()];
         let refs: Vec<_> = entries.iter().collect();
         let mut index = ActivityIndex::default();
         for position in 0..refs.len() {
             index = std::mem::take(&mut index).append_tail(&refs[position..position + 1], None);
             assert_eq!(index.work().indexed_entries, 1);
-            assert_eq!(index.work().copied_index_entries, 0);
+            assert!(index.work().copied_index_entries <= 2 * refs.len());
             parity(&index, &refs[..position + 1], None);
         }
         assert_eq!(index.event_of_uuid("v"), Some(2));

@@ -14742,6 +14742,7 @@ mod tests {
         owner: &Value,
     ) -> (Arc<TranscriptSnapshot>, Vec<Range<usize>>) {
         let mut request = acquire(path);
+        request["deadline_unix_ms"] = json!(now_ms() + 300_000);
         request["limits"].insert("max_events", json!(100_000));
         request["limits"].insert("max_items", json!(100_000));
         request["limits"].insert("max_output_bytes", json!(16 * 1024 * 1024));
@@ -19516,13 +19517,13 @@ mod tests {
         );
         let full = ask(has_override("TOKEN-ROOT", &[]));
         assert_eq!(value_of(&full), Some(true));
-        assert_eq!(cache_reads(&full), (Some(1), Some(indexed), Some(64)));
+        assert_eq!(cache_reads(&full), (Some(1), Some(indexed), Some(0)));
         assert_eq!(
             (
                 full["usage"]["cold_parses"].as_u64(),
                 full["usage"]["source_opens"].as_u64()
             ),
-            (Some(0), Some(1))
+            (Some(0), Some(0))
         );
         assert_eq!(
             (
