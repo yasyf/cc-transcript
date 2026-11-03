@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::snapshot_ledger::{
     arc_bytes, LedgerEvent, LedgerHook, ReleaseQueue, MUTEX_STORAGE_BYTES,
 };
+use crate::snapshot_persistent::SLOTS_PER_ENTRY;
 
 #[derive(Debug)]
 struct RegistryOwner {
@@ -174,7 +175,7 @@ impl AllocationSet {
         let membership = if count == 0 {
             0
         } else {
-            (count.saturating_mul(8) + 64)
+            (count.saturating_mul(SLOTS_PER_ENTRY) + 64)
                 .saturating_mul(width)
                 .saturating_add((count.ilog2() as usize + 4).saturating_mul(64 * width))
         };
@@ -259,7 +260,7 @@ impl AllocationSet {
         let nodes = if self.entries.is_empty() {
             0
         } else {
-            (self.len().saturating_mul(8) + 64).saturating_mul(width)
+            (self.len().saturating_mul(SLOTS_PER_ENTRY) + 64).saturating_mul(width)
         };
         (
             Arc::as_ptr(&self.metadata) as usize,
@@ -302,9 +303,9 @@ impl AllocationSet {
         let state = self.registry.state.lock().expect("allocation registry");
         let count = self.len().saturating_add(inserts);
         let width = size_of::<usize>() + size_of::<Arc<AllocationOwner>>() + 4 * size_of::<usize>();
-        let bound = (count.saturating_mul(8) + 64).saturating_mul(width);
+        let bound = (count.saturating_mul(SLOTS_PER_ENTRY) + 64).saturating_mul(width);
         let nodes = bound
-            .saturating_sub((self.len().saturating_mul(8) + 64).saturating_mul(width))
+            .saturating_sub((self.len().saturating_mul(SLOTS_PER_ENTRY) + 64).saturating_mul(width))
             .saturating_add(
                 inserts
                     .saturating_mul(count.max(1).ilog2() as usize + 4)
