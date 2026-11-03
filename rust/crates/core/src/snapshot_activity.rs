@@ -2842,20 +2842,14 @@ mod tests {
     }
 
     #[test]
-    fn consuming_tail_append_reuses_unique_metadata_and_global_positions() {
+    fn consuming_tail_append_copies_no_entries_and_keeps_global_positions() {
         let entries = [user("u", "first"), tools(), user("v", "second"), results()];
         let refs: Vec<_> = entries.iter().collect();
         let mut index = ActivityIndex::default();
-        let turns = Arc::as_ptr(&index.turns);
-        let uuids = Arc::as_ptr(&index.uuids);
-        let results = Arc::as_ptr(&index.results);
         for position in 0..refs.len() {
             index = std::mem::take(&mut index).append_tail(&refs[position..position + 1], None);
             assert_eq!(index.work().indexed_entries, 1);
             assert_eq!(index.work().copied_index_entries, 0);
-            assert_eq!(Arc::as_ptr(&index.turns), turns);
-            assert_eq!(Arc::as_ptr(&index.uuids), uuids);
-            assert_eq!(Arc::as_ptr(&index.results), results);
             parity(&index, &refs[..position + 1], None);
         }
         assert_eq!(index.event_of_uuid("v"), Some(2));

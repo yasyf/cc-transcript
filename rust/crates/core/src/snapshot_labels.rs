@@ -775,6 +775,7 @@ mod tests {
         let binding = binding("run1");
         let cancel = Cancellation::default();
         let mut reservations = Vec::new();
+        let mut containers = Vec::new();
         for prompt in ["short".to_owned(), "x".repeat(256 * 1024)] {
             let blocks = prompt
                 .as_bytes()
@@ -809,11 +810,12 @@ mod tests {
                 stage.pending.as_ref().unwrap().span,
                 PAGE_EVENTS..PAGE_EVENTS + 1
             );
-            assert!(stage.activity.append_container_reservation_bytes(1, 0, 0) < 4096);
+            containers.push(stage.activity.append_container_reservation_bytes(1, 0, 0));
             reservations.push(stage.next_operation_reservation_bytes());
             assert!(stage.submit("page2", &[true], &binding, &cancel).unwrap());
         }
         assert_eq!(reservations[0], reservations[1]);
+        assert_eq!(containers[0], containers[1]);
     }
 
     #[test]

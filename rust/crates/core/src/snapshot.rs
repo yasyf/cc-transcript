@@ -9056,8 +9056,10 @@ impl NativeStore {
         } else {
             None
         };
-        *slot.index_registry.lock().expect("load index registry") =
-            Some(load.activity.registry_witness());
+        if stepped.is_some() {
+            *slot.index_registry.lock().expect("load index registry") =
+                Some(load.activity.registry_witness());
+        }
         let unpublished = load.result.as_ref().is_some_and(|snapshot| {
             !self
                 .lock_state()
@@ -19504,7 +19506,7 @@ mod tests {
                 appended["usage"]["source_opens"].as_u64(),
                 appended["usage"]["source_bytes_read"].as_u64()
             ),
-            (Some(2), Some(128))
+            (Some(0), Some(0))
         );
         let (builds, writes) = (
             store.fact_builds.load(Ordering::Relaxed),

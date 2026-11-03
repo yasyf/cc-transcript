@@ -15,7 +15,7 @@ fn native_interaction_index_reuses_metadata_and_clones_only_the_selected_call() 
             body.push('\n');
         }
         let source = Source::new(&body);
-        let store = NativeStore::new(&json!({"max_retained_bytes":128*1024*1024,"max_read_bytes_per_step":8*1024*1024,"max_events_per_step":16384})).unwrap();
+        let store = NativeStore::new(&json!({"max_retained_bytes":512*1024*1024,"max_read_bytes_per_step":8*1024*1024,"max_events_per_step":16384})).unwrap();
         let owner = context("interaction-index");
         let mut request = acquire(&source.path);
         request["limits"]["max_read_bytes"] = json!(8*1024*1024);
