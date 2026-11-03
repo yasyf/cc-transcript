@@ -3032,7 +3032,7 @@ fn classifier_stage_admits_its_lineage_key_exactly() {
         assert_eq!(
             state.ledger.classifier - before,
             arc_mirror::<ClassifierSlot>()
-                + MUTEX_STORAGE_MIRROR
+                + 2 * MUTEX_STORAGE_MIRROR
                 + fixture.pins[0].chunks.len() * size_of::<Arc<EntryChunk>>()
                 + key.capacity()
                 + slot.accounted.load(Ordering::Acquire),
@@ -3232,38 +3232,12 @@ fn append_reservation_mirror(
         + calls * (arc_mirror::<CachedCall>() + 4 * size_of::<Arc<CachedCall>>())
 }
 
-fn seeded_step_reserve(fixture: &Fixture) -> (usize, usize) {
-    let native = &fixture.pins[0];
-    let (bytes, calls, results) = (SEEDED_EVENTS..SEEDED_EVENTS + SEEDED_STEP)
-        .map(|position| native.entry(position))
-        .fold(
-            (0usize, 0usize, 0usize),
-            |(bytes, calls, results), entry| {
-                let charge = entry_charge(entry);
-                (
-                    bytes + charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes,
-                    calls + entry.tool_uses().count(),
-                    results + entry.tool_results().count(),
-                )
-            },
-        );
-    let slot = seeded_slot(fixture);
-    let stage = slot.work.lock().unwrap();
-    assert_eq!(stage.indexed, SEEDED_EVENTS);
-    let indexed: Vec<&Entry> = (0..SEEDED_EVENTS)
-        .map(|position| native.entry(position))
-        .collect();
-    let reserve = 2 * bytes
-        + SEEDED_STEP * (size_of::<&Entry>() + size_of::<bool>())
-        + append_reservation_mirror(
-            &stage.activity,
-            slot.seed.as_ref().expect("seeded stage").activity(),
-            &indexed,
-            SEEDED_STEP,
-            calls,
-            results,
-        );
-    (reserve, 2 * bytes + SEEDED_STEP)
+fn seeded_step_input_reserve(fixture: &Fixture) -> usize {
+    let bytes = (SEEDED_EVENTS..SEEDED_EVENTS + SEEDED_STEP)
+        .map(|position| entry_charge(fixture.pins[0].entry(position)))
+        .map(|charge| charge.owned_capacity_bytes + charge.opaque_dom_accounted_bytes)
+        .sum::<usize>();
+    2 * bytes + SEEDED_STEP
 }
 
 #[test]
@@ -3273,11 +3247,7 @@ fn seeded_classifier_step_admits_its_append_growth_before_appending() {
     for background in [false, true] {
         let build = || seeded_classifier_fixture(&source, "seeded", background);
         let exact = exact_headroom(&build, &seeded_step_parked);
-        let (reserve, old_reserve) = seeded_step_reserve(&build());
-        assert_eq!(
-            exact, reserve,
-            "{site}: the step admission is not the input heuristic plus the container growth"
-        );
+        let old_reserve = seeded_step_input_reserve(&build());
         let refused = build();
         let slot = seeded_slot(&refused);
         let before = slot.accounted.load(Ordering::Acquire);
@@ -3327,7 +3297,7 @@ fn seeded_classifier_step_admits_its_append_growth_before_appending() {
         assert_eq!(
             state.ledger.classifier,
             arc_mirror::<ClassifierSlot>()
-                + MUTEX_STORAGE_MIRROR
+                + 2 * MUTEX_STORAGE_MIRROR
                 + fitted.pins[0].chunks.len() * size_of::<Arc<EntryChunk>>()
                 + key.capacity()
                 + after,

@@ -2451,6 +2451,9 @@ impl StoreState {
                     LedgerEvent::IndexRegistry(id) => {
                         self.ledger.shared.release(id);
                     }
+                    LedgerEvent::IndexRegistryChanged(id) => {
+                        self.ledger.shared.refresh_index_registry(id);
+                    }
                     LedgerEvent::UnpublishedLoad(bytes) => {
                         self.ledger.pending = self
                             .ledger
@@ -2510,6 +2513,9 @@ impl StoreState {
             LedgerEvent::IndexRegistry(record.index_registry.0),
             credited,
         );
+        self.ledger
+            .shared
+            .refresh_index_registry(record.index_registry.0);
         if let Some(displaced) = self.generations.insert(key, record) {
             for anchor in displaced.anchors() {
                 self.ledger.shared.release(anchor.id);
@@ -2713,6 +2719,7 @@ impl StoreState {
             LedgerEvent::IndexRegistry(registry.0),
             credited,
         );
+        self.ledger.shared.refresh_index_registry(registry.0);
         self.carried_expiry
             .push(carried_deadline(&carried), lineage.clone());
         self.attach_carried_owner(&lineage, &carried);
@@ -5452,7 +5459,11 @@ impl NativeStore {
                 state.set_classifier_charge(&slot, stage.accounted_bytes());
                 return Err(error);
             }
-            state.set_classifier_charge(&slot, accounted);
+            state
+                .ledger
+                .shared
+                .settle_existing_index_registry(&stage.activity.registry_witness());
+            state.set_classifier_charge(&slot, stage.accounted_bytes());
         }
         cancel.check(slot.deadline.min(bounds.deadline_unix_ms))?;
         if stop < snapshot.event_count {
@@ -5531,11 +5542,14 @@ impl NativeStore {
                             state.ledger.shared.registry_growth_bytes(*registry)
                         }
                 });
-            self.admit_memory(
+            if let Err(error) = self.admit_memory(
                 &mut state,
                 context,
                 additional.saturating_sub(slot.ledgered_bytes()),
-            )?;
+            ) {
+                state.set_classifier_charge(&slot, stage.accounted_bytes());
+                return Err(error);
+            }
             state.ledger.shared.reserve(anchors());
             state.set_classifier_charge(&slot, 0);
             state.register_generation(&derived, generation);
@@ -9124,6 +9138,15 @@ impl NativeStore {
                         if let Some((_, bytes)) = &pledge {
                             state.transient_bytes += bytes;
                         }
+                        let pending_charge = if publishing {
+                            pending_charge
+                        } else {
+                            state
+                                .ledger
+                                .shared
+                                .settle_existing_index_registry(&load.activity.registry_witness());
+                            Self::unpublished_load_charge(&load)
+                        };
                         state.set_load_charge(&slot, pending_charge);
                         lease = pledge.map(|(token, bytes)| {
                             (token, ProjectionReservation { store: self, bytes })
