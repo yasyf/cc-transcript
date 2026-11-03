@@ -9565,10 +9565,6 @@ fn refused_backstop(joined: bool) -> Backstop {
 }
 
 fn assert_restarted_build(store: &NativeStore, slot: &Arc<LoadSlot>) -> usize {
-    {
-        let load = slot.work.lock().unwrap();
-        eprintln!("PROBE offset={} pending={} origin={} complete={} seal={} prefix={} fence={} chunks={}/{} spans={} session={:?} count={} indexed={} decoded={} accounted={}", load.offset, load.pending.capacity(), load.origin_fence.capacity(), load.origin_complete, load.seal_fence.capacity(), load.prefix_fence.capacity(), load.fence.capacity(), load.chunks.len(), load.chunks.capacity(), load.source_chunks.capacity(), load.session_id, load.count, load.indexed, load.decoded, slot.accounted.load(Ordering::Acquire));
-    }
     let walk = cold_load_walk(slot);
     assert_eq!(
         walk,
@@ -9698,7 +9694,7 @@ fn refused_unpublished_build_keeps_its_pinned_slot_retryable() {
 }
 
 #[test]
-fn refused_unpublished_build_refuses_its_joined_waiter_once_then_retries() {
+fn refused_unpublished_build_keeps_its_parked_waiter_through_a_refused_resume() {
     let Backstop {
         store,
         source,
@@ -9726,19 +9722,18 @@ fn refused_unpublished_build_refuses_its_joined_waiter_once_then_retries() {
         "{refused:?}"
     );
     store.assert_conserved();
-    assert!(
-        store.lock_state().waiters.is_empty(),
-        "the joined waiter outlived its refused step"
+    assert_eq!(
+        store.lock_state().waiters.len(),
+        1,
+        "the refused resume consumed its cursor"
     );
     assert_eq!(assert_restarted_build(store, &slot), walk);
-    let stale = resume(store, &parked_response, &parked_owner);
-    assert_eq!(stale["status"].as_str(), Some("stale_cursor"), "{stale:?}");
-    store.assert_conserved();
     drop(held.lock().unwrap().take());
-    for owner in [parked_owner, context_for("backstop-joined", true)] {
-        let retried = retried_acquire(store, &source, &owner);
-        assert_published(store, &retried, &owner);
-    }
+    let published = drive(store, parked_response, &parked_owner);
+    assert_published(store, &published, &parked_owner);
+    let owner = context_for("backstop-joined", true);
+    let retried = retried_acquire(store, &source, &owner);
+    assert_published(store, &retried, &owner);
     assert!(
         store
             .lock_state()

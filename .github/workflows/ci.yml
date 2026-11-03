@@ -284,10 +284,7 @@ jobs:
           cache-on-failure: true
 
       - name: Test the whole core library on Linux
-        run: |
-          cargo test --locked -p cc-transcript-core --no-default-features --lib carried_labels_publish -- --nocapture || true
-          cargo test --locked -p cc-transcript-core --no-default-features --lib refused_unpublished_build -- --nocapture --test-threads=1 || true
-          cargo test --locked -p cc-transcript-core --no-default-features --lib
+        run: cargo test --locked -p cc-transcript-core --no-default-features --lib
 
   snapshot-catalog-macos:
     if: contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event_name)
