@@ -1046,19 +1046,22 @@ impl ActivityIndex {
                             .map_or(0, |undo| undo.prefix_bytes),
                     )
         };
-        let shared_prompt = previous
+        let shared_turn = previous
             .and_then(|prior| {
                 let at = prior.turns.len().checked_sub(1)?;
                 let old = &prior.turns[at];
                 let new = &self.turns[at];
-                (!Arc::ptr_eq(old, new) && Arc::ptr_eq(&old.prompt, &new.prompt))
-                    .then(|| old.prompt_bytes())
+                (!Arc::ptr_eq(old, new)).then(|| {
+                    usize::from(Arc::ptr_eq(&old.prompt, &new.prompt)) * old.prompt_bytes()
+                        + new.calls.bytes_since(None)
+                        - new.calls.bytes_since(Some(&old.calls))
+                })
             })
             .unwrap_or(0);
         let payload = self.turns.last().map_or(0, |turn| {
             turn.prefix_turn_bytes - shared_turns + turn.prefix_call_bytes
                 - shared_calls
-                - shared_prompt
+                - shared_turn
         });
         turns + uuids + results + payload + undo
     }
