@@ -1177,6 +1177,19 @@ impl Counter {
         }
     }
 
+    fn merge(&mut self, other: Counter) {
+        for key in other.order {
+            let count = other.counts[&key];
+            match self.counts.get_mut(&key) {
+                Some(seen) => *seen += count,
+                None => {
+                    self.counts.insert(key.clone(), count);
+                    self.order.push(key);
+                }
+            }
+        }
+    }
+
     fn most_common(&self) -> Vec<(String, u64)> {
         let mut items: Vec<(String, u64)> = self
             .order
@@ -1188,108 +1201,164 @@ impl Counter {
     }
 }
 
-/// Aggregate [`Stats`] over parsed transcripts (render.py collect_stats).
-pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
-    let mut kinds = Counter::default();
-    let mut models = Counter::default();
-    let mut tools = Counter::default();
-    let mut tool_errors_by_name = Counter::default();
-    let mut attachment_types = Counter::default();
-    let mut sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut files = 0u64;
-    let mut events = 0u64;
-    let mut text_chars = 0u64;
-    let mut thinking_chars = 0u64;
-    let mut tool_io_chars = 0u64;
-    let mut interrupts = 0u64;
-    let mut tool_errors = 0u64;
-    let mut error_events = (transcripts.len() == 1).then(Vec::new);
-    let mut sidechain = 0u64;
-    let mut first: Option<DateTime<FixedOffset>> = None;
-    let mut last: Option<DateTime<FixedOffset>> = None;
-    for entries in transcripts {
-        files += 1;
+/// [`collect_stats`] as a fold: [`StatsFold::of`] one transcript on a worker, then
+/// [`StatsFold::merge`] the folds in transcript order, so a sweep never keeps events.
+#[derive(Default)]
+pub struct StatsFold {
+    kinds: Counter,
+    models: Counter,
+    tools: Counter,
+    tool_errors_by_name: Counter,
+    attachment_types: Counter,
+    sessions: std::collections::HashSet<String>,
+    files: u64,
+    events: u64,
+    text_chars: u64,
+    thinking_chars: u64,
+    tool_io_chars: u64,
+    interrupts: u64,
+    tool_errors: u64,
+    error_events: Option<Vec<usize>>,
+    sidechain: u64,
+    first: Option<DateTime<FixedOffset>>,
+    last: Option<DateTime<FixedOffset>>,
+}
+
+impl StatsFold {
+    pub fn of(entries: &[Entry]) -> Self {
+        let mut fold = Self {
+            files: 1,
+            error_events: Some(Vec::new()),
+            ..Self::default()
+        };
         let mut tool_names: HashMap<String, String> = HashMap::new();
         for (index, event) in entries.iter().enumerate() {
-            events += 1;
-            kinds.add(event_kind(event));
-            text_chars += char_len(&entry_text(event)) as u64;
+            fold.events += 1;
+            fold.kinds.add(event_kind(event));
+            fold.text_chars += char_len(&entry_text(event)) as u64;
             if let Some(meta) = event.meta() {
-                sessions.insert(meta.session_id.clone());
-                sidechain += meta.is_sidechain as u64;
-                first = Some(match first {
-                    Some(f) if f <= meta.timestamp => f,
-                    _ => meta.timestamp,
-                });
-                last = Some(match last {
-                    Some(l) if l >= meta.timestamp => l,
-                    _ => meta.timestamp,
-                });
+                fold.sessions.insert(meta.session_id.clone());
+                fold.sidechain += meta.is_sidechain as u64;
+                fold.first = earliest(fold.first, meta.timestamp);
+                fold.last = latest(fold.last, meta.timestamp);
             }
             match event {
                 Entry::User(u) => {
-                    interrupts += user_interrupted(u) as u64;
+                    fold.interrupts += user_interrupted(u) as u64;
                     for block in u.blocks() {
                         if let ContentBlock::ToolResult(tr) = block {
-                            tool_io_chars += char_len(&tr.content) as u64;
-                            tool_errors += tr.is_error as u64;
+                            fold.tool_io_chars += char_len(&tr.content) as u64;
+                            fold.tool_errors += tr.is_error as u64;
                             if tr.is_error {
-                                if let Some(indexes) = &mut error_events {
+                                if let Some(indexes) = &mut fold.error_events {
                                     if indexes.last().copied() != Some(index) {
                                         indexes.push(index);
                                     }
                                 }
                                 if let Some(name) = tool_names.get(&tr.tool_use_id) {
-                                    tool_errors_by_name.add(name);
+                                    fold.tool_errors_by_name.add(name);
                                 }
                             }
                         }
                     }
                 }
                 Entry::Assistant(a) => {
-                    models.add(&a.model);
+                    fold.models.add(&a.model);
                     for block in &a.blocks {
                         match block {
                             ContentBlock::Thinking(thought) => {
-                                thinking_chars += char_len(thought) as u64
+                                fold.thinking_chars += char_len(thought) as u64
                             }
                             ContentBlock::ToolUse(tu) => {
-                                tools.add(&tu.name);
+                                fold.tools.add(&tu.name);
                                 tool_names.insert(tu.id.clone(), tu.name.clone());
-                                tool_io_chars += orjson_dumps(&tu.input).len() as u64;
+                                fold.tool_io_chars += orjson_dumps(&tu.input).len() as u64;
                             }
                             _ => {}
                         }
                     }
                 }
                 Entry::Mode(m) => {
-                    sessions.insert(m.session_id.clone());
+                    fold.sessions.insert(m.session_id.clone());
                 }
-                Entry::Attachment(a) => attachment_types.add(&a.attachment_type),
+                Entry::Attachment(a) => fold.attachment_types.add(&a.attachment_type),
                 _ => {}
             }
         }
+        fold
     }
-    Stats {
-        files,
-        events,
-        kinds: kinds.most_common(),
-        models: models.most_common(),
-        tools: tools.most_common(),
-        tool_errors_by_name: tool_errors_by_name.most_common(),
-        attachment_types: attachment_types.most_common(),
-        text_chars,
-        thinking_chars,
-        tool_io_chars,
-        sessions: sessions.len() as u64,
-        first_timestamp: first,
-        last_timestamp: last,
-        interrupts,
-        tool_errors,
-        error_events,
-        slowest_tools: Vec::new(),
-        sidechain,
+
+    pub fn merge(&mut self, other: Self) {
+        self.error_events = if self.files == 0 {
+            other.error_events
+        } else {
+            None
+        };
+        self.kinds.merge(other.kinds);
+        self.models.merge(other.models);
+        self.tools.merge(other.tools);
+        self.tool_errors_by_name.merge(other.tool_errors_by_name);
+        self.attachment_types.merge(other.attachment_types);
+        self.sessions.extend(other.sessions);
+        self.files += other.files;
+        self.events += other.events;
+        self.text_chars += other.text_chars;
+        self.thinking_chars += other.thinking_chars;
+        self.tool_io_chars += other.tool_io_chars;
+        self.interrupts += other.interrupts;
+        self.tool_errors += other.tool_errors;
+        self.sidechain += other.sidechain;
+        self.first = other
+            .first
+            .map_or(self.first, |ts| earliest(self.first, ts));
+        self.last = other.last.map_or(self.last, |ts| latest(self.last, ts));
     }
+
+    pub fn finish(self) -> Stats {
+        Stats {
+            files: self.files,
+            events: self.events,
+            kinds: self.kinds.most_common(),
+            models: self.models.most_common(),
+            tools: self.tools.most_common(),
+            tool_errors_by_name: self.tool_errors_by_name.most_common(),
+            attachment_types: self.attachment_types.most_common(),
+            text_chars: self.text_chars,
+            thinking_chars: self.thinking_chars,
+            tool_io_chars: self.tool_io_chars,
+            sessions: self.sessions.len() as u64,
+            first_timestamp: self.first,
+            last_timestamp: self.last,
+            interrupts: self.interrupts,
+            tool_errors: self.tool_errors,
+            error_events: self.error_events,
+            slowest_tools: Vec::new(),
+            sidechain: self.sidechain,
+        }
+    }
+}
+
+fn earliest(
+    seen: Option<DateTime<FixedOffset>>,
+    ts: DateTime<FixedOffset>,
+) -> Option<DateTime<FixedOffset>> {
+    Some(seen.filter(|first| *first <= ts).unwrap_or(ts))
+}
+
+fn latest(
+    seen: Option<DateTime<FixedOffset>>,
+    ts: DateTime<FixedOffset>,
+) -> Option<DateTime<FixedOffset>> {
+    Some(seen.filter(|last| *last >= ts).unwrap_or(ts))
+}
+
+/// Aggregate [`Stats`] over parsed transcripts (render.py collect_stats).
+pub fn collect_stats(transcripts: &[Vec<Entry>]) -> Stats {
+    let mut fold = StatsFold::default();
+    for entries in transcripts {
+        fold.merge(StatsFold::of(entries));
+    }
+    fold.finish()
 }
 
 #[cfg(feature = "command")]
@@ -1304,9 +1373,15 @@ pub fn slowest_tools<'a>(facts: impl IntoIterator<Item = &'a ToolFact>) -> Vec<S
             })
         })
         .collect();
+    keep_slowest(&mut tools);
+    tools
+}
+
+/// Trim `tools` to the five longest, ties in their current order.
+#[cfg(feature = "command")]
+pub fn keep_slowest(tools: &mut Vec<SlowTool>) {
     tools.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
     tools.truncate(5);
-    tools
 }
 
 /// The aligned multi-line statistics block (render.py render_stats).

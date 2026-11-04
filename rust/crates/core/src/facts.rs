@@ -109,25 +109,44 @@ pub fn tool_facts(session_id: &str, path: &str, entries: &[Entry]) -> Vec<ToolFa
 
 /// Counts `items` preserving first-seen order, ordered by descending count with stable
 /// ties (Python `Counter.most_common`).
-fn counter_most_common(items: impl Iterator<Item = String>) -> Vec<(String, usize)> {
-    let mut order: Vec<String> = Vec::new();
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for item in items {
-        match counts.get_mut(&item) {
+/// An insertion-ordered counter that folds a sweep without keeping its items; ties in
+/// [`Tally::most_common`] keep first-seen order, matching `collections.Counter`.
+#[derive(Debug, Default)]
+pub struct Tally {
+    order: Vec<String>,
+    counts: HashMap<String, usize>,
+}
+
+impl Tally {
+    pub fn add(&mut self, item: String) {
+        match self.counts.get_mut(&item) {
             Some(count) => *count += 1,
             None => {
-                order.push(item.clone());
-                counts.insert(item, 1);
+                self.order.push(item.clone());
+                self.counts.insert(item, 1);
             }
         }
     }
-    let mut result: Vec<(String, usize)> = order
-        .into_iter()
-        .map(|key| (counts[&key], key))
-        .map(|(count, key)| (key, count))
-        .collect();
-    result.sort_by(|a, b| b.1.cmp(&a.1));
-    result
+
+    pub fn most_common(self) -> Vec<(String, usize)> {
+        let counts = self.counts;
+        let mut result: Vec<(String, usize)> = self
+            .order
+            .into_iter()
+            .map(|key| {
+                let count = counts[&key];
+                (key, count)
+            })
+            .collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1));
+        result
+    }
+}
+
+fn counter_most_common(items: impl Iterator<Item = String>) -> Vec<(String, usize)> {
+    let mut tally = Tally::default();
+    items.for_each(|item| tally.add(item));
+    tally.most_common()
 }
 
 /// Every Bash command prefix across `facts`, most frequent first (facts.py `command_prefix_counts`).
@@ -146,41 +165,58 @@ pub fn command_prefix_counts<'a>(
 pub fn mcp_summary<'a>(
     facts: impl IntoIterator<Item = &'a ToolFact>,
 ) -> Vec<(String, McpServerSummary)> {
-    let mut server_order: Vec<String> = Vec::new();
-    let mut groups: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for fact in facts {
-        if let (Some(server), Some(tool), Some(access)) =
+    let mut tally = McpTally::default();
+    facts.into_iter().for_each(|fact| tally.add(fact));
+    tally.summary()
+}
+
+#[derive(Debug, Default)]
+struct ServerTally {
+    read: usize,
+    write: usize,
+    total: usize,
+    tools: Tally,
+}
+
+/// [`mcp_summary`] as a fold, so a sweep keeps per-server counts instead of every call.
+#[derive(Debug, Default)]
+pub struct McpTally {
+    servers: HashMap<String, ServerTally>,
+}
+
+impl McpTally {
+    pub fn add(&mut self, fact: &ToolFact) {
+        let (Some(server), Some(tool), Some(access)) =
             (&fact.mcp_server, &fact.mcp_tool, &fact.mcp_access)
-        {
-            match groups.get_mut(server) {
-                Some(calls) => calls.push((tool.clone(), access.clone())),
-                None => {
-                    server_order.push(server.clone());
-                    groups.insert(server.clone(), vec![(tool.clone(), access.clone())]);
-                }
-            }
-        }
+        else {
+            return;
+        };
+        let tally = self.servers.entry(server.clone()).or_default();
+        tally.read += usize::from(access == "read");
+        tally.write += usize::from(access == "write");
+        tally.total += 1;
+        tally.tools.add(tool.clone());
     }
-    let mut out: Vec<(String, McpServerSummary)> = server_order
-        .into_iter()
-        .map(|server| {
-            let calls = &groups[&server];
-            let read = calls.iter().filter(|(_, a)| a == "read").count();
-            let write = calls.iter().filter(|(_, a)| a == "write").count();
-            let tools = counter_most_common(calls.iter().map(|(tool, _)| tool.clone()));
-            (
-                server,
-                McpServerSummary {
-                    read,
-                    write,
-                    total: calls.len(),
-                    tools,
-                },
-            )
-        })
-        .collect();
-    out.sort_by(|a, b| b.1.total.cmp(&a.1.total).then(a.0.cmp(&b.0)));
-    out
+
+    pub fn summary(self) -> Vec<(String, McpServerSummary)> {
+        let mut out: Vec<(String, McpServerSummary)> = self
+            .servers
+            .into_iter()
+            .map(|(server, tally)| {
+                (
+                    server,
+                    McpServerSummary {
+                        read: tally.read,
+                        write: tally.write,
+                        total: tally.total,
+                        tools: tally.tools.most_common(),
+                    },
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| b.1.total.cmp(&a.1.total).then(a.0.cmp(&b.0)));
+        out
+    }
 }
 
 #[cfg(test)]
