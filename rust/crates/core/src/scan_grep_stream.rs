@@ -1,6 +1,11 @@
 use std::collections::{HashMap, VecDeque};
+use std::fs::{File, Metadata};
+use std::io::Read;
 use std::mem::size_of;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 
 use memchr::memmem;
 use sonic_rs::{json, JsonValueTrait};
@@ -15,11 +20,102 @@ use crate::scan_checkpoint::{
 use crate::scan_index::{needs, Builder, IndexReader, Need, Opened};
 use crate::scan_projection::Projected;
 use crate::scan_stream::{LineSpan, SourceStream};
-use crate::snapshot::{Cancellation, SnapshotError, SourceStamp, Status};
+use crate::snapshot::{now_ms, Cancellation, SnapshotError, SourceStamp, Status};
 use crate::snapshot_memory::entry_charge;
 use crate::types::{ContentBlock, Entry};
 
+const SURVEY_THREADS: usize = 8;
+const SURVEY_AHEAD: usize = 4 * SURVEY_THREADS;
+const SURVEY_BLOCK: usize = 1024 * 1024;
+const SURVEY_LINE: usize = 64 * 1024 * 1024;
 const FENCE_BYTES: usize = 64;
+
+struct Survey {
+    stamp: SourceStamp,
+    events: usize,
+}
+
+#[derive(Default)]
+struct SurveyQueue {
+    next: usize,
+    consumed: usize,
+    done: HashMap<usize, Option<Survey>>,
+}
+
+#[derive(Default)]
+struct Surveys {
+    queue: Mutex<SurveyQueue>,
+    ready: Condvar,
+    stopped: AtomicBool,
+}
+
+pub(super) struct Surveyor {
+    order: HashMap<PathBuf, usize>,
+    shared: Arc<Surveys>,
+    workers: Vec<JoinHandle<()>>,
+}
+
+impl Surveyor {
+    fn start(paths: Vec<PathBuf>, prefilter: &regex::bytes::Regex, deadline_unix_ms: u64) -> Self {
+        let mut order = HashMap::new();
+        for (index, path) in paths.iter().enumerate() {
+            order.entry(path.clone()).or_insert(index);
+        }
+        let paths: Arc<[PathBuf]> = paths.into();
+        let shared = Arc::new(Surveys::default());
+        let workers = (0..SURVEY_THREADS.min(paths.len()))
+            .map(|_| {
+                let (paths, shared, prefilter) = (paths.clone(), shared.clone(), prefilter.clone());
+                std::thread::spawn(move || {
+                    let mut queue = shared.queue.lock().expect("survey queue");
+                    while !shared.stopped.load(Ordering::Acquire) && queue.next < paths.len() {
+                        if queue.next > queue.consumed + SURVEY_AHEAD {
+                            queue = shared.ready.wait(queue).expect("survey queue");
+                            continue;
+                        }
+                        let index = queue.next;
+                        queue.next += 1;
+                        drop(queue);
+                        let outcome =
+                            survey(&paths[index], &prefilter, deadline_unix_ms, &shared.stopped);
+                        queue = shared.queue.lock().expect("survey queue");
+                        queue.done.insert(index, outcome);
+                        shared.ready.notify_all();
+                    }
+                })
+            })
+            .collect();
+        Self {
+            order,
+            shared,
+            workers,
+        }
+    }
+
+    fn take(&mut self, path: &Path) -> Option<Survey> {
+        let index = self.order.remove(path)?;
+        let mut queue = self.shared.queue.lock().expect("survey queue");
+        queue.consumed = queue.consumed.max(index);
+        self.shared.ready.notify_all();
+        loop {
+            if let Some(outcome) = queue.done.remove(&index) {
+                return outcome;
+            }
+            queue = self.shared.ready.wait(queue).expect("survey queue");
+        }
+    }
+}
+
+impl Drop for Surveyor {
+    fn drop(&mut self) {
+        self.shared.stopped.store(true, Ordering::Release);
+        drop(self.shared.queue.lock().expect("survey queue"));
+        self.shared.ready.notify_all();
+        for worker in self.workers.drain(..) {
+            worker.join().expect("survey worker");
+        }
+    }
+}
 
 struct ToolName {
     name: String,
@@ -198,6 +294,55 @@ fn declared_tools(bytes: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
+fn survey(
+    path: &Path,
+    prefilter: &regex::bytes::Regex,
+    deadline_unix_ms: u64,
+    stopped: &AtomicBool,
+) -> Option<Survey> {
+    let mut file = File::open(path).ok()?;
+    let stamp = SourceStamp::of(&file.metadata().ok().filter(Metadata::is_file)?);
+    let mut unread = stamp.size;
+    let mut buffer = Vec::with_capacity(SURVEY_BLOCK);
+    let mut scanned = 0;
+    let mut sniffed = false;
+    let mut events = 0;
+    loop {
+        if stopped.load(Ordering::Acquire) || now_ms() >= deadline_unix_ms {
+            return None;
+        }
+        let mut start = 0;
+        while let Some(at) = memchr::memchr(b'\n', &buffer[scanned..]) {
+            let line = &buffer[start..scanned + at];
+            if !sniffed && !line.iter().all(u8::is_ascii_whitespace) {
+                sniffed = true;
+                if sniff_provider(line) == Provider::Codex {
+                    return None;
+                }
+            }
+            if prefilter.is_match(line) || joined_results(line) {
+                return None;
+            }
+            events += usize::from(object_line(line));
+            start = scanned + at + 1;
+            scanned = start;
+        }
+        buffer.drain(..start);
+        scanned = buffer.len();
+        if unread == 0 {
+            return buffer.is_empty().then_some(Survey { stamp, events });
+        }
+        if buffer.len() > SURVEY_LINE {
+            return None;
+        }
+        let count = SURVEY_BLOCK.min(unread as usize);
+        let filled = buffer.len();
+        buffer.resize(filled + count, 0);
+        file.read_exact(&mut buffer[filled..]).ok()?;
+        unread -= count as u64;
+    }
+}
+
 fn saves(error: &SnapshotError) -> bool {
     matches!(
         error.status,
@@ -215,6 +360,16 @@ impl<'store> GrepReducer<'store> {
             counts: self.counts.clone(),
             matched_items: self.matched_items,
             coverage_complete: self.coverage_complete,
+        }
+    }
+
+    /// Reads `paths` ahead of the scan on parallel threads, in the order the
+    /// scan visits them, and marks each one whose every line the prefilter
+    /// rules out, so `scan_stream` counts its events without reading it again.
+    /// A path that changes before its turn is scanned as usual.
+    pub fn survey(&mut self, paths: Vec<PathBuf>, deadline_unix_ms: u64) {
+        if let Some(prefilter) = self.prefilter.as_ref().filter(|_| paths.len() > 1) {
+            self.surveyor = Some(Surveyor::start(paths, prefilter, deadline_unix_ms));
         }
     }
 
@@ -288,6 +443,22 @@ impl<'store> GrepReducer<'store> {
         ) -> Result<(), SnapshotError>,
     {
         let mut source = SourceStream::open(path, 0, budget, cancel)?;
+        if let Some(clean) = self
+            .surveyor
+            .as_mut()
+            .and_then(|surveyor| surveyor.take(path))
+            .filter(|clean| checkpoints.is_none() && clean.stamp == source.stamp)
+        {
+            let remaining = budget.remaining();
+            if clean.stamp.size <= remaining.max_source_read_bytes as u64
+                && clean.events <= remaining.max_events
+            {
+                budget.charge_source(clean.stamp.size as usize)?;
+                budget.charge_projection(0, clean.events, cancel)?;
+                budget.progress.surveyed_sources += 1;
+                return Ok(Some(ScanControl::Continue));
+            }
+        }
         let generation = source.generation();
         let keys = checkpoints
             .map(|store| self.keys(store, path, &source, render_names))

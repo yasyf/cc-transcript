@@ -25,6 +25,7 @@ pub struct ScanProgress {
     pub cache_hits: usize,
     pub cache_invalidations: usize,
     pub validated_bytes: usize,
+    pub surveyed_sources: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -338,6 +339,18 @@ pub struct ScanPlan {
     pub contains: Option<String>,
     pub source_limit: Option<usize>,
     pub listed: Option<Vec<(PathBuf, f64)>>,
+}
+
+impl ScanPlan {
+    /// The transcripts a scan of this plan visits, in order, when the caller
+    /// named them or listed them; empty when the scan discovers its own.
+    pub fn sources(&self) -> Vec<PathBuf> {
+        match &self.listed {
+            _ if !self.paths.is_empty() => self.paths.clone(),
+            Some(listed) => newest(listed.clone(), self.source_limit).0,
+            None => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
