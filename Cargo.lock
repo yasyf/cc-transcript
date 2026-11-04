@@ -223,6 +223,7 @@ dependencies = [
  "once_cell",
  "rayon",
  "regex",
+ "sha2",
  "sonic-rs",
  "tempfile",
 ]

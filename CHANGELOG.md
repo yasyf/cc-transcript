@@ -68,9 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Discovery no longer stats directory entries that `readdir` reports as
   regular files without a `.jsonl` name. A projects tree holds about as many
   `.json`, `.txt` and `.md` side files as transcripts, and each stat used to
-  cost an inode read under a full vnode cache. Scan discovery also stats the
-  transcripts on 8 threads before its sequential walk, so the walk finds their
-  metadata already cached.
+  cost an inode read under a full vnode cache.
+- `cc-transcript list` and a `cc-transcript grep` with no explicit paths read
+  their transcripts from one persistent index under
+  `~/.claude/cc-transcript/index` instead of walking and statting the projects
+  tree. Each record holds a transcript's path, size, mtime and inode. On macOS
+  a run replays the FSEvents history since the event id the index last saw,
+  restats only the files named in it, rewalks only the directories created,
+  removed or renamed, and evicts deleted transcripts; a dropped or wrapped
+  history, a different volume, or a missing index walks the whole tree once on
+  8 threads. Other platforms walk on every run. The store keeps the 8 most
+  recently written indexes. `list` no longer stats each row for its size.
 - When a cached registered membership changed only because some members grew,
   `prepare_graph` and the first `warm_registered` step refresh those members'
   stamps without locating thread ids or listing sidechain directories again. A

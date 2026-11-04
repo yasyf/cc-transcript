@@ -26,6 +26,7 @@ impl Fixture {
             project: None,
             contains: None,
             source_limit: None,
+            listed: None,
         }
     }
 }

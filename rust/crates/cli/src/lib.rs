@@ -9,6 +9,7 @@ use clap::error::ErrorKind as ClapErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 pub mod commands;
+pub mod index;
 pub mod output;
 pub mod target;
 pub mod timearg;
