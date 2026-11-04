@@ -3668,8 +3668,10 @@ mod tests {
         assert_eq!(seen, (0..40).collect::<Vec<u64>>());
         let mut tiny = limits();
         tiny.max_output_bytes = 64;
-        let refused = project(&snap, &req, &tiny, &Cancellation::default(), 0).unwrap_err();
-        assert_eq!(refused.status, Status::OutputLimit);
+        assert!(matches!(
+            project(&snap, &req, &tiny, &Cancellation::default(), 0),
+            Err(error) if error.status == Status::OutputLimit
+        ));
     }
 
     #[test]
