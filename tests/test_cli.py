@@ -787,6 +787,89 @@ def test_tools_lists_every_call_with_outcomes(rich: Path) -> None:
     ]
 
 
+def bash_transcript(path: Path, first: int, call: int, command: str, *, mtime: int | None = None) -> Path:
+    written = write_transcript(
+        path,
+        [user_entry(first, "go"), tool_use_entry(call, f"toolu_{path.stem}", "Bash", command=command)],
+    )
+    if mtime is not None:
+        os.utime(written, (mtime, mtime))
+    return written
+
+
+def test_tools_until_skips_transcripts_that_start_after_the_window(tmp_path: Path) -> None:
+    bash_transcript(tmp_path / "p" / "early.jsonl", 0, 5, "ls early")
+    bash_transcript(tmp_path / "p" / "late.jsonl", 1000, 6, "ls late")
+    write_transcript(
+        tmp_path / "p" / "long_head.jsonl",
+        [user_entry(1000, "x" * 300_000), tool_use_entry(7, "toolu_long", "Bash", command="ls long")],
+    )
+    until = (BASE_TS + timedelta(seconds=100)).isoformat()
+
+    result = run_cli("tools", "--root", str(tmp_path), "--all", "--until", until, "--json")
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(json.loads(line)["command"] for line in result.stdout.splitlines()) == ["ls early", "ls long"]
+
+
+def test_tools_until_narrows_before_the_limit(tmp_path: Path) -> None:
+    bash_transcript(tmp_path / "p" / "old.jsonl", 0, 5, "ls old", mtime=1_800_000_000)
+    bash_transcript(tmp_path / "p" / "new.jsonl", 1000, 1001, "ls new", mtime=1_800_000_100)
+    until = (BASE_TS + timedelta(seconds=100)).isoformat()
+
+    result = run_cli("tools", "--root", str(tmp_path), "--limit", "1", "--until", until, "--json")
+
+    assert result.returncode == 0, result.stderr
+    assert [json.loads(line)["command"] for line in result.stdout.splitlines()] == ["ls old"]
+
+
+def test_tools_keep_newest_first_order_past_the_worker_window(tmp_path: Path) -> None:
+    for index in range(60):
+        bash_transcript(tmp_path / "p" / f"t{index}.jsonl", 0, 1, f"ls {index}", mtime=1_800_000_000 + index)
+
+    result = run_cli("tools", "--root", str(tmp_path), "--all", "--json")
+
+    assert result.returncode == 0, result.stderr
+    assert [json.loads(line)["command"] for line in result.stdout.splitlines()] == [
+        f"ls {index}" for index in reversed(range(60))
+    ]
+
+
+def test_tools_stop_cleanly_when_the_reader_closes_the_pipe(tmp_path: Path) -> None:
+    for index in range(60):
+        bash_transcript(tmp_path / "p" / f"t{index}.jsonl", 0, 1, f"ls {index}")
+    with subprocess.Popen(
+        [str(CLI), "tools", "--root", str(tmp_path), "--all", "--json"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ) as proc:
+        assert proc.stdout is not None and proc.stderr is not None
+        proc.stdout.readline()
+        proc.stdout.close()
+        stderr = proc.stderr.read()
+        assert proc.wait(timeout=60) == 0
+    assert b"panic" not in stderr
+
+
+def test_sweep_aggregates_fold_in_transcript_order(tmp_path: Path) -> None:
+    bash_transcript(tmp_path / "p" / "new.jsonl", 0, 1, "git status", mtime=1_800_000_100)
+    bash_transcript(tmp_path / "p" / "old.jsonl", 2, 3, "ls -la", mtime=1_800_000_000)
+    root = ("--root", str(tmp_path), "--all", "--json")
+
+    rows = [json.loads(line) for line in run_cli("tools", *root).stdout.splitlines()]
+    commands = [json.loads(line) for line in run_cli("commands", *root).stdout.splitlines()]
+    stats = json.loads(run_cli("stats", *root).stdout)
+    per_file = [json.loads(line) for line in run_cli("stats", *root, "--per-file").stdout.splitlines()]
+
+    assert [row["prefix"] for row in commands] == [row["command_prefixes"][0] for row in rows]
+    assert [row["count"] for row in commands] == [1, 1]
+    assert (stats["files"], stats["events"]) == (2, 4)
+    assert stats["first_timestamp"] == BASE_TS.isoformat()
+    assert stats["last_timestamp"] == (BASE_TS + timedelta(seconds=3)).isoformat()
+    assert [Path(row["path"]).name for row in per_file] == ["new.jsonl", "old.jsonl"]
+    assert [row["events"] for row in per_file] == [2, 2]
+
+
 def test_tools_json_rows_carry_cwd_and_file_paths(rich: Path) -> None:
     result = run_cli("tools", str(rich), "--json")
     assert result.returncode == 0

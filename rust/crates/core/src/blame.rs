@@ -265,6 +265,29 @@ pub enum Verdict {
     External,
 }
 
+/// What one session contributes to [`attribute`], so a sweep can drop each session's
+/// events as soon as it has been read.
+#[derive(Debug, Clone)]
+pub struct SessionAttribution {
+    writes: Vec<(String, WriteEvidence)>,
+    candidate: Option<GeneratedCandidate>,
+}
+
+/// Reads one session's edit-shaped writes to `rel_target` and its `generated` suspect.
+pub fn session_attribution(
+    session_id: &str,
+    path: &str,
+    entries: &[Entry],
+    repo: &RepoPaths,
+    rel_target: &str,
+    mtime: DateTime<FixedOffset>,
+) -> SessionAttribution {
+    SessionAttribution {
+        writes: session_edits(session_id, path, entries, repo, rel_target),
+        candidate: generated_candidate(session_id, path, entries, repo, mtime),
+    }
+}
+
 /// Classifies `rel_target` against its `mtime`: an edit-shaped write to it (newest wins,
 /// ties by ascending session id) is `claude`; else every repo-member session with Bash
 /// activity whose active window contains `mtime` is a `generated` candidate (newest
@@ -275,101 +298,114 @@ pub fn attribute(
     rel_target: &str,
     mtime: DateTime<FixedOffset>,
 ) -> Verdict {
-    if let Some(verdict) = claude_verdict(sessions, repo, rel_target) {
-        return verdict;
+    attribution_verdict(
+        sessions
+            .iter()
+            .map(|&(session_id, path, entries)| {
+                session_attribution(session_id, path, entries, repo, rel_target, mtime)
+            })
+            .collect(),
+    )
+}
+
+/// The verdict over every session's [`SessionAttribution`], in session order.
+pub fn attribution_verdict(sessions: Vec<SessionAttribution>) -> Verdict {
+    let (writes, candidates): (Vec<_>, Vec<_>) = sessions
+        .into_iter()
+        .map(|session| (session.writes, session.candidate))
+        .unzip();
+    if let Some((session_id, evidence)) = writes
+        .into_iter()
+        .flatten()
+        .max_by(|a, b| a.1.ts.cmp(&b.1.ts).then_with(|| b.0.cmp(&a.0)))
+    {
+        return Verdict::Claude {
+            session_id,
+            evidence,
+        };
     }
-    match generated_candidates(sessions, repo, mtime) {
-        candidates if !candidates.is_empty() => Verdict::Generated { candidates },
-        _ => Verdict::External,
+    let mut candidates: Vec<GeneratedCandidate> = candidates.into_iter().flatten().collect();
+    candidates.sort_by(|a, b| b.window_end.cmp(&a.window_end));
+    match candidates.is_empty() {
+        true => Verdict::External,
+        false => Verdict::Generated { candidates },
     }
 }
 
-/// The newest edit-shaped write to `rel_target` across all sessions, if any.
-fn claude_verdict(
-    sessions: &[(&str, &str, &[Entry])],
+fn session_edits(
+    session_id: &str,
+    path: &str,
+    entries: &[Entry],
     repo: &RepoPaths,
     rel_target: &str,
-) -> Option<Verdict> {
+) -> Vec<(String, WriteEvidence)> {
     let mut writes: Vec<(String, WriteEvidence)> = Vec::new();
-    for &(session_id, path, entries) in sessions {
-        let lifted = lift_session(session_id, entries);
-        for use_ in lifted.turns.iter().flat_map(|turn| turn.tool_uses.iter()) {
-            for (file, _hunks) in &use_.edits {
-                match repo.relative(file, use_.cwd) {
-                    Some((tree, rel)) if rel == rel_target => writes.push((
-                        session_id.to_string(),
-                        WriteEvidence {
-                            transcript_path: path.to_string(),
-                            tree: tree.label(),
-                            ts: use_.ts,
-                            tool: use_.name.to_string(),
-                            tool_use_id: use_.tool_use_id.to_string(),
-                        },
-                    )),
-                    _ => {}
-                }
+    let lifted = lift_session(session_id, entries);
+    for use_ in lifted.turns.iter().flat_map(|turn| turn.tool_uses.iter()) {
+        for (file, _hunks) in &use_.edits {
+            match repo.relative(file, use_.cwd) {
+                Some((tree, rel)) if rel == rel_target => writes.push((
+                    session_id.to_string(),
+                    WriteEvidence {
+                        transcript_path: path.to_string(),
+                        tree: tree.label(),
+                        ts: use_.ts,
+                        tool: use_.name.to_string(),
+                        tool_use_id: use_.tool_use_id.to_string(),
+                    },
+                )),
+                _ => {}
             }
         }
     }
     writes
-        .into_iter()
-        .max_by(|a, b| a.1.ts.cmp(&b.1.ts).then_with(|| b.0.cmp(&a.0)))
-        .map(|(session_id, evidence)| Verdict::Claude {
-            session_id,
-            evidence,
-        })
 }
 
-/// Every repo-member session with Bash activity whose active window contains `mtime`,
-/// newest window first; each carries its last up-to-five Bash calls at or before `mtime`.
-fn generated_candidates(
-    sessions: &[(&str, &str, &[Entry])],
+/// A repo-member session with Bash activity whose active window contains `mtime`,
+/// carrying its last up-to-five Bash calls at or before `mtime`.
+fn generated_candidate(
+    session_id: &str,
+    path: &str,
+    entries: &[Entry],
     repo: &RepoPaths,
     mtime: DateTime<FixedOffset>,
-) -> Vec<GeneratedCandidate> {
-    let mut candidates: Vec<GeneratedCandidate> = sessions
+) -> Option<GeneratedCandidate> {
+    let stamps: Vec<DateTime<FixedOffset>> = entries
         .iter()
-        .filter_map(|&(session_id, path, entries)| {
-            let stamps: Vec<DateTime<FixedOffset>> = entries
-                .iter()
-                .filter_map(Entry::meta)
-                .map(|meta| meta.timestamp)
-                .collect();
-            let window_start = stamps.iter().min().copied()?;
-            let window_end = stamps.iter().max().copied()?;
-            let member = entries
-                .iter()
-                .filter_map(Entry::meta)
-                .filter_map(|meta| meta.cwd.as_deref())
-                .any(|cwd| repo.tree_of(cwd).is_some());
-            if !member || !(window_start <= mtime && mtime <= window_end) {
-                return None;
-            }
-            let bash: Vec<(DateTime<FixedOffset>, String)> = lift_session(session_id, entries)
-                .turns
-                .iter()
-                .flat_map(|turn| turn.tool_uses.iter())
-                .filter_map(|use_| match &use_.call {
-                    ToolCall::Bash(call) => Some((use_.ts, call.command.clone())),
-                    _ => None,
-                })
-                .collect();
-            if bash.is_empty() {
-                return None;
-            }
-            let mut before: Vec<(DateTime<FixedOffset>, String)> =
-                bash.into_iter().filter(|(ts, _)| *ts <= mtime).collect();
-            Some(GeneratedCandidate {
-                session_id: session_id.to_string(),
-                transcript_path: path.to_string(),
-                window_start,
-                window_end,
-                bash: before.split_off(before.len().saturating_sub(BASH_SUSPECTS)),
-            })
+        .filter_map(Entry::meta)
+        .map(|meta| meta.timestamp)
+        .collect();
+    let window_start = stamps.iter().min().copied()?;
+    let window_end = stamps.iter().max().copied()?;
+    let member = entries
+        .iter()
+        .filter_map(Entry::meta)
+        .filter_map(|meta| meta.cwd.as_deref())
+        .any(|cwd| repo.tree_of(cwd).is_some());
+    if !member || !(window_start <= mtime && mtime <= window_end) {
+        return None;
+    }
+    let bash: Vec<(DateTime<FixedOffset>, String)> = lift_session(session_id, entries)
+        .turns
+        .iter()
+        .flat_map(|turn| turn.tool_uses.iter())
+        .filter_map(|use_| match &use_.call {
+            ToolCall::Bash(call) => Some((use_.ts, call.command.clone())),
+            _ => None,
         })
         .collect();
-    candidates.sort_by(|a, b| b.window_end.cmp(&a.window_end));
-    candidates
+    if bash.is_empty() {
+        return None;
+    }
+    let mut before: Vec<(DateTime<FixedOffset>, String)> =
+        bash.into_iter().filter(|(ts, _)| *ts <= mtime).collect();
+    Some(GeneratedCandidate {
+        session_id: session_id.to_string(),
+        transcript_path: path.to_string(),
+        window_start,
+        window_end,
+        bash: before.split_off(before.len().saturating_sub(BASH_SUSPECTS)),
+    })
 }
 
 #[cfg(test)]

@@ -6,14 +6,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cc_transcript_core::blame::{attribute as classify, blame as rank, session_writes, RepoPaths};
+use cc_transcript_core::blame::{
+    attribution_verdict, blame as rank, session_attribution, session_writes, RepoPaths,
+};
 use cc_transcript_core::discovery::{find_in, mtime_secs, project_dir_name};
 use cc_transcript_core::render::{attribute_json, attribute_lines, blame_json, blame_line};
-use cc_transcript_core::types::Entry;
 use chrono::{DateTime, FixedOffset};
 
 use crate::output::{click_error, eline, py_repr, usage_error, CliExit, Out};
-use crate::target::{claude_projects_dir, parse_transcripts, require_dir, Parsed};
+use crate::target::{claude_projects_dir, require_dir, started_before, stream_transcripts};
 
 const BLAME_USAGE: &str = "cc-transcript blame [OPTIONS] <PATH>";
 const BLAME_HELP: &str = "cc-transcript blame";
@@ -100,8 +101,9 @@ fn resolve_target(path: &Path, usage: &str, help_path: &str) -> Result<Target, C
     })
 }
 
-/// Parse every transcript under a project dir belonging to `repo_root` (or every dir
-/// under `--all-projects`), dropping files older than `min_mtime` (blame's `--since`).
+/// Every transcript under a project dir belonging to `repo_root` (or every dir under
+/// `--all-projects`), dropping files older than `min_mtime` and files that start at or
+/// after `until` (blame's window).
 /// The `{encoded}-` prefix admits prefix-collided siblings (`<root>-rust`); the engine's
 /// per-call cwd check drops their writes.
 fn select_transcripts(
@@ -109,9 +111,10 @@ fn select_transcripts(
     repo_root: &str,
     all_projects: bool,
     min_mtime: Option<f64>,
+    until: Option<DateTime<FixedOffset>>,
     usage: &str,
     help_path: &str,
-) -> Result<Vec<Parsed>, CliExit> {
+) -> Result<Vec<(PathBuf, f64)>, CliExit> {
     require_dir(projects_root, "'--root'", usage, help_path)?;
     let encoded = project_dir_name(repo_root);
     let prefix = format!("{encoded}-");
@@ -126,7 +129,10 @@ fn select_transcripts(
         .flat_map(|entry| find_in(&entry.path(), None, None, None))
         .filter(|(_, mtime)| min_mtime.is_none_or(|floor| *mtime >= floor))
         .collect();
-    Ok(parse_transcripts(&pairs))
+    match until {
+        Some(until) => started_before(pairs, until),
+        None => Ok(pairs),
+    }
 }
 
 /// A file mtime (`os.stat` seconds) as a UTC-offset datetime, for the attribute window.
@@ -152,31 +158,36 @@ pub fn blame(args: BlameArgs) -> Result<(), CliExit> {
         .map(|value| crate::timearg::parse_time("--until", value, now, BLAME_USAGE, BLAME_HELP))
         .transpose()?;
     let projects_root = args.root.unwrap_or_else(claude_projects_dir);
-    let parsed = select_transcripts(
+    let selected = select_transcripts(
         &projects_root,
         &target.repo.root,
         args.all_projects,
         since.map(|ts| ts.timestamp() as f64),
+        until,
         BLAME_USAGE,
         BLAME_HELP,
     )?;
-    let mut records = rank(
-        parsed
-            .iter()
-            .filter_map(|p| p.session_id.as_deref().map(|session| (session, p)))
-            .flat_map(|(session, p)| {
-                session_writes(
-                    session,
-                    &p.path.to_string_lossy(),
-                    &p.entries,
-                    &target.repo,
-                    &target.rel_target,
-                    since,
-                    until,
-                )
-            })
-            .collect(),
-    );
+    let mut writes = Vec::new();
+    stream_transcripts(
+        &selected,
+        |parsed| match &parsed.session_id {
+            Some(session) => session_writes(
+                session,
+                &parsed.path.to_string_lossy(),
+                &parsed.entries,
+                &target.repo,
+                &target.rel_target,
+                since,
+                until,
+            ),
+            None => Vec::new(),
+        },
+        |file| {
+            writes.extend(file);
+            Ok(())
+        },
+    )?;
+    let mut records = rank(writes);
     if let Some(limit) = args.limit {
         records.truncate(limit);
     }
@@ -200,31 +211,36 @@ pub fn attribute(args: AttributeArgs) -> Result<(), CliExit> {
         .map_err(|e| click_error(&format!("{}: {e}", args.path.display())))?;
     let mtime = mtime_datetime(mtime_secs(&meta));
     let projects_root = args.root.unwrap_or_else(claude_projects_dir);
-    let parsed = select_transcripts(
+    let selected = select_transcripts(
         &projects_root,
         &target.repo.root,
         args.all_projects,
         None,
+        None,
         ATTRIBUTE_USAGE,
         ATTRIBUTE_HELP,
     )?;
-    let owned: Vec<(&str, String, &[Entry])> = parsed
-        .iter()
-        .filter_map(|p| {
-            p.session_id.as_deref().map(|session| {
-                (
+    let mut sessions = Vec::new();
+    stream_transcripts(
+        &selected,
+        |parsed| {
+            parsed.session_id.as_deref().map(|session| {
+                session_attribution(
                     session,
-                    p.path.to_string_lossy().into_owned(),
-                    p.entries.as_slice(),
+                    &parsed.path.to_string_lossy(),
+                    &parsed.entries,
+                    &target.repo,
+                    &target.rel_target,
+                    mtime,
                 )
             })
-        })
-        .collect();
-    let sessions: Vec<(&str, &str, &[Entry])> = owned
-        .iter()
-        .map(|(session, path, entries)| (*session, path.as_str(), *entries))
-        .collect();
-    let verdict = classify(&sessions, &target.repo, &target.rel_target, mtime);
+        },
+        |session| {
+            sessions.extend(session);
+            Ok(())
+        },
+    )?;
+    let verdict = attribution_verdict(sessions);
     let mut out = Out::new();
     match args.json {
         true => out.line(&attribute_json(&verdict, &target.rel_target, mtime).dumps())?,

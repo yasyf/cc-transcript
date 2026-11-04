@@ -91,6 +91,10 @@ jobs:
       - name: Test foreground classifier staging admission on Linux
         run: cargo test --locked -p cc-transcript-core --no-default-features --lib classifier_staging_ -- --nocapture
 
+      - name: Test the bounded transcript pipeline on Linux
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p cc-transcript-cli --lib -- 'target::'
+
       - name: Test registered membership activity cutoff on Linux
         if: ${{ !cancelled() }}
         run: cargo test --locked -p cc-transcript-core --no-default-features --lib membership_cutoff_ -- --nocapture

@@ -1,17 +1,26 @@
 //! Target discovery and parsing shared by every transcript command (cli.py's
 //! discover / resolve_targets / parse_transcripts / scope_note plumbing).
 
-use std::fs;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Condvar, Mutex};
 
 use cc_transcript_core::discovery::mtime_secs;
 use cc_transcript_core::gateway::parse_transcript_bytes;
 use cc_transcript_core::render::display_path;
 use cc_transcript_core::types::Entry;
-use rayon::prelude::*;
+use chrono::{DateTime, FixedOffset};
+use sonic_rs::JsonValueTrait;
 
 use crate::index::{transcripts, Transcript};
 use crate::output::{click_error, eline, CliExit};
+
+const WORKERS: usize = 8;
+const AHEAD: usize = 4 * WORKERS;
+const IN_FLIGHT_BYTES: u64 = 512 * 1024 * 1024;
+const HEAD_BYTES: u64 = 256 * 1024;
 
 // Python Path.home(): HOME env, then the pwd database (std::env::home_dir does both).
 pub fn home_dir() -> PathBuf {
@@ -75,7 +84,12 @@ pub fn resolve_targets(
     contains: Option<&str>,
     limit: Option<usize>,
     min_mtime: Option<f64>,
+    until: Option<DateTime<FixedOffset>>,
 ) -> Result<Targets, CliExit> {
+    let narrowed = |pairs| match until {
+        Some(until) => started_before(pairs, until),
+        None => Ok(pairs),
+    };
     if !paths.is_empty() {
         let mut pairs = Vec::with_capacity(paths.len());
         for path in paths {
@@ -83,6 +97,7 @@ pub fn resolve_targets(
                 .map_err(|e| click_error(&format!("{}: {e}", path.display())))?;
             pairs.push((path.clone(), mtime_secs(&meta)));
         }
+        let pairs = narrowed(pairs)?;
         let total = pairs.len();
         return Ok(Targets {
             paths: pairs,
@@ -100,6 +115,7 @@ pub fn resolve_targets(
             .collect(),
         None => matched,
     };
+    let matched = narrowed(matched)?;
     let total = matched.len();
     let paths = match limit {
         Some(n) => matched.into_iter().take(n).collect(),
@@ -132,31 +148,132 @@ fn session_id_of(entries: &[Entry]) -> Option<String> {
         .find_map(|entry| entry.meta().map(|meta| meta.session_id.clone()))
 }
 
-/// Parse every target in parallel and reduce each one on the spot, keeping target order
-/// and warning once about unparseable files. A whole-corpus sweep folds its per-file
-/// answer here instead of retaining every transcript's events at once.
-pub fn map_transcripts<T: Send>(
+struct Claims {
+    next: usize,
+    next_weight: Option<u64>,
+    emitted: usize,
+    in_flight: u64,
+    stopped: bool,
+}
+
+struct StopOnPanic<'a>(&'a Mutex<Claims>, &'a Condvar);
+
+impl Drop for StopOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.lock().expect("pool claims").stopped = true;
+            self.1.notify_all();
+        }
+    }
+}
+
+/// Run `work` over `0..len` on [`WORKERS`] threads and hand each result to `sink` in
+/// index order on the calling thread. A worker stays within [`AHEAD`] items of the last
+/// one emitted and within [`IN_FLIGHT_BYTES`] of in-flight `weight`, except that an item
+/// always runs once nothing else is in flight, so a slow sink or a run of huge items
+/// holds the workers back instead of growing memory.
+fn ordered_pool<T: Send>(
+    len: usize,
+    weight: impl Fn(usize) -> u64 + Sync,
+    work: impl Fn(usize) -> T + Sync,
+    mut sink: impl FnMut(T) -> Result<(), CliExit>,
+) -> Result<(), CliExit> {
+    let claims = Mutex::new(Claims {
+        next: 0,
+        next_weight: None,
+        emitted: 0,
+        in_flight: 0,
+        stopped: false,
+    });
+    let turn = Condvar::new();
+    let (sent, received) = mpsc::channel();
+    std::thread::scope(|scope| {
+        for _ in 0..WORKERS.min(len) {
+            let sent = sent.clone();
+            let (claims, turn, weight, work) = (&claims, &turn, &weight, &work);
+            scope.spawn(move || {
+                let _stop = StopOnPanic(claims, turn);
+                let mut held = claims.lock().expect("pool claims");
+                while !held.stopped && held.next < len {
+                    let next = held.next;
+                    let cost = *held.next_weight.get_or_insert_with(|| weight(next));
+                    if next >= held.emitted + AHEAD
+                        || held.in_flight > 0 && held.in_flight + cost > IN_FLIGHT_BYTES
+                    {
+                        held = turn.wait(held).expect("pool claims");
+                        continue;
+                    }
+                    held.next += 1;
+                    held.next_weight = None;
+                    held.in_flight += cost;
+                    drop(held);
+                    let value = work(next);
+                    held = claims.lock().expect("pool claims");
+                    held.in_flight -= cost;
+                    turn.notify_all();
+                    if sent.send((next, value)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(sent);
+        let mut pending = HashMap::new();
+        let mut emitted = 0;
+        for (index, value) in received {
+            pending.insert(index, value);
+            while let Some(value) = pending.remove(&emitted) {
+                let result = sink(value);
+                emitted += 1;
+                let mut held = claims.lock().expect("pool claims");
+                held.emitted = emitted;
+                held.stopped |= result.is_err();
+                drop(held);
+                turn.notify_all();
+                result?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Parse `targets` on a bounded pool, reducing each transcript on its worker so its
+/// events are gone before the next one starts, and hand the results to `sink` in target
+/// order as they finish. Warns once at the end about unparseable files. Memory stays
+/// flat in the size of the sweep as long as `sink` folds or writes what it receives.
+pub fn stream_transcripts<T: Send>(
     targets: &[(PathBuf, f64)],
     reduce: impl Fn(Parsed) -> T + Sync,
-) -> Vec<T> {
-    let results: Vec<Option<T>> = targets
-        .par_iter()
-        .map(|(path, _)| {
+    mut sink: impl FnMut(T) -> Result<(), CliExit>,
+) -> Result<(), CliExit> {
+    let mut missing: Vec<String> = Vec::new();
+    let mut index = 0;
+    ordered_pool(
+        targets.len(),
+        |index| std::fs::metadata(&targets[index].0).map_or(0, |meta| meta.len()),
+        |index| {
+            let path = &targets[index].0;
             let bytes = std::fs::read(path).ok()?;
             let entries = parse_transcript_bytes(&bytes).ok()?.entries;
+            drop(bytes);
             Some(reduce(Parsed {
                 path: path.clone(),
                 session_id: session_id_of(&entries),
                 entries,
             }))
-        })
-        .collect();
-    let missing: Vec<String> = targets
-        .iter()
-        .zip(&results)
-        .filter(|(_, parsed)| parsed.is_none())
-        .map(|((path, _), _)| display_path(&path.to_string_lossy()))
-        .collect();
+        },
+        |value| {
+            let path = &targets[index].0;
+            index += 1;
+            match value {
+                Some(value) => sink(value),
+                None => {
+                    missing.push(display_path(&path.to_string_lossy()));
+                    Ok(())
+                }
+            }
+        },
+    )?;
     if !missing.is_empty() {
         eline(&format!(
             "warning: skipped {} unparseable transcript(s): {}",
@@ -164,13 +281,69 @@ pub fn map_transcripts<T: Send>(
             missing.join(", ")
         ));
     }
-    results.into_iter().flatten().collect()
+    Ok(())
 }
 
-/// Parse every target in parallel, keeping target order and warning once about
-/// unparseable files (cli.py parse_transcripts).
+/// Parse every target and keep its events, in target order (cli.py parse_transcripts).
+/// For a known handful of files; a sweep goes through [`stream_transcripts`].
 pub fn parse_transcripts(targets: &[(PathBuf, f64)]) -> Vec<Parsed> {
-    map_transcripts(targets, |parsed| parsed)
+    let mut parsed = Vec::with_capacity(targets.len());
+    stream_transcripts(
+        targets,
+        |transcript| transcript,
+        |transcript| {
+            parsed.push(transcript);
+            Ok(())
+        },
+    )
+    .expect("collecting parsed transcripts cannot fail");
+    parsed
+}
+
+/// The timestamp of the first user, assistant, or Codex session-meta event, when one
+/// sits within [`HEAD_BYTES`] of the start of the file. A transcript only appends, so
+/// nothing in it is older than this.
+fn first_event(path: &Path) -> Option<DateTime<FixedOffset>> {
+    let mut head = BufReader::new(File::open(path).ok()?.take(HEAD_BYTES));
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if head.read_until(b'\n', &mut line).ok()? == 0 || line.last() != Some(&b'\n') {
+            return None;
+        }
+        let kind = sonic_rs::get_from_slice(&line, &["type"]).ok();
+        if kind
+            .as_ref()
+            .and_then(|kind| kind.as_str())
+            .is_some_and(|kind| matches!(kind, "user" | "assistant" | "session_meta"))
+        {
+            let stamp = sonic_rs::get_from_slice(&line, &["timestamp"]).ok()?;
+            return DateTime::parse_from_rfc3339(stamp.as_str()?).ok();
+        }
+    }
+}
+
+/// Drop the targets that start at or after `until`, reading only the head of each. A
+/// file whose first event cannot be read from its head stays.
+pub fn started_before(
+    targets: Vec<(PathBuf, f64)>,
+    until: DateTime<FixedOffset>,
+) -> Result<Vec<(PathBuf, f64)>, CliExit> {
+    let mut kept = Vec::new();
+    let mut index = 0;
+    ordered_pool(
+        targets.len(),
+        |_| 0,
+        |index| first_event(&targets[index].0).is_none_or(|first| first < until),
+        |keep| {
+            if keep {
+                kept.push(targets[index].clone());
+            }
+            index += 1;
+            Ok(())
+        },
+    )?;
+    Ok(kept)
 }
 
 /// cli.py parse_single: one path or a click-style `Error:` exit 1.
@@ -263,7 +436,71 @@ pub fn py_path(arg: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::discover;
+    use super::*;
+
+    #[test]
+    fn pool_emits_in_order_and_never_runs_past_its_window() {
+        let furthest = std::sync::atomic::AtomicUsize::new(0);
+        let mut seen = Vec::new();
+        ordered_pool(
+            200,
+            |_| 0,
+            |index| {
+                furthest.fetch_max(index, std::sync::atomic::Ordering::SeqCst);
+                index
+            },
+            |index| {
+                assert!(furthest.load(std::sync::atomic::Ordering::SeqCst) < index + 1 + AHEAD);
+                seen.push(index);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, (0..200).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn pool_holds_in_flight_weight_to_its_budget_except_for_a_lone_item() {
+        let in_flight = std::sync::atomic::AtomicU64::new(0);
+        let peak = std::sync::atomic::AtomicU64::new(0);
+        let ordering = std::sync::atomic::Ordering::SeqCst;
+        let cost = |index: usize| match index % 4 {
+            0 => 2 * IN_FLIGHT_BYTES,
+            _ => IN_FLIGHT_BYTES / 3,
+        };
+        ordered_pool(
+            64,
+            cost,
+            |index| {
+                let now = in_flight.fetch_add(cost(index), ordering) + cost(index);
+                if cost(index) <= IN_FLIGHT_BYTES {
+                    peak.fetch_max(now, ordering);
+                } else {
+                    assert_eq!(now, cost(index));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                in_flight.fetch_sub(cost(index), ordering);
+            },
+            |()| Ok(()),
+        )
+        .unwrap();
+        assert!(peak.load(ordering) <= IN_FLIGHT_BYTES);
+    }
+
+    #[test]
+    fn pool_stops_claiming_once_the_sink_fails() {
+        let ran = std::sync::atomic::AtomicUsize::new(0);
+        let result = ordered_pool(
+            10_000,
+            |_| 0,
+            |_| {
+                ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            |()| Err(CliExit(0)),
+        );
+        assert!(matches!(result, Err(CliExit(0))));
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst) <= 1 + AHEAD);
+    }
 
     #[test]
     fn project_discovery_only_walks_matching_roots() {
