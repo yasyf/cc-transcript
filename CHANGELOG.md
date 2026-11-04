@@ -139,6 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The allocation registry charges a table sized from its peak member count, so
+  two identically built snapshots report the same index bytes. It used to charge
+  the table's observed capacity, which could double depending on the hash seed.
 - Discovery skips a transcript that disappears between `readdir` and its stat,
   or a `.jsonl` symlink whose target is gone, instead of failing the whole
   listing or scan with `No such file or directory`.
