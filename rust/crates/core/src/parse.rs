@@ -100,7 +100,7 @@ fn require_bool(data: &Value, key: &str) -> Result<bool, ParseError> {
         .ok_or_else(|| ParseError::Key(key.to_string()))
 }
 
-pub(crate) fn parse_timestamp(raw: &str) -> Result<DateTime<FixedOffset>, ParseError> {
+pub fn parse_timestamp(raw: &str) -> Result<DateTime<FixedOffset>, ParseError> {
     let dt = DateTime::parse_from_rfc3339(raw)
         .map_err(|e| ParseError::Value(format!("invalid timestamp {raw:?}: {e}")))?;
     // Parity: Python datetime.fromisoformat rejects a :60 leap second (ValueError); chrono

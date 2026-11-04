@@ -89,13 +89,15 @@ pub fn run(args: CorpusArgs) -> Result<(), CliExit> {
         None,
         None,
     )?;
-    let file = File::create(&args.out)
-        .map_err(|e| click_error(&format!("{}: {e}", args.out.display())))?;
-    let mut out = BufWriter::new(file);
+    let mut staged = args.out.clone().into_os_string();
+    staged.push(format!(".{}.tmp", std::process::id()));
+    let staged = PathBuf::from(staged);
+    let out_error = |e: std::io::Error| click_error(&format!("{}: {e}", args.out.display()));
+    let mut out = BufWriter::new(File::create(&staged).map_err(out_error)?);
     let mut seen: HashSet<[u8; 16]> = HashSet::new();
     let mut duplicates = 0usize;
     let mut bytes = 0usize;
-    stream_transcripts(
+    let swept = stream_transcripts(
         &targets.paths,
         |parsed| {
             parsed
@@ -118,14 +120,21 @@ pub fn run(args: CorpusArgs) -> Result<(), CliExit> {
                 }
                 out.write_all(line.as_bytes())
                     .and_then(|()| out.write_all(b"\n"))
-                    .map_err(|e| click_error(&format!("{}: {e}", args.out.display())))?;
+                    .map_err(out_error)?;
                 bytes += line.len() + 1;
             }
             Ok(())
         },
-    )?;
-    out.flush()
-        .map_err(|e| click_error(&format!("{}: {e}", args.out.display())))?;
+    )
+    .and_then(|()| {
+        out.flush()
+            .and_then(|()| std::fs::rename(&staged, &args.out))
+            .map_err(out_error)
+    });
+    if swept.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    swept?;
     eline(&format!(
         "{} files scanned, {} windows kept, {duplicates} duplicates dropped, {bytes} bytes written",
         targets.paths.len(),

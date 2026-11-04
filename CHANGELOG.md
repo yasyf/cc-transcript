@@ -60,11 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same order as before, and the aggregates fold counts instead of keeping every
   call. Peak memory no longer grows with the size of the sweep.
 - `tools --until` and `blame --until` skip a transcript whose first user,
-  assistant or Codex session-meta event is at or after `--until`, reading only
+  assistant or Codex rollout event is at or after `--until`, reading only
   the head of the file, and they narrow before `--limit` applies. A file whose
   first event is not within its first 256 KiB is still read in full.
 - `corpus` remembers a 16-byte digest of each window for deduplication instead
-  of the window itself.
+  of the window itself, and writes to a temporary file beside `--out` that
+  replaces it when the sweep ends, so `--out` may name one of its inputs.
 - `cc-transcript grep` decodes only the lines its patterns can match. Each
   pattern's extracted literals reduce to runs of bytes JSON never escapes, and
   a line holding none of those runs is validated as a JSON object and counted

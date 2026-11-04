@@ -851,6 +851,16 @@ def test_tools_stop_cleanly_when_the_reader_closes_the_pipe(tmp_path: Path) -> N
     assert b"panic" not in stderr
 
 
+def test_corpus_may_overwrite_one_of_its_inputs(tmp_path: Path) -> None:
+    source = write_transcript(tmp_path / "p" / "t.jsonl", [user_entry(0, "the needle is here")])
+
+    result = run_cli("corpus", "needle", str(source), "--window", "3", "-o", str(source))
+
+    assert result.returncode == 0, result.stderr
+    assert source.read_text() == "he needle is\n"
+    assert [path.name for path in source.parent.iterdir()] == ["t.jsonl"]
+
+
 def test_sweep_aggregates_fold_in_transcript_order(tmp_path: Path) -> None:
     bash_transcript(tmp_path / "p" / "new.jsonl", 0, 1, "git status", mtime=1_800_000_100)
     bash_transcript(tmp_path / "p" / "old.jsonl", 2, 3, "ls -la", mtime=1_800_000_000)

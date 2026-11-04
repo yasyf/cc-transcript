@@ -9,6 +9,7 @@ use std::sync::{mpsc, Condvar, Mutex};
 
 use cc_transcript_core::discovery::mtime_secs;
 use cc_transcript_core::gateway::parse_transcript_bytes;
+use cc_transcript_core::parse::parse_timestamp;
 use cc_transcript_core::render::display_path;
 use cc_transcript_core::types::Entry;
 use chrono::{DateTime, FixedOffset};
@@ -300,8 +301,8 @@ pub fn parse_transcripts(targets: &[(PathBuf, f64)]) -> Vec<Parsed> {
     parsed
 }
 
-/// The timestamp of the first user, assistant, or Codex session-meta event, when one
-/// sits within [`HEAD_BYTES`] of the start of the file. A transcript only appends, so
+/// The timestamp of the first user, assistant, or Codex rollout event, when one sits
+/// within [`HEAD_BYTES`] of the start of the file. A transcript only appends, so
 /// nothing in it is older than this.
 fn first_event(path: &Path) -> Option<DateTime<FixedOffset>> {
     let mut head = BufReader::new(File::open(path).ok()?.take(HEAD_BYTES));
@@ -315,10 +316,20 @@ fn first_event(path: &Path) -> Option<DateTime<FixedOffset>> {
         if kind
             .as_ref()
             .and_then(|kind| kind.as_str())
-            .is_some_and(|kind| matches!(kind, "user" | "assistant" | "session_meta"))
+            .is_some_and(|kind| {
+                matches!(
+                    kind,
+                    "user"
+                        | "assistant"
+                        | "session_meta"
+                        | "response_item"
+                        | "event_msg"
+                        | "turn_context"
+                )
+            })
         {
             let stamp = sonic_rs::get_from_slice(&line, &["timestamp"]).ok()?;
-            return DateTime::parse_from_rfc3339(stamp.as_str()?).ok();
+            return parse_timestamp(stamp.as_str()?).ok();
         }
     }
 }

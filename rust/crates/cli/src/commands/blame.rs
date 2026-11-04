@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cc_transcript_core::blame::{
-    attribution_verdict, blame as rank, session_attribution, session_writes, RepoPaths,
+    blame as rank, session_attribution, session_writes, AttributionFold, RepoPaths,
 };
 use cc_transcript_core::discovery::{find_in, mtime_secs, project_dir_name};
 use cc_transcript_core::render::{attribute_json, attribute_lines, blame_json, blame_line};
@@ -220,7 +220,7 @@ pub fn attribute(args: AttributeArgs) -> Result<(), CliExit> {
         ATTRIBUTE_USAGE,
         ATTRIBUTE_HELP,
     )?;
-    let mut sessions = Vec::new();
+    let mut fold = AttributionFold::default();
     stream_transcripts(
         &selected,
         |parsed| {
@@ -236,11 +236,11 @@ pub fn attribute(args: AttributeArgs) -> Result<(), CliExit> {
             })
         },
         |session| {
-            sessions.extend(session);
+            session.into_iter().for_each(|session| fold.add(session));
             Ok(())
         },
     )?;
-    let verdict = attribution_verdict(sessions);
+    let verdict = fold.verdict();
     let mut out = Out::new();
     match args.json {
         true => out.line(&attribute_json(&verdict, &target.rel_target, mtime).dumps())?,

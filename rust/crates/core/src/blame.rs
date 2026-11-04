@@ -298,37 +298,57 @@ pub fn attribute(
     rel_target: &str,
     mtime: DateTime<FixedOffset>,
 ) -> Verdict {
-    attribution_verdict(
-        sessions
-            .iter()
-            .map(|&(session_id, path, entries)| {
-                session_attribution(session_id, path, entries, repo, rel_target, mtime)
-            })
-            .collect(),
-    )
+    let mut fold = AttributionFold::default();
+    for &(session_id, path, entries) in sessions {
+        fold.add(session_attribution(
+            session_id, path, entries, repo, rel_target, mtime,
+        ));
+    }
+    fold.verdict()
 }
 
-/// The verdict over every session's [`SessionAttribution`], in session order.
-pub fn attribution_verdict(sessions: Vec<SessionAttribution>) -> Verdict {
-    let (writes, candidates): (Vec<_>, Vec<_>) = sessions
-        .into_iter()
-        .map(|session| (session.writes, session.candidate))
-        .unzip();
-    if let Some((session_id, evidence)) = writes
-        .into_iter()
-        .flatten()
-        .max_by(|a, b| a.1.ts.cmp(&b.1.ts).then_with(|| b.0.cmp(&a.0)))
-    {
-        return Verdict::Claude {
-            session_id,
-            evidence,
-        };
+/// [`attribute`] as a fold over [`SessionAttribution`]s in session order: it keeps the
+/// winning write, and suspects only until a write exists.
+#[derive(Debug, Default)]
+pub struct AttributionFold {
+    winner: Option<(String, WriteEvidence)>,
+    candidates: Vec<GeneratedCandidate>,
+}
+
+impl AttributionFold {
+    pub fn add(&mut self, session: SessionAttribution) {
+        for write in session.writes {
+            let rank = |seen: &(String, WriteEvidence)| {
+                seen.1
+                    .ts
+                    .cmp(&write.1.ts)
+                    .then_with(|| write.0.cmp(&seen.0))
+            };
+            if self.winner.as_ref().is_none_or(|seen| rank(seen).is_le()) {
+                self.winner = Some(write);
+            }
+        }
+        match &self.winner {
+            Some(_) => self.candidates.clear(),
+            None => self.candidates.extend(session.candidate),
+        }
     }
-    let mut candidates: Vec<GeneratedCandidate> = candidates.into_iter().flatten().collect();
-    candidates.sort_by(|a, b| b.window_end.cmp(&a.window_end));
-    match candidates.is_empty() {
-        true => Verdict::External,
-        false => Verdict::Generated { candidates },
+
+    pub fn verdict(mut self) -> Verdict {
+        if let Some((session_id, evidence)) = self.winner {
+            return Verdict::Claude {
+                session_id,
+                evidence,
+            };
+        }
+        self.candidates
+            .sort_by(|a, b| b.window_end.cmp(&a.window_end));
+        match self.candidates.is_empty() {
+            true => Verdict::External,
+            false => Verdict::Generated {
+                candidates: self.candidates,
+            },
+        }
     }
 }
 
