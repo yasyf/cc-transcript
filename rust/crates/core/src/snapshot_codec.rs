@@ -940,6 +940,37 @@ mod tests {
     }
 
     #[test]
+    fn event_records_elide_base64_bodies_and_keep_the_rest() {
+        let body = "A".repeat(MAX_RECORD_BYTES);
+        let elided = format!("<elided {} bytes>", body.len());
+        let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":&body}});
+        let events = [
+            event(
+                json!({"type":"api-request-blob","hash":"h","data":"kept","message":{"content":[
+                    {"type":"text","text":"kept"},
+                    {"type":"tool_result","content":[image]},
+                ]}}),
+            ),
+            event(
+                json!({"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-02T03:04:05Z",
+                "toolUseResult":{"data":"kept","file":{"base64":&body,"type":"image/png"}},
+                "message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"kept"}]}}),
+            ),
+            event(
+                json!({"type":"attachment","uuid":"a","sessionId":"s","timestamp":"2026-01-02T03:04:05Z",
+                "attachment":{"type":"file","data":"kept","content":{"file":{"base64":&body}}}}),
+            ),
+        ];
+        for (index, entry) in events.iter().enumerate() {
+            let record = encode(&EventWire::new(index, entry), MAX_RECORD_BYTES).unwrap();
+            assert!(record.contains(&elided), "{record}");
+            assert!(record.contains("kept"), "{record}");
+            assert!(!record.contains("AAAA"), "{record}");
+            decode_events(&[record], MAX_RECORD_BYTES).unwrap();
+        }
+    }
+
+    #[test]
     fn native_events_roundtrip_every_variant_and_all_serialized_fields() {
         let records = vec![
             user("same", "one"),
