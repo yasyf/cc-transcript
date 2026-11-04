@@ -65,39 +65,6 @@ fn array<'a>(value: &'a Value, key: &str) -> Result<&'a sonic_rs::Array, Snapsho
         .ok_or_else(|| invalid(format!("{key} must be an array")))
 }
 
-struct BoundedWriter {
-    bytes: Vec<u8>,
-    limit: usize,
-}
-
-impl Write for BoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
-            return Err(io::Error::other("projection output limit"));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn encoded(value: &Value, limit: usize) -> Result<String, SnapshotError> {
-    let mut writer = BoundedWriter {
-        bytes: Vec::new(),
-        limit,
-    };
-    snapshot_codec::write_json(&mut writer, value, limit).map_err(|_| {
-        SnapshotError::new(
-            Status::OutputLimit,
-            "projection exceeds serialized output limit",
-        )
-    })?;
-    Ok(String::from_utf8(writer.bytes).expect("JSON is UTF-8"))
-}
-
 struct OutputCounter {
     remaining: usize,
 }
@@ -889,6 +856,8 @@ fn scalar(value: Value, work: &Work) -> Result<Projection, SnapshotError> {
     finish(json!({"kind":"scalar","value":value}), work.limits, None)
 }
 
+const RECORD_PAGE_ENVELOPE_BYTES: usize = 128;
+
 fn record_page(
     values: impl DoubleEndedIterator<Item = Result<String, SnapshotError>> + ExactSizeIterator,
     schema: &str,
@@ -907,19 +876,39 @@ fn record_page(
         Box::new(values)
     };
     let mut records = Vec::new();
-    let mut remaining = work.limits.max_output_bytes;
+    let mut remaining = record_page_budget(work.limits);
     for value in values.skip(next).take(stop - next) {
         work.cancel.check(work.limits.deadline_unix_ms)?;
         let record = value?;
-        let outer_bytes = encoded(&json!(&record), remaining)?.len();
-        remaining = remaining.saturating_sub(outer_bytes.saturating_add(1));
+        if !page_takes(&record, &mut remaining, records.is_empty())? {
+            break;
+        }
         records.push(record);
     }
+    let end = next + records.len();
     finish(
         json!({"kind":"records","record_schema":schema,"records_json":records}),
         work.limits,
-        (stop < len).then_some(stop),
+        (end < len).then_some(end),
     )
+}
+
+fn record_page_budget(limits: &WorkLimits) -> usize {
+    limits
+        .max_output_bytes
+        .saturating_sub(RECORD_PAGE_ENVELOPE_BYTES)
+}
+
+fn page_takes(record: &str, remaining: &mut usize, empty: bool) -> Result<bool, SnapshotError> {
+    let cost = snapshot_codec::encoded_size_bounded(
+        record,
+        snapshot_codec::Bound::budget("page record", usize::MAX),
+    )? + 1;
+    if cost > *remaining && !empty {
+        return Ok(false);
+    }
+    *remaining = remaining.saturating_sub(cost);
+    Ok(true)
 }
 
 fn output_limit() -> SnapshotError {
@@ -2189,6 +2178,7 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
                 .min(next.saturating_add(work.limits.max_events)),
         );
         let mut records = Vec::new();
+        let mut remaining = record_page_budget(work.limits);
         for offset in next..stop {
             let index = if reverse {
                 range.end - 1 - offset
@@ -2200,12 +2190,16 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
                 &EventWire::new(index, work.snapshot.entry(index)),
                 work.limits.max_output_bytes,
             )?;
+            if !page_takes(&payload, &mut remaining, records.is_empty())? {
+                break;
+            }
             records.push(payload);
         }
+        let end = next + records.len();
         return finish(
             json!({"kind":"records","record_schema":"cc-transcript.event/1","records_json":records}),
             work.limits,
-            (stop < range.len()).then_some(stop),
+            (end < range.len()).then_some(end),
         );
     }
     if kind == "turns" {
@@ -3643,6 +3637,39 @@ mod tests {
         assert!(!result.complete);
         assert!(result.data.is_null());
         assert_eq!(result.reason.as_deref(), Some("event_limit"));
+    }
+
+    #[test]
+    fn event_pages_stop_at_the_output_budget_and_resume_from_there() {
+        let text = "\"".repeat(64 * 1024);
+        let entries: Vec<_> = (0..40)
+            .map(|index| user(&format!("u{index}"), &text))
+            .collect();
+        let snap = snapshot(&entries);
+        let req = request(json!({"kind":"events","order":"forward"}), json!([]));
+        let cap = limits();
+        let (mut seen, mut pages, mut next) = (Vec::new(), 0, 0);
+        loop {
+            let result = project(&snap, &req, &cap, &Cancellation::default(), next).unwrap();
+            pages += 1;
+            for raw in result.data["records_json"].as_array().unwrap().iter() {
+                let value: Value = sonic_rs::from_str(raw.as_str().unwrap()).unwrap();
+                seen.push(value["i"].as_u64().unwrap());
+            }
+            match result.next {
+                Some(cursor) => next = cursor,
+                None => {
+                    assert!(result.complete);
+                    break;
+                }
+            }
+        }
+        assert!(pages > 1);
+        assert_eq!(seen, (0..40).collect::<Vec<u64>>());
+        let mut tiny = limits();
+        tiny.max_output_bytes = 64;
+        let refused = project(&snap, &req, &tiny, &Cancellation::default(), 0).unwrap_err();
+        assert_eq!(refused.status, Status::OutputLimit);
     }
 
     #[test]

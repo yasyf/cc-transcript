@@ -139,6 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `events`, `tool_calls` or other record page now ends at the page's output budget and returns a
+  cursor. A run of large events used to fail the whole page with `output_limit`, so a client had to
+  split the window to read it.
 - A snapshot event record no longer carries base64 bodies. An `api-request-blob` line holding a
   pasted image used to exceed the 1 MiB record bound, so every `events` and `turns` read over it
   failed with `output_limit`. Those bodies now read `<elided N bytes>` in `OtherEvent.raw`, an
