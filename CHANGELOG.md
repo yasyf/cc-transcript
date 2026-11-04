@@ -139,6 +139,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A snapshot event record no longer carries base64 bodies. An `api-request-blob` line holding a
+  pasted image used to exceed the 1 MiB record bound, so every `events` and `turns` read over it
+  failed with `output_limit`. Those bodies now read `<elided N bytes>` in `OtherEvent.raw`, an
+  unmodeled attachment's payload and `tool_use_result`; a locally parsed session keeps them.
 - The allocation registry charges a table sized from its peak member count, so
   two identically built snapshots report the same index bytes. It used to charge
   the table's observed capacity, which could double depending on the hash seed.

@@ -1,11 +1,51 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, FixedOffset};
-use sonic_rs::Value;
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
+use sonic_rs::{JsonContainerTrait, JsonValueTrait, Value};
 
 use crate::protocol::{interrupt_marker, is_agent_injection};
 
 const TEXT_SEPARATOR: &str = " ";
+
+/// Serializes a retained payload with its base64 bodies elided, since one image can outgrow the
+/// 1 MiB frame a snapshot record has to cross.
+struct WireValue<'a>(&'a Value);
+
+impl Serialize for WireValue<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(items) = self.0.as_array() {
+            let mut seq = serializer.serialize_seq(Some(items.len()))?;
+            for item in items.iter() {
+                seq.serialize_element(&WireValue(item))?;
+            }
+            return seq.end();
+        }
+        let Some(fields) = self.0.as_object() else {
+            return self.0.serialize(serializer);
+        };
+        let base64_source = self.0.get("type").and_then(JsonValueTrait::as_str) == Some("base64");
+        let mut map = serializer.serialize_map(Some(fields.len()))?;
+        for (name, value) in fields.iter() {
+            match value.as_str() {
+                Some(payload) if name == "base64" || (name == "data" && base64_source) => {
+                    map.serialize_entry(name, &format!("<elided {} bytes>", payload.len()))?;
+                }
+                _ => map.serialize_entry(name, &WireValue(value))?,
+            }
+        }
+        map.end()
+    }
+}
+
+fn wire_value<S: Serializer>(value: &Value, serializer: S) -> Result<S::Ok, S::Error> {
+    WireValue(value).serialize(serializer)
+}
+
+fn wire_value_opt<S: Serializer>(value: &Option<Value>, serializer: S) -> Result<S::Ok, S::Error> {
+    value.as_ref().map(WireValue).serialize(serializer)
+}
 
 /// Envelope metadata shared by the conversational entry kinds (user, assistant,
 /// system). Mode and Other entries carry no envelope on disk.
@@ -87,6 +127,7 @@ pub struct ToolResultBlock {
     /// Computed at parse time from the payload's ``isAsync`` marker (parser.py parse_user_blocks).
     pub is_async: bool,
     /// The record-level ``toolUseResult`` payload verbatim; Python receives it exactly as written.
+    #[serde(serialize_with = "wire_value_opt")]
     pub tool_use_result: Option<Value>,
     /// The tool-denial kind, computed at parse time (parser.py parse_tool_result_block): the
     /// record-level ``toolDenialKind`` when present, else ``user-rejected`` for a legacy-banner
@@ -319,6 +360,7 @@ pub struct ModeEntry {
 pub struct OtherEntry {
     pub ty: String,
     /// The full decoded payload, passed through to Python verbatim.
+    #[serde(serialize_with = "wire_value")]
     pub raw: Value,
 }
 
@@ -421,7 +463,7 @@ pub enum AttachmentDetail {
     AsyncHookResponse(AsyncHookResponse),
     QueuedCommand(QueuedCommand),
     DeferredToolsDelta(DeferredToolsDelta),
-    Other(Value),
+    Other(#[serde(serialize_with = "wire_value")] Value),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
