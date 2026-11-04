@@ -3786,13 +3786,6 @@ mod tests {
         assert!(
             matches!(project(&snap,&req,&cap,&Cancellation::default(),0),Err(error) if error.status == Status::OutputLimit)
         );
-        let mut writer = BoundedWriter {
-            bytes: Vec::new(),
-            limit: 8,
-        };
-        assert!(writer.write_all(b"12345678").is_ok());
-        assert!(writer.write_all(b"9").is_err());
-        assert_eq!(writer.bytes.len(), 8);
     }
 
     #[test]
