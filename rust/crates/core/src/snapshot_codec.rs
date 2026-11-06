@@ -18,6 +18,7 @@ pub const MAX_RECORDS: usize = 256;
 pub const MAX_RECORD_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ESCAPED_BYTES_PER_BYTE: usize = 6;
+const BULKY_FIELD_BYTES: usize = 64 * 1024;
 
 #[derive(Serialize)]
 pub struct EventWire<'a> {
@@ -644,6 +645,7 @@ fn clipped(mut record: Value, fit: Sizes) -> Option<Value> {
     let mut size = Sizes::of(&record);
     let mut fields = Vec::new();
     clippable_fields(&mut record, false, &mut fields);
+    fields.retain(|(_, field)| field.as_str().map_or(0, str::len) >= BULKY_FIELD_BYTES);
     fields.sort_by_key(|(kind, field)| (*kind, Reverse(field.as_str().map_or(0, str::len))));
     for (_, field) in fields {
         let excess = size.excess(fit);
@@ -1353,6 +1355,18 @@ mod tests {
             json!({"type":"assistant","uuid":"w","sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"model":"test","content":[{"type":"tool_use","id":"w","name":"Write","input":{"file_path":"a.rs","content":&output}}]}}),
         );
         let wire = EventWire::new(3, &input);
+        assert_eq!(
+            encode_clipped(&wire, page, page - 128).unwrap_err().reason,
+            encode(&wire, page).unwrap_err().reason
+        );
+
+        let blocks: Vec<Value> = (0..2100)
+            .map(|index| json!({"type":"text","text":format!("{index}:{}", "x".repeat(512))}))
+            .collect();
+        let chatter = event(
+            json!({"type":"assistant","uuid":"c","sessionId":"s","timestamp":"2026-01-02T03:04:09Z","message":{"model":"test","content":blocks}}),
+        );
+        let wire = EventWire::new(4, &chatter);
         assert_eq!(
             encode_clipped(&wire, page, page - 128).unwrap_err().reason,
             encode(&wire, page).unwrap_err().reason
