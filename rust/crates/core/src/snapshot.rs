@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, Metadata};
@@ -10,7 +11,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use sonic_rs::JsonType;
@@ -161,6 +162,38 @@ impl Cancellation {
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RequestWaits {
+    pub state: Duration,
+    pub fact_read: Duration,
+}
+
+thread_local! {
+    static REQUEST_WAITS: Cell<RequestWaits> = Cell::new(RequestWaits::default());
+}
+
+impl RequestWaits {
+    pub fn measured<T>(work: impl FnOnce() -> T) -> (T, Self) {
+        REQUEST_WAITS.set(Self::default());
+        let value = work();
+        (value, REQUEST_WAITS.take())
+    }
+
+    fn add(waited: Duration, field: fn(&mut Self) -> &mut Duration) {
+        let mut waits = REQUEST_WAITS.get();
+        *field(&mut waits) += waited;
+        REQUEST_WAITS.set(waits);
+    }
+}
+
+struct FactReadWait(Instant);
+
+impl Drop for FactReadWait {
+    fn drop(&mut self) {
+        RequestWaits::add(self.0.elapsed(), |waits| &mut waits.fact_read);
     }
 }
 
@@ -4372,8 +4405,15 @@ impl NativeStore {
     }
 
     pub(crate) fn lock_state(&self) -> MutexGuard<'_, StoreState> {
-        let mut state = self.state.lock().expect("snapshot state");
+        let mut state = self.timed_state();
         state.drain();
+        state
+    }
+
+    fn timed_state(&self) -> MutexGuard<'_, StoreState> {
+        let started = Instant::now();
+        let state = self.state.lock().expect("snapshot state");
+        RequestWaits::add(started.elapsed(), |waits| &mut waits.state);
         state
     }
 
@@ -4411,13 +4451,7 @@ impl NativeStore {
         let definitions =
             crate::toolcall::ToolRegistrySnapshot::specs_from_json(specs).map_err(invalid)?;
         let fingerprint = crate::toolcall::ToolRegistrySnapshot::fingerprint_of(&definitions);
-        if self
-            .state
-            .lock()
-            .expect("snapshot state")
-            .registries
-            .contains_key(&fingerprint)
-        {
+        if self.timed_state().registries.contains_key(&fingerprint) {
             return Ok(fingerprint);
         }
         let charge = crate::snapshot_memory::value_charge(specs);
@@ -4499,6 +4533,9 @@ impl NativeStore {
         deadline_unix_ms: u64,
     ) -> Result<FactReadClaim<'_>, SnapshotError> {
         let mut state = self.lock_state();
+        let _waiting = state
+            .fact_read_in_flight
+            .then(|| FactReadWait(Instant::now()));
         #[cfg(test)]
         {
             if state.fact_read_in_flight {
@@ -19806,6 +19843,41 @@ mod tests {
                 .facts,
             &first.0
         ));
+        drop((first, second));
+        store.assert_conserved();
+    }
+
+    #[test]
+    fn a_request_held_behind_the_fact_read_gate_reports_the_wait() {
+        let source = Source::new(&format!("{}\n{}\n", user("root"), user("child")));
+        let store = fact_budget_store(16 * 1024 * 1024);
+        let owner = context("a");
+        let bounds = limits(&acquire(&source.path)).unwrap();
+        let root = pinned_root(&store, &source, &owner);
+        assert_eq!(root_facts_read(&store, &root, &owner, &bounds).1, 0);
+        assert_eq!(
+            store
+                .lock_state()
+                .remove_identity_facts(root.stamp.identity),
+            1
+        );
+        let held = Duration::from_millis(60);
+        let gate = install_fact_read_gate(&store, || {});
+        let (first, second) = std::thread::scope(|scope| {
+            let read =
+                || RequestWaits::measured(|| root_facts_read(&store, &root, &owner, &bounds));
+            let first = scope.spawn(read);
+            gate.wait_until_read();
+            let second = scope.spawn(read);
+            wait_for_fact_read_waiter(&store);
+            std::thread::sleep(held);
+            gate.release();
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        store.prepared_disk.set_read_hook(None);
+        assert_eq!((first.0 .1, second.0 .1), (1, 0));
+        assert_eq!(first.1.fact_read, Duration::ZERO);
+        assert!(second.1.fact_read >= held, "{:?}", second.1);
         drop((first, second));
         store.assert_conserved();
     }

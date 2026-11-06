@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use cc_transcript_core::snapshot::Cancellation;
 use crossbeam_channel::{unbounded, Sender};
@@ -24,6 +25,7 @@ struct Job {
     context: Value,
     cancel: Cancellation,
     tool_registry: Value,
+    queued: Instant,
 }
 
 struct Lane {
@@ -166,6 +168,7 @@ impl<W: Write + Send + 'static> Service<W> {
                                         job.context.clone(),
                                         &job.cancel,
                                         &job.tool_registry,
+                                        job.queued.elapsed(),
                                     );
                                     service.done(job, response, &lane);
                                 }
@@ -275,6 +278,7 @@ impl<W: Write + Send + 'static> Service<W> {
                 context,
                 cancel,
                 tool_registry,
+                queued: Instant::now(),
             })
             .expect("lane worker alive");
         Ok(())
