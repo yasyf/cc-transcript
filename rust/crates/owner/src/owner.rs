@@ -2,14 +2,15 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cc_transcript_core::activity::opens_turn;
 use cc_transcript_core::discovery::is_subagent_path;
 use cc_transcript_core::protocol::starts_with_structural_noise;
 use cc_transcript_core::pystr;
 use cc_transcript_core::snapshot::{
-    Cancellation, ClassifierCallback, EntryChunk, NativeStore, SnapshotError, Status, WorkLimits,
+    Cancellation, ClassifierCallback, EntryChunk, NativeStore, RequestWaits, SnapshotError, Status,
+    WorkLimits,
 };
 use cc_transcript_core::snapshot_codec::{self, MAX_PAGE_BYTES, MAX_RECORDS};
 use cc_transcript_core::snapshot_input::native_input;
@@ -288,25 +289,28 @@ impl Owner {
         mut context: Value,
         cancel: &Cancellation,
         tool_registry: &Value,
+        queued: Duration,
     ) -> Value {
         let started = Instant::now();
         let request_id = request.get("id").and_then(|id| id.as_str()).unwrap_or("");
-        let outcome = self
-            .registry_generation(tool_registry, &context)
-            .map_err(Failure::from)
-            .and_then(|generation| {
-                context
-                    .as_object_mut()
-                    .ok_or_else(|| Failure::from(mismatch()))?
-                    .insert("registry_generation", json!(generation));
-                self.dispatch(request, &native_input(&context)?, cancel)
-            });
+        let (outcome, waits) = RequestWaits::measured(|| {
+            self.registry_generation(tool_registry, &context)
+                .map_err(Failure::from)
+                .and_then(|generation| {
+                    context
+                        .as_object_mut()
+                        .ok_or_else(|| Failure::from(mismatch()))?
+                        .insert("registry_generation", json!(generation));
+                    self.dispatch(request, &native_input(&context)?, cancel)
+                })
+        });
         match outcome {
-            Ok((response, path)) => self.completed(request, response, started, path),
+            Ok((response, path)) => self.completed(request, response, started, path, queued, waits),
             Err(Failure { error, usage }) => {
                 let mut fields = log::metadata(request);
                 fields.push(("status", Field::Json(json!(error.status.as_str()))));
-                fields.push(("elapsed_ms", Field::Float(elapsed_ms(started))));
+                fields.push(("elapsed_ms", Field::Float(ms(started.elapsed()))));
+                fields.extend(wait_fields(queued, waits));
                 match usage.as_ref().and_then(|usage| usage.as_object()) {
                     Some(counts) => {
                         for key in USAGE_KEYS.iter() {
@@ -444,8 +448,10 @@ impl Owner {
         response: Value,
         started: Instant,
         path: ExecutionPath,
+        queued: Duration,
+        waits: RequestWaits,
     ) -> Value {
-        let elapsed = elapsed_ms(started);
+        let elapsed = ms(started.elapsed());
         if response["status"].as_str() == Some("retained_limit") {
             self.log_admission_refusal();
         }
@@ -454,7 +460,7 @@ impl Owner {
             .get("cursor")
             .is_some_and(|cursor| !cursor.is_null())
             || !response["cursor"].is_null();
-        let slow = elapsed >= SLOW_REQUEST_MS;
+        let slow = elapsed + ms(queued) >= SLOW_REQUEST_MS;
         let read = log::truthy(usage.get("source_bytes_read"))
             || log::truthy(usage.get("prepared_cache_bytes_read"));
         if slow || (read && !paged) {
@@ -462,6 +468,7 @@ impl Owner {
             fields.push(("pid", Field::Json(json!(std::process::id()))));
             fields.push(("status", Field::Json(lookup(&response, "status"))));
             fields.push(("elapsed_ms", Field::Float(elapsed)));
+            fields.extend(wait_fields(queued, waits));
             fields.push((
                 "query_kind",
                 Field::Json(
@@ -538,8 +545,16 @@ impl Owner {
     }
 }
 
-fn elapsed_ms(started: Instant) -> f64 {
-    (started.elapsed().as_secs_f64() * 10_000.0).round() / 10.0
+fn ms(duration: Duration) -> f64 {
+    (duration.as_secs_f64() * 10_000.0).round() / 10.0
+}
+
+fn wait_fields(queued: Duration, waits: RequestWaits) -> [(&'static str, Field); 3] {
+    [
+        ("queue_ms", Field::Float(ms(queued))),
+        ("state_wait_ms", Field::Float(ms(waits.state))),
+        ("fact_read_wait_ms", Field::Float(ms(waits.fact_read))),
+    ]
 }
 
 fn hook_classifier(scope: &mut Scope<'_>, request: &Value) -> Result<Value, Failure> {
