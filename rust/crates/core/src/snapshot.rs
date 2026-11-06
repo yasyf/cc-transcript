@@ -40,7 +40,7 @@ use crate::types::SYNTHETIC_MODEL;
 pub const SCHEMA: &str = "cc-transcript.snapshot/1";
 pub const PARSER_VERSION: &str = "cc-transcript.snapshot/1";
 pub const MAX_REPLY_BYTES: usize = 1_044_480;
-const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
+pub(crate) const MAX_DATA_BYTES: usize = MAX_REPLY_BYTES - 2048;
 const FILESYSTEM_PATH_BYTES: usize = 2 * (libc::PATH_MAX as usize + size_of::<libc::dirent>());
 const LOCATE_PATH_SLOTS: usize = 2 * FILESYSTEM_PATH_BYTES;
 const LOCATE_USER_PATH_SLOTS: usize = 3 * FILESYSTEM_PATH_BYTES;
