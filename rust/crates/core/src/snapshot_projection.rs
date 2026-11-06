@@ -12,7 +12,7 @@ use crate::parse::pushed_capacity;
 use crate::query::{InputRule, Session};
 use crate::render::{self, Budget};
 use crate::snapshot::{
-    Cancellation, Projection, SnapshotError, Status, TranscriptSnapshot, WorkLimits,
+    Cancellation, Projection, SnapshotError, Status, TranscriptSnapshot, WorkLimits, MAX_DATA_BYTES,
 };
 use crate::snapshot_codec::{self, EventWire, FileRefRecord, ToolUseWire, TurnWire, TURN_CODEC};
 use crate::snapshot_ledger::hashbrown_tier;
@@ -897,6 +897,20 @@ fn record_page_budget(limits: &WorkLimits) -> usize {
     limits
         .max_output_bytes
         .saturating_sub(RECORD_PAGE_ENVELOPE_BYTES)
+}
+
+fn clipped_record<T: serde::Serialize + ?Sized>(
+    record: &T,
+    limits: &WorkLimits,
+) -> Result<String, SnapshotError> {
+    snapshot_codec::encode_clipped(
+        record,
+        limits.max_output_bytes,
+        limits
+            .max_output_bytes
+            .max(MAX_DATA_BYTES)
+            .saturating_sub(RECORD_PAGE_ENVELOPE_BYTES),
+    )
 }
 
 fn page_takes(record: &str, remaining: &mut usize, empty: bool) -> Result<bool, SnapshotError> {
@@ -2069,7 +2083,7 @@ fn turn_records_page(
                     .map(|use_| ToolUseWire::new(use_, &work.snapshot.session_id))
                     .collect(),
             };
-            snapshot_codec::encode(&record, work.limits.max_output_bytes)
+            clipped_record(&record, work.limits)
         }),
         "cc-transcript.turn/1",
         0,
@@ -2186,9 +2200,9 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
                 range.start + offset
             };
             work.charge_range(index..index + 1)?;
-            let payload = snapshot_codec::encode(
+            let payload = clipped_record(
                 &EventWire::new(index, work.snapshot.entry(index)),
-                work.limits.max_output_bytes,
+                work.limits,
             )?;
             if !page_takes(&payload, &mut remaining, records.is_empty())? {
                 break;
@@ -2388,9 +2402,9 @@ fn query(work: &mut Work, request: &Value, next: usize) -> Result<Projection, Sn
             };
             record_page(
                 calls.items().into_iter().map(|use_| {
-                    snapshot_codec::encode(
+                    clipped_record(
                         &ToolUseWire::new(use_, &work.snapshot.session_id),
-                        work.limits.max_output_bytes,
+                        work.limits,
                     )
                 }),
                 "cc-transcript.tool-use/1",

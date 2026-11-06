@@ -1,9 +1,10 @@
+use std::cmp::Reverse;
 use std::io::{self, Write};
 use std::mem::size_of;
 
 use chrono::{DateTime, FixedOffset};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sonic_rs::format::Formatter;
+use sonic_rs::{format::Formatter, JsonValueMutTrait, JsonValueTrait, Value};
 
 use crate::activity::{Hunk, ToolUse};
 use crate::snapshot::{SnapshotError, Status};
@@ -16,6 +17,7 @@ pub const TURN_CODEC: &str = "cc-transcript.native-turn/1";
 pub const MAX_RECORDS: usize = 256;
 pub const MAX_RECORD_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ESCAPED_BYTES_PER_BYTE: usize = 6;
 
 #[derive(Serialize)]
 pub struct EventWire<'a> {
@@ -578,6 +580,140 @@ pub fn encode<T: Serialize + ?Sized>(
     max_bytes: usize,
 ) -> Result<String, SnapshotError> {
     encode_bounded(record, Bound::record("snapshot record", max_bytes))
+}
+
+pub fn encode_clipped<T: Serialize + ?Sized>(
+    record: &T,
+    max_bytes: usize,
+    page_bytes: usize,
+) -> Result<String, SnapshotError> {
+    let encoded = encode(record, max_bytes);
+    let pageable = match &encoded {
+        Ok(encoded) => {
+            encoded.len() * MAX_ESCAPED_BYTES_PER_BYTE + 2 < page_bytes
+                || quoted_len(encoded) < page_bytes
+        }
+        Err(_) => max_bytes < page_bytes && encoded_size(record, page_bytes).is_ok(),
+    };
+    if pageable {
+        return encoded;
+    }
+    let fit = Sizes {
+        raw: MAX_RECORD_BYTES.min(max_bytes),
+        quoted: page_bytes.saturating_sub(1),
+    };
+    match sonic_rs::to_value(record)
+        .ok()
+        .and_then(|value| clipped(value, fit))
+    {
+        Some(value) => encode(&value, max_bytes),
+        None => encoded,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Clippable {
+    Output,
+    Text,
+}
+
+#[derive(Clone, Copy)]
+struct Sizes {
+    raw: usize,
+    quoted: usize,
+}
+
+impl Sizes {
+    fn of(value: &Value) -> Self {
+        let encoded = encode_bounded(value, Bound::budget("clipped record", usize::MAX))
+            .expect("a JSON value encodes");
+        Self {
+            raw: encoded.len(),
+            quoted: quoted_len(&encoded),
+        }
+    }
+
+    fn excess(self, fit: Sizes) -> usize {
+        self.raw
+            .saturating_sub(fit.raw)
+            .max(self.quoted.saturating_sub(fit.quoted))
+    }
+}
+
+fn clipped(mut record: Value, fit: Sizes) -> Option<Value> {
+    let mut size = Sizes::of(&record);
+    let mut fields = Vec::new();
+    clippable_fields(&mut record, false, &mut fields);
+    fields.sort_by_key(|(kind, field)| (*kind, Reverse(field.as_str().map_or(0, str::len))));
+    for (_, field) in fields {
+        let excess = size.excess(fit);
+        if excess == 0 {
+            break;
+        }
+        let before = Sizes::of(field);
+        clip(field, excess);
+        let after = Sizes::of(field);
+        size = Sizes {
+            raw: size.raw + after.raw - before.raw,
+            quoted: size.quoted + after.quoted - before.quoted,
+        };
+    }
+    (size.excess(fit) == 0).then_some(record)
+}
+
+fn clippable_fields<'a>(
+    value: &'a mut Value,
+    output: bool,
+    fields: &mut Vec<(Clippable, &'a mut Value)>,
+) {
+    if output && value.is_str() {
+        fields.push((Clippable::Output, value));
+        return;
+    }
+    if value.is_array() {
+        for item in value.as_array_mut().expect("an array").iter_mut() {
+            clippable_fields(item, output, fields);
+        }
+        return;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    for (key, child) in object.iter_mut() {
+        match key {
+            _ if output => clippable_fields(child, true, fields),
+            "ToolResult" | "result" => {
+                let Some(result) = child.as_object_mut() else {
+                    continue;
+                };
+                for (key, child) in result.iter_mut() {
+                    if matches!(key, "content" | "tool_use_result") {
+                        clippable_fields(child, true, fields);
+                    }
+                }
+            }
+            "Text" | "Thinking" | "Plain" | "prompt" if child.is_str() => {
+                fields.push((Clippable::Text, child));
+            }
+            "ToolUse" | "call" | "ref" | "edits" | "meta" => {}
+            _ => clippable_fields(child, false, fields),
+        }
+    }
+}
+
+fn clip(field: &mut Value, excess: usize) {
+    let text = field.as_str().expect("clippable fields are strings");
+    let marker = format!("<clipped from {} bytes>", text.len());
+    let mut keep = text.len().saturating_sub(excess + marker.len());
+    while !text.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    *field = Value::from(format!("{}{marker}", &text[..keep]).as_str());
+}
+
+fn quoted_len(encoded: &str) -> usize {
+    encoded_size_bounded(encoded, Bound::budget("quoted record", usize::MAX))
+        .expect("a string encodes")
 }
 
 pub fn encoded_size<T: Serialize + ?Sized>(
@@ -1174,5 +1310,52 @@ mod tests {
         assert_eq!(decoded.index, 0);
         assert_eq!(decoded.events.len(), 1);
         assert_eq!(decoded.events[0].event.meta().unwrap().uuid, "same");
+    }
+
+    #[test]
+    fn records_over_the_record_bound_keep_the_call_and_clip_its_output() {
+        let output = "log \"line\"\n".repeat(MAX_RECORD_BYTES / 6);
+        let marker = format!("<clipped from {} bytes>", output.len());
+        let entries = vec![
+            user("u", "run the audit"),
+            event(
+                json!({"type":"assistant","uuid":"a","sessionId":"s","timestamp":"2026-01-02T03:04:06Z","message":{"model":"test","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"cat log"}}]}}),
+            ),
+            event(
+                json!({"type":"user","uuid":"r","sessionId":"s","timestamp":"2026-01-02T03:04:07Z","toolUseResult":{"stdout":&output},"message":{"content":[{"type":"tool_result","tool_use_id":"t","content":&output}]}}),
+            ),
+        ];
+        let page = MAX_RECORD_BYTES - 6144;
+        let fits = |record: &str| record.len() <= page && quoted_len(record) < page - 128;
+        let record = encode_clipped(&EventWire::new(2, &entries[2]), page, page - 128).unwrap();
+        assert!(fits(&record));
+        assert_eq!(record.matches(&marker).count(), 2);
+        let decoded = decode_events(&[record], MAX_RECORD_BYTES).unwrap();
+        let result = decoded[0].event.tool_results().next().unwrap();
+        assert_eq!(result.tool_use_id, "t");
+        assert!(result.content.ends_with(&marker));
+
+        let activity = lift_session("s", &entries);
+        let use_ = &activity.turns[0].tool_uses[0];
+        let record = encode_clipped(&ToolUseWire::new(use_, "s"), page, page - 128).unwrap();
+        assert!(fits(&record));
+        let decoded = decode_tool_uses(&[record], MAX_RECORD_BYTES)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let ToolCall::Bash(call) = &decoded.call else {
+            panic!("typed Bash expected")
+        };
+        assert_eq!(call.command, "cat log");
+        assert!(decoded.result.unwrap().content.ends_with(&marker));
+
+        let input = event(
+            json!({"type":"assistant","uuid":"w","sessionId":"s","timestamp":"2026-01-02T03:04:08Z","message":{"model":"test","content":[{"type":"tool_use","id":"w","name":"Write","input":{"file_path":"a.rs","content":&output}}]}}),
+        );
+        let wire = EventWire::new(3, &input);
+        assert_eq!(
+            encode_clipped(&wire, page, page - 128).unwrap_err().reason,
+            encode(&wire, page).unwrap_err().reason
+        );
     }
 }
