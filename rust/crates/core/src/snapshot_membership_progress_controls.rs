@@ -80,7 +80,7 @@ fn cache_membership_locate_resumes_completed_chunks_after_a_deadline() {
 fn cache_membership_declared_rosters_keep_inactive_candidates_under_the_active_bound() {
     for count in [5677] {
         let (source, store, owner, mut request) = membership_control_fixture(count);
-        let observed = membership_control_force_deadline(&store, "source", usize::MAX);
+        let observed = membership_control_force_deadline(&store, "source", count / 2);
         for index in 0..count {
             let path = source.directory.join(format!("member-{index:04}.jsonl"));
             if index + 1 == count {
@@ -96,19 +96,14 @@ fn cache_membership_declared_rosters_keep_inactive_candidates_under_the_active_b
         request.insert("active_since_unix_ms", json!(1_500_000));
         request["limits"].insert("max_sources", json!(1));
         assert_eq!(request["roots"].as_array().unwrap().len() + request["thread_ids"].as_array().unwrap().len(), count + 1);
-        let mut completed = None;
-        for _ in 0..20 {
-            request.insert("deadline_unix_ms", json!(now_ms() + 750));
-            let (result, _) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
-            if result["status"].as_str() == Some("deadline") {
-                store.assert_conserved();
-                continue;
-            }
-            assert_eq!(result["status"].as_str(), Some("ok"), "declared={} {result:?}", count + 1);
-            completed = Some(result);
-            break;
-        }
-        let completed = completed.expect("membership did not complete within current caller deadlines");
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let (first, _) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+        assert_eq!(first["status"].as_str(), Some("deadline"), "{first:?}");
+        assert_eq!(*observed.lock().unwrap(), (1..=count / 2).collect::<Vec<_>>());
+        store.assert_conserved();
+        request.insert("deadline_unix_ms", json!(now_ms() + 30_000));
+        let (completed, _) = catalog_counted_request(&store, &request, &owner, &Cancellation::default());
+        assert_eq!(completed["status"].as_str(), Some("ok"), "declared={} {completed:?}", count + 1);
         assert_eq!(*observed.lock().unwrap(), (1..=count).collect::<Vec<_>>(), "declared roster collection repeated or omitted a member");
         *store.membership_hook.lock().unwrap() = None;
         assert!(graph_has_tool(&store, &source, &owner, &completed, "LastActive"));

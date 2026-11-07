@@ -1,6 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicIsize, Ordering};
 
 use cc_transcript_core::SLOTS_PER_ENTRY;
 use imbl::{OrdMap, Vector};
@@ -15,24 +15,31 @@ const LENGTHS: [usize; 5] = [64, 1_000, 5_000, 50_000, 200_000];
 
 struct Counting;
 
-static LIVE: AtomicIsize = AtomicIsize::new(0);
+thread_local! {
+    static LIVE: Cell<isize> = const { Cell::new(0) };
+}
+
+fn note(delta: isize) {
+    let _ = LIVE.try_with(|live| live.set(live.get() + delta));
+}
+
+fn live() -> isize {
+    LIVE.with(Cell::get)
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
+        note(layout.size() as isize);
         System.alloc(layout)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
+        note(-(layout.size() as isize));
         System.dealloc(ptr, layout)
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        LIVE.fetch_add(
-            new_size as isize - layout.size() as isize,
-            Ordering::Relaxed,
-        );
+        note(new_size as isize - layout.size() as isize);
         System.realloc(ptr, layout, new_size)
     }
 }
@@ -41,12 +48,9 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 fn live_bytes<R>(build: impl FnOnce() -> R) -> (R, usize) {
-    let before = LIVE.load(Ordering::Relaxed);
+    let before = live();
     let built = build();
-    (
-        built,
-        (LIVE.load(Ordering::Relaxed) - before).max(0) as usize,
-    )
+    (built, (live() - before).max(0) as usize)
 }
 
 fn scattered(index: usize) -> Key {
