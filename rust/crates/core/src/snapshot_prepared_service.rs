@@ -1455,6 +1455,7 @@ impl NativeStore {
             sources: Vec::new(),
             stamps: vec![(root.canonical_path.clone(), root.stamp)],
             sidechain_dirs: Vec::new(),
+            sidechain_registration: None,
             expires: (now_ms() + self.config.ttl).min(remaining.deadline_unix_ms),
         };
         build.context_bytes = value_bytes(&build.context);
@@ -1510,6 +1511,7 @@ impl NativeStore {
         usage: &mut [u64; 20],
     ) -> Result<(Value, Option<String>, Option<String>), SnapshotError> {
         self.validate_prepared_build_scope(&build, cancel)?;
+        self.sidechain_feed.drain();
         let context = &build.context;
         if build.tasks.is_empty() && build.sources.is_empty() && build.listing.is_none() {
             let direct = build.request["direct_paths"]
@@ -1676,7 +1678,51 @@ impl NativeStore {
                             directory_bytes,
                             "sidechain directory landed off its predicted capacity"
                         );
-                        let canonical = match realpath(&directory) {
+                        let root = build.root.stamp.identity;
+                        let rooted = parent == build.root.canonical_path;
+                        let live = rooted && self.lock_state().latest.contains_key(&root);
+                        let fed = rooted
+                            .then(|| self.sidechain_feed.listing(root, &directory, live))
+                            .flatten();
+                        if let Some((stamp, members)) = fed {
+                            self.authority(context, Some(&directory))?;
+                            build.owned_payload_bytes += directory.capacity();
+                            build.charge_work.tick(1);
+                            build.sidechain_dirs.push((directory, Some(stamp)));
+                            assert_eq!(
+                                build.sidechain_dirs.capacity(),
+                                predicted,
+                                "prepared build collections landed off their predicted capacities"
+                            );
+                            self.extend_projection_reservation(
+                                reservation,
+                                context,
+                                vec_growth(&build.tasks, members.len())
+                                    + members
+                                        .iter()
+                                        .map(|path| path.capacity() + spawner(path).len())
+                                        .sum::<usize>(),
+                            )?;
+                            let predicted = vec_capacity_for(&build.tasks, members.len());
+                            build.tasks.reserve(members.len());
+                            assert_eq!(
+                                build.tasks.capacity(),
+                                predicted,
+                                "prepared build collections landed off their predicted capacities"
+                            );
+                            for path in members.into_iter().rev() {
+                                let spawned_by = spawner(&path).to_owned();
+                                build.owned_payload_bytes += path.capacity() + spawned_by.capacity();
+                                build.charge_work.tick(1);
+                                build.tasks.push(GraphTask::Visit {
+                                    path,
+                                    depth,
+                                    spawned_by: Some(spawned_by),
+                                });
+                            }
+                            continue;
+                        }
+                        let canonical = match sidechain_realpath(&directory) {
                             Ok(canonical) => canonical,
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                                 build.owned_payload_bytes += directory.capacity();
@@ -1692,8 +1738,7 @@ impl NativeStore {
                             Err(error) => return Err(io_error(error)),
                         };
                         self.authority(context, Some(&canonical))?;
-                        let stamp =
-                            SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+                        let stamp = sidechain_stat(&canonical).map_err(io_error)?;
                         self.extend_projection_reservation(
                             reservation,
                             context,
@@ -1701,6 +1746,9 @@ impl NativeStore {
                                 + READ_DIR_HANDLE_BYTES
                                 + directory.as_os_str().len(),
                         )?;
+                        if live && canonical == directory && build.sidechain_registration.is_none() {
+                            build.sidechain_registration = self.sidechain_feed.begin(root, &directory);
+                        }
                         build.owned_payload_bytes += canonical.capacity();
                         build.charge_work.tick(1);
                         build.sidechain_dirs.push((canonical, Some(stamp)));
@@ -1710,7 +1758,7 @@ impl NativeStore {
                             "prepared build collections landed off their predicted capacities"
                         );
                         build.listing = Some(GraphListing {
-                            entries: OpenDirectory::open(&directory)?,
+                            entries: sidechain_listing(&directory)?,
                             children: Vec::new(),
                             depth,
                         });
@@ -1720,33 +1768,53 @@ impl NativeStore {
                     GraphTask::Visit {
                         path,
                         depth,
-                        spawned_by: _,
+                        spawned_by,
                     } => {
                         examined += 1;
-                        let canonical = realpath(&path).map_err(io_error)?;
-                        self.authority(context, Some(&canonical))?;
-                        let stamp =
-                            SourceStamp::of(&std::fs::metadata(&canonical).map_err(io_error)?);
+                        let listed = spawned_by.is_some();
+                        let member = listed && depth == 1;
+                        let fed = member.then(|| self.sidechain_feed.stamp(&path)).flatten();
+                        let (canonical, stamp) = match fed {
+                            Some(stamp) => (path, stamp),
+                            None => {
+                                let canonical = sidechain_realpath(&path).map_err(io_error)?;
+                                self.authority(context, Some(&canonical))?;
+                                let registration =
+                                    build.sidechain_registration.filter(|_| member);
+                                if let Some(epoch) = registration {
+                                    self.sidechain_feed.watch(epoch, &path, &canonical);
+                                }
+                                let stamp = sidechain_stat(&canonical).map_err(io_error)?;
+                                if let Some(epoch) = registration {
+                                    self.sidechain_feed.record(epoch, &path, stamp);
+                                }
+                                (canonical, stamp)
+                            }
+                        };
                         if build.seen.contains(&stamp.identity.file()) {
                             continue;
                         }
+                        let nested = !listed;
                         if active_since_ns(&build.request)?
                             .is_some_and(|since| stamp.mtime_ns < since)
                         {
                             self.extend_projection_reservation(
                                 reservation,
                                 context,
-                                set_growth(&build.seen, 1) + canonical.as_os_str().len(),
+                                set_growth(&build.seen, 1)
+                                    + if nested { canonical.as_os_str().len() } else { 0 },
                             )?;
                             let predicted =
                                 (set_capacity_for(&build.seen, 1), build.tasks.capacity());
                             build.seen.insert(stamp.identity.file());
-                            build.owned_payload_bytes += canonical.capacity();
                             build.charge_work.tick(1);
-                            build.tasks.push(GraphTask::List {
-                                parent: canonical,
-                                depth: depth + 1,
-                            });
+                            if nested {
+                                build.owned_payload_bytes += canonical.capacity();
+                                build.tasks.push(GraphTask::List {
+                                    parent: canonical,
+                                    depth: depth + 1,
+                                });
+                            }
                             assert_eq!(
                                 (build.seen.capacity(), build.tasks.capacity()),
                                 predicted,
@@ -1760,13 +1828,14 @@ impl NativeStore {
                                 "prepared graph source budget exhausted",
                             ));
                         }
+                        let copies = if nested { 3 } else { 2 };
                         self.extend_projection_reservation(
                             reservation,
                             context,
                             set_growth(&build.seen, 1)
                                 + vec_growth(&build.stamps, 1)
                                 + vec_growth(&build.sources, 1)
-                                + 3 * canonical.as_os_str().len(),
+                                + copies * canonical.as_os_str().len(),
                         )?;
                         let predicted = (
                             set_capacity_for(&build.seen, 1),
@@ -1778,18 +1847,26 @@ impl NativeStore {
                         self.build_sources.fetch_add(1, Ordering::Relaxed);
                         build.seen.insert(stamp.identity.file());
                         build.stamps.push((canonical.clone(), stamp));
-                        build.sources.push(PreparedSourceRef {
-                            path: canonical.clone(),
-                            stamp,
-                        });
-                        build.owned_payload_bytes += build.stamps.last().unwrap().0.capacity()
-                            + build.sources.last().unwrap().path.capacity()
-                            + canonical.capacity();
-                        build.charge_work.tick(3);
-                        build.tasks.push(GraphTask::List {
-                            parent: canonical,
-                            depth: depth + 1,
-                        });
+                        build.owned_payload_bytes += build.stamps.last().unwrap().0.capacity();
+                        if nested {
+                            build.sources.push(PreparedSourceRef {
+                                path: canonical.clone(),
+                                stamp,
+                            });
+                            build.owned_payload_bytes += build.sources.last().unwrap().path.capacity()
+                                + canonical.capacity();
+                            build.tasks.push(GraphTask::List {
+                                parent: canonical,
+                                depth: depth + 1,
+                            });
+                        } else {
+                            build.owned_payload_bytes += canonical.capacity();
+                            build.sources.push(PreparedSourceRef {
+                                path: canonical,
+                                stamp,
+                            });
+                        }
+                        build.charge_work.tick(copies);
                         assert_eq!(
                             (
                                 build.seen.capacity(),
@@ -1809,6 +1886,9 @@ impl NativeStore {
         }
         if build.listing.is_some() || !build.tasks.is_empty() {
             return self.store_prepared_build(token, build, reservation);
+        }
+        if let Some(epoch) = build.sidechain_registration {
+            self.sidechain_feed.complete(epoch);
         }
         let graph_id = self.token("prepared-graph");
         self.extend_projection_reservation(

@@ -51,6 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `prepare_graph` follows a live root's `subagents` directory through a
+  change feed (kqueue on macOS, inotify on Linux) instead of listing it on
+  every call. A repeat prepare reads the member list and stamps the feed keeps
+  current, with no listing, path resolution, open or stat. A sidechain whose
+  watch cannot be added is checked as before, and the owner logs one
+  `sidechain watch unavailable` warning for it. Watches close when the root
+  leaves the owner's cache. A listed sidechain's own `agent-<id>/subagents`
+  folder is no longer probed or followed; direct paths still are. The owner
+  raises its soft descriptor limit to the hard limit at start.
 - `tools`, `permissions`, `commands`, `mcp`, `stats`, `corpus`, `blame` and
   `attribute` read transcripts on 8 worker threads, with at most 512 MiB of
   source files in flight (a larger file runs alone) and at most 32 finished

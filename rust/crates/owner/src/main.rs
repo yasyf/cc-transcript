@@ -9,7 +9,7 @@ mod service;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use cc_transcript_core::snapshot::NativeStore;
+use cc_transcript_core::snapshot::{raise_descriptor_limit, NativeStore};
 use cc_transcript_core::snapshot_input::{native_value, normalize_numbers};
 use sonic_rs::{json, JsonValueTrait, Value};
 
@@ -74,6 +74,7 @@ fn handshake(
 }
 
 fn serve() -> Result<(), ProtocolError> {
+    raise_descriptor_limit();
     let build = build()?;
     let mut input = io::stdin().lock();
     let mut output = io::stdout();

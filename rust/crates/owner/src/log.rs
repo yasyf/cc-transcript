@@ -139,13 +139,21 @@ pub fn cursor_digest(cursor: Option<&Value>) -> Field {
 }
 
 pub fn info(message: &str, fields: &[(&'static str, Field)]) {
+    write("INFO", message, fields);
+}
+
+pub fn warn(message: &str, fields: &[(&'static str, Field)]) {
+    write("WARNING", message, fields);
+}
+
+fn write(level: &str, message: &str, fields: &[(&'static str, Field)]) {
     let rendered = fields
         .iter()
         .map(|(key, value)| format!("{key}={}", value.repr()))
         .collect::<Vec<_>>()
         .join(" ");
     let line = format!(
-        "{} | INFO     | cc_transcript_owner - {message}: {rendered}\n",
+        "{} | {level:<8} | cc_transcript_owner - {message}: {rendered}\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
     );
     let _ = std::io::stderr().lock().write_all(line.as_bytes());
