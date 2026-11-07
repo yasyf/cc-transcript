@@ -304,6 +304,7 @@ impl Owner {
                     self.dispatch(request, &native_input(&context)?, cancel)
                 })
         });
+        self.log_sidechain_watch_failures();
         match outcome {
             Ok((response, path)) => self.completed(request, response, started, path, queued, waits),
             Err(Failure { error, usage }) => {
@@ -511,6 +512,23 @@ impl Owner {
             log::info("snapshot request completed", &fields);
         }
         response
+    }
+
+    fn log_sidechain_watch_failures(&self) {
+        for (path, reason) in self.store.take_sidechain_watch_failures() {
+            let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
+            log::warn(
+                "sidechain watch unavailable",
+                &[
+                    ("pid", Field::Json(json!(std::process::id()))),
+                    (
+                        "path_sha256",
+                        Field::Json(json!(format!("{digest:x}")[..16].to_owned())),
+                    ),
+                    ("reason", Field::Json(json!(reason))),
+                ],
+            );
+        }
     }
 
     fn log_admission_refusal(&self) {

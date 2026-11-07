@@ -1196,6 +1196,7 @@ struct PreparedBuild {
     sources: Vec<PreparedSourceRef>,
     stamps: Vec<(PathBuf, SourceStamp)>,
     sidechain_dirs: Vec<(PathBuf, Option<SourceStamp>)>,
+    sidechain_registration: Option<u64>,
     expires: u64,
 }
 
@@ -2310,6 +2311,7 @@ pub(crate) struct StoreState {
     fact_read_in_flight: bool,
     owned: crate::snapshot_owned::OwnedProjections,
     ledger: RetainedLedger,
+    sidechain_feed: Arc<SidechainFeed>,
     #[cfg(test)]
     audits: Arc<AtomicUsize>,
     #[cfg(test)]
@@ -2398,6 +2400,7 @@ impl StoreState {
             fact_read_in_flight: false,
             owned: crate::snapshot_owned::OwnedProjections::default(),
             ledger: RetainedLedger::new(work),
+            sidechain_feed: Arc::default(),
             #[cfg(test)]
             audits: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
@@ -2878,6 +2881,7 @@ impl StoreState {
 
     fn remove_latest(&mut self, identity: &SourceIdentity) -> Option<Arc<TranscriptSnapshot>> {
         let key = self.latest.remove(identity)?;
+        self.sidechain_feed.release(*identity);
         let removed = Arc::clone(
             &self
                 .generations
@@ -3736,6 +3740,7 @@ pub struct NativeStore {
     transport_bytes: AtomicU64,
     state: Mutex<StoreState>,
     fact_read_released: Condvar,
+    sidechain_feed: Arc<SidechainFeed>,
     #[cfg(test)]
     catalog_wait_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     classifiers: Mutex<HashMap<String, Arc<ClassifierCallback>>>,
@@ -4302,6 +4307,7 @@ impl NativeStore {
             work.clone(),
         )?;
         state.prepared_disk_index_bytes = prepared_disk.index_bytes();
+        let sidechain_feed = Arc::clone(&state.sidechain_feed);
         Ok(Self {
             config,
             agent_sources: false,
@@ -4313,6 +4319,7 @@ impl NativeStore {
             transport_bytes: AtomicU64::new(0),
             state: Mutex::new(state),
             fact_read_released: Condvar::new(),
+            sidechain_feed,
             #[cfg(test)]
             catalog_wait_hook: Mutex::new(None),
             classifiers: Mutex::new(HashMap::new()),
@@ -7037,6 +7044,10 @@ impl NativeStore {
                 .sum(),
             cache_owners: state.cache_order.len(),
         });
+    }
+
+    pub fn take_sidechain_watch_failures(&self) -> Vec<(PathBuf, String)> {
+        self.sidechain_feed.take_failures()
     }
 
     pub fn take_admission_refusal(&self) -> Option<Value> {
@@ -13018,6 +13029,7 @@ include!("snapshot_catalog_owner.rs");
 
 include!("snapshot_membership_progress.rs");
 include!("snapshot_sidechain_absence.rs");
+include!("snapshot_sidechain_feed.rs");
 include!("snapshot_prepared_service.rs");
 include!("snapshot_skills.rs");
 include!("snapshot_hydration_observations.rs");
@@ -13111,6 +13123,7 @@ mod tests {
     include!("snapshot_membership_progress_tests.rs");
     include!("snapshot_membership_progress_controls.rs");
     include!("snapshot_sidechain_absence_tests.rs");
+    include!("snapshot_sidechain_feed_tests.rs");
     include!("snapshot_common_borrowed_parent_tests.rs");
     include!("snapshot_graph_anchor_tests.rs");
 

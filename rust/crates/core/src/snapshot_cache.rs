@@ -339,6 +339,7 @@ impl StoreState {
                 assert!(self.cache_order.remove(&(cached.touched, owner)));
                 if let Some(identity) = cached.latest {
                     assert_eq!(self.latest.remove(&identity), Some(key));
+                    self.sidechain_feed.release(identity);
                     if self.recent_codex.contains_key(&identity) {
                         self.recent_codex_raw_bytes -= codex_raw_len(&cached.snapshot);
                     }
