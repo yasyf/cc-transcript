@@ -15857,6 +15857,9 @@ mod tests {
                 store.request_agent(&request, owner, &Cancellation::default()),
                 owner,
             );
+            if response["status"].as_str() == Some("changed") {
+                return None;
+            }
             let snapshot = store.pin(handle(&response), owner).unwrap();
             let ids = uuids(&snapshot);
             assert_eq!(
@@ -15866,7 +15869,7 @@ mod tests {
             );
             assert!(snapshot.stamp.size - snapshot.window_start <= 2048 + 1024 + 256);
             assert_parity_turns(&snapshot);
-            snapshot
+            Some(snapshot)
         };
         let appender = {
             let store = Arc::clone(&store);
@@ -15896,7 +15899,8 @@ mod tests {
         for reader in readers {
             reader.join().unwrap();
         }
-        let last = view(&store, &source.path, &context("final"));
+        let last =
+            view(&store, &source.path, &context("final")).expect("a quiescent source answers ok");
         assert_eq!(*uuids(&last).last().unwrap(), 40 + 2 * rounds - 1);
     }
 
