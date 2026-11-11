@@ -3302,7 +3302,10 @@ struct Joined {
     counts: Vec<usize>,
 }
 
-fn outcomes(event: &GrepEvent<'_>) -> Outcomes {
+fn outcomes(event: &GrepEvent<'_>, rendered: bool) -> Outcomes {
+    if !rendered {
+        return Vec::new();
+    }
     event
         .entry
         .tool_uses()
@@ -3327,6 +3330,7 @@ fn joined_stream(
 ) -> (Joined, ScanProgress) {
     let store = NativeStore::new(&json!({})).unwrap();
     let mut budget = ScanBudget::new(&store, limits());
+    let rendered = options.with_result;
     let mut grep = reducer(patterns, options, &mut budget);
     assert!(!grep.caches());
     let mut emitted = Vec::new();
@@ -3341,7 +3345,7 @@ fn joined_stream(
             emitted.push((
                 event.index,
                 event.pattern_ids.map(<[usize]>::to_vec),
-                outcomes(&event),
+                outcomes(&event, rendered),
             ));
             Ok(())
         },
@@ -3359,6 +3363,7 @@ fn joined_snapshot(
 ) -> Joined {
     let store = NativeStore::new(&json!({})).unwrap();
     let mut session = ScanSession::new(&store, limits(), Cancellation::default());
+    let rendered = options.with_result;
     let mut grep = reducer(patterns, options, &mut session.budget);
     let mut emitted = Vec::new();
     session
@@ -3368,7 +3373,7 @@ fn joined_snapshot(
                 emitted.push((
                     event.index,
                     event.pattern_ids.map(<[usize]>::to_vec),
-                    outcomes(&event),
+                    outcomes(&event, rendered),
                 ));
                 Ok(())
             })?;
@@ -3457,10 +3462,24 @@ fn joined_case(case: usize) -> Option<(&'static str, Option<usize>, GrepOptions)
     };
     Some(match case {
         0 => ("needle", None, results),
-        1 => ("needle", None, GrepOptions { context: 1, ..results }),
+        1 => (
+            "needle",
+            None,
+            GrepOptions {
+                context: 1,
+                ..results
+            },
+        ),
         2 => ("needle", Some(1), results),
         3 => ("needle", None, errors),
-        4 => ("needle", None, GrepOptions { with_result: true, ..errors }),
+        4 => (
+            "needle",
+            None,
+            GrepOptions {
+                with_result: true,
+                ..errors
+            },
+        ),
         5 => (
             "needle",
             None,
@@ -3477,7 +3496,14 @@ fn joined_case(case: usize) -> Option<(&'static str, Option<usize>, GrepOptions)
                 ..errors
             },
         ),
-        7 => (r"\w+", None, GrepOptions { with_result: true, ..errors }),
+        7 => (
+            r"\w+",
+            None,
+            GrepOptions {
+                with_result: true,
+                ..errors
+            },
+        ),
         _ => return None,
     })
 }
@@ -3496,7 +3522,12 @@ fn streamed_results_and_errors_match_the_prepared_snapshot_path() {
             assert_eq!(actual, expected, "case {case}, render names {render_names}");
         }
     }
-    let (plain, _) = joined_stream(&source.0, &[("needle", None)], joined_case(0).unwrap().2, true);
+    let (plain, _) = joined_stream(
+        &source.0,
+        &[("needle", None)],
+        joined_case(0).unwrap().2,
+        true,
+    );
     let bash = |id: &str, error, denied, ms| (id.to_owned(), "Bash".to_owned(), error, denied, ms);
     assert_eq!(
         plain
@@ -3513,7 +3544,12 @@ fn streamed_results_and_errors_match_the_prepared_snapshot_path() {
             vec![],
         ]
     );
-    let (errors, _) = joined_stream(&source.0, &[("needle", None)], joined_case(3).unwrap().2, false);
+    let (errors, _) = joined_stream(
+        &source.0,
+        &[("needle", None)],
+        joined_case(3).unwrap().2,
+        false,
+    );
     assert_eq!(
         errors
             .emitted
@@ -3528,7 +3564,11 @@ fn streamed_results_and_errors_match_the_prepared_snapshot_path() {
 fn a_quota_stop_on_a_call_reads_on_to_its_result_and_no_further() {
     let mut lines = turns();
     lines.extend((0..4000).map(|index| {
-        line(user(&format!("p{index}"), Some("u1"), json!("x".repeat(1000))))
+        line(user(
+            &format!("p{index}"),
+            Some("u1"),
+            json!("x".repeat(1000)),
+        ))
     }));
     let source = Source::new(&lines, true);
     let size = std::fs::metadata(&source.0).unwrap().len() as usize;
@@ -3544,11 +3584,18 @@ fn a_quota_stop_on_a_call_reads_on_to_its_result_and_no_further() {
         );
         let (id, error, denied, ms) = expected;
         assert_eq!(
-            run.emitted.iter().map(|(_, _, outcomes)| outcomes.clone()).collect::<Vec<_>>(),
+            run.emitted
+                .iter()
+                .map(|(_, _, outcomes)| outcomes.clone())
+                .collect::<Vec<_>>(),
             vec![vec![(id.to_owned(), "Bash".to_owned(), error, denied, ms)]],
             "{pattern}"
         );
-        assert!(progress.source_bytes < size / 8, "{pattern}: read {}", progress.source_bytes);
+        assert!(
+            progress.source_bytes < size / 8,
+            "{pattern}: read {}",
+            progress.source_bytes
+        );
     }
 }
 
@@ -3565,7 +3612,13 @@ fn the_join_holds_a_fixed_staging_peak_as_turns_grow() {
                 json!([tool(&id, "Bash", json!({"command":"echo needle"}))]),
             )));
             lines.push(noise());
-            lines.push(line(answer(&format!("r{turn:06}"), &id, "02", &"y".repeat(4000), false)));
+            lines.push(line(answer(
+                &format!("r{turn:06}"),
+                &id,
+                "02",
+                &"y".repeat(4000),
+                false,
+            )));
         }
         let source = Source::new(&lines, true);
         let (run, progress) = joined_stream(
@@ -3582,5 +3635,8 @@ fn the_join_holds_a_fixed_staging_peak_as_turns_grow() {
     };
     let few = peak(10, true) as i64 - peak(10, false) as i64;
     let many = peak(1000, true) as i64 - peak(1000, false) as i64;
-    assert!((many - few).abs() <= 16 * 1024, "10 turns {few}, 1000 turns {many}");
+    assert!(
+        (many - few).abs() <= 16 * 1024,
+        "10 turns {few}, 1000 turns {many}"
+    );
 }
