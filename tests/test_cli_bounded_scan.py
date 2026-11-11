@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -112,6 +113,27 @@ def test_discovery_is_not_charged_to_output(tmp_path: Path) -> None:
     result = run_scan(tmp_path, "absent", "--all", "--max-output-bytes", "64")
     assert result.returncode == 1, result.stderr
     assert result.stdout == "0 files, 0 matches\n"
+
+
+def test_output_cap_prints_lines_until_the_next_one_does_not_fit(tmp_path: Path) -> None:
+    path = source(tmp_path / "wide.jsonl", [f"needle {index} " + "x" * 4000 for index in range(40)])
+    result = run_scan(tmp_path, "needle", str(path), "--max-output-bytes", "2000")
+    assert result.returncode == 3, result.stderr
+    *printed, summary = result.stdout.splitlines()
+    hits = len(printed) - 1
+    used = sum(len(line.encode()) + 2 for line in printed)
+    assert hits > 0
+    assert summary == f"1 files, {hits + 1} matches so far (incomplete scan)"
+    warning = re.fullmatch(
+        r"warning: scan incomplete: output byte budget exhausted at event (\d+): its next line is (\d+) bytes"
+        r" and (\d+) remained; raise --max-output-bytes to (\d+) or more\n",
+        result.stderr,
+    )
+    assert warning, result.stderr
+    event, size, remained, needed = map(int, warning.groups())
+    assert event == hits
+    assert remained == 2000 - used < size
+    assert needed == used + size
 
 
 def test_project_filter_precedes_discovery_budget(tmp_path: Path) -> None:

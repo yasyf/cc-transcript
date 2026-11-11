@@ -188,6 +188,14 @@ struct Emitter {
     exit: Option<i32>,
     limits: WorkLimits,
     timeout_ms: u64,
+    refused: Option<Refused>,
+}
+
+#[derive(Clone, Copy)]
+struct Refused {
+    event: usize,
+    bytes: usize,
+    used: usize,
 }
 
 impl Emitter {
@@ -214,6 +222,7 @@ impl Emitter {
             exit: None,
             limits: budget.limits,
             timeout_ms,
+            refused: None,
         })
     }
 
@@ -227,9 +236,23 @@ impl Emitter {
         self.write(line)
     }
 
-    fn summary(&mut self, line: String, budget: &mut ScanBudget) -> Result<(), SnapshotError> {
-        budget.reserve_output(line.len().saturating_add(2))?;
-        self.write(line)
+    fn emit_event(
+        &mut self,
+        event: usize,
+        line: String,
+        budget: &mut ScanBudget,
+        cancel: &Cancellation,
+    ) -> Result<(), SnapshotError> {
+        let refused = Refused {
+            event,
+            bytes: line.len().saturating_add(2),
+            used: budget.progress.output_bytes,
+        };
+        self.emit(line, budget, cancel).inspect_err(|error| {
+            if error.status == Status::OutputLimit {
+                self.refused = Some(refused);
+            }
+        })
     }
 
     fn write(&mut self, line: String) -> Result<(), SnapshotError> {
@@ -268,13 +291,16 @@ impl Emitter {
                     eline(&format!("warning: partial view: {scope}"));
                 }
             } else {
-                match outcome.budget {
-                    Some(budget) => eline(&format!(
-                        "warning: scan incomplete: {reason}; {}",
-                        raise(budget, &self.limits, self.timeout_ms)
-                    )),
-                    None => eline(&format!("warning: scan incomplete: {reason}")),
-                }
+                let hint = match (outcome.budget, self.refused) {
+                    (Some(Budget::OutputBytes), Some(Refused { event, bytes, used })) => format!(
+                        " at event {event}: its next line is {bytes} bytes and {} remained; raise --max-output-bytes to {} or more",
+                        self.limits.max_output_bytes.saturating_sub(used),
+                        used.saturating_add(bytes),
+                    ),
+                    (Some(budget), _) => format!("; {}", raise(budget, &self.limits, self.timeout_ms)),
+                    (None, _) => String::new(),
+                };
+                eline(&format!("warning: scan incomplete: {reason}{hint}"));
                 return Err(CliExit(3));
             }
         }
@@ -465,14 +491,11 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         } else {
             ""
         };
-        if let Err(error) = render.emitter.summary(
-            format!(
-                "{} files, {} matches{partial}{note}{validated}",
-                render.files,
-                counts.iter().sum::<usize>()
-            ),
-            &mut session.budget,
-        ) {
+        if let Err(error) = render.emitter.write(format!(
+            "{} files, {} matches{partial}{note}{validated}",
+            render.files,
+            counts.iter().sum::<usize>()
+        )) {
             if !stopped(&outcome) {
                 outcome.complete = false;
                 (outcome.reason, outcome.budget) = session.budget.explain(error);
@@ -502,12 +525,17 @@ impl Render<'_> {
         if event.opens_source {
             self.files += 1;
             if !structured {
-                self.emitter
-                    .emit(transcript_header(&path.to_string_lossy()), budget, cancel)?;
+                self.emitter.emit_event(
+                    event.index,
+                    transcript_header(&path.to_string_lossy()),
+                    budget,
+                    cancel,
+                )?;
             }
         }
         if !structured && args.context > 0 && event.opens_window && !event.opens_source {
-            self.emitter.emit("--".to_owned(), budget, cancel)?;
+            self.emitter
+                .emit_event(event.index, "--".to_owned(), budget, cancel)?;
         }
         let _render_staging = event.preflight_render(budget, cancel)?;
         let line = if structured {
@@ -557,7 +585,7 @@ impl Render<'_> {
             }
             line
         };
-        self.emitter.emit(line, budget, cancel)
+        self.emitter.emit_event(event.index, line, budget, cancel)
     }
 }
 
@@ -637,14 +665,11 @@ fn run_over_corpus(
         } else {
             ""
         };
-        if let Err(error) = emitter.summary(
-            format!(
-                "{} matches in {}{partial}",
-                counts.iter().sum::<usize>(),
-                display_path(&path.to_string_lossy())
-            ),
-            &mut budget,
-        ) {
+        if let Err(error) = emitter.write(format!(
+            "{} matches in {}{partial}",
+            counts.iter().sum::<usize>(),
+            display_path(&path.to_string_lossy())
+        )) {
             if !stopped(&outcome) {
                 outcome.complete = false;
                 (outcome.reason, outcome.budget) = budget.explain(error);
