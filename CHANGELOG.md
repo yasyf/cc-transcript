@@ -260,6 +260,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--scan-json` adds `outcome.budget`, one of `read_bytes`,
   `source_read_bytes`, `events`, `output_bytes`, `discovery_entries`,
   `sources` or `deadline`, or `null`.
+- `cc-transcript grep --max-output-bytes` charges each printed line its own
+  size plus two bytes, and prints lines until the next one does not fit. It
+  used to refuse an event before rendering it whenever 16 times the event's
+  parsed size, plus 8 times the bytes read so far, plus 4,096, passed the
+  bytes left. A 3,959-byte event whose line is 140 bytes needed a 75,000-byte
+  cap, so `--max-output-bytes 60000` on a 1.7 MB agent transcript printed the
+  file header, counted 1 match and printed none. That call now prints all 20
+  matches in 3,034 bytes. The warning names the event it stopped at, the size
+  of its next line, the bytes left and the smallest cap that prints it: the
+  same search under `--max-output-bytes 2000 --max-matches 0` prints 12 lines
+  and `warning: scan incomplete: output byte budget exhausted at event 209: its
+  next line is 190 bytes and 167 remained; raise --max-output-bytes to 2023 or
+  more`. The closing `N files, M matches` line always prints and no longer
+  counts against the cap.
 - A `grep` that stops on a transcript larger than the store's
   `max_source_bytes` names that transcript's path in the warning.
 - Source discovery over a large tree runs in linear time. Each discovery page
