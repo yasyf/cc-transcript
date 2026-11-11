@@ -10,7 +10,8 @@ use std::thread::JoinHandle;
 use memchr::memmem;
 use sonic_rs::{json, JsonValueTrait};
 
-use super::{incomplete, GrepEvent, GrepReducer, Searched};
+use super::{incomplete, GrepEvent, GrepReducer, GrepResultMetadata, Searched};
+use crate::activity::tool_result_metadata;
 use crate::gateway::{sniff_provider, Provider};
 use crate::scan::{ScanBudget, ScanControl, StagingReservation};
 use crate::scan_checkpoint::{
@@ -139,6 +140,12 @@ enum Validity {
     Unverified,
 }
 
+enum Join {
+    Settled,
+    Open,
+    Unloaded(usize),
+}
+
 struct GrepStream<'store> {
     query_key: Option<String>,
     size: u64,
@@ -218,6 +225,69 @@ fn resolve<'n>(
                 .map(|(id, slot)| (id.as_str(), slot.name.as_str()))
         })
         .collect()
+}
+
+fn joined<'q>(
+    queue: &'q VecDeque<StreamSlot<'_>>,
+    position: usize,
+) -> (HashMap<&'q str, GrepResultMetadata<'q>>, Join) {
+    let Some(entry @ Entry::Assistant(assistant)) = queue[position].entry.as_ref() else {
+        return (HashMap::new(), Join::Settled);
+    };
+    let uses: Vec<_> = entry.tool_uses().collect();
+    let mut found = HashMap::new();
+    let mut join = Join::Open;
+    for (at, later) in queue.iter().enumerate().skip(position + 1) {
+        if found.len() == uses.len() {
+            break;
+        }
+        match &later.entry {
+            None => {
+                join = Join::Unloaded(at);
+                break;
+            }
+            Some(Entry::Assistant(next))
+                if next.request_id.is_none() || next.request_id != assistant.request_id =>
+            {
+                join = Join::Settled;
+                break;
+            }
+            Some(Entry::User(user)) => {
+                for block in user.tool_results() {
+                    if uses.iter().any(|tool| tool.id == block.tool_use_id) {
+                        found
+                            .entry(block.tool_use_id.as_str())
+                            .or_insert((block, user.meta.timestamp));
+                    }
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    if found.len() == uses.len() {
+        join = Join::Settled;
+    }
+    let results = uses
+        .into_iter()
+        .map(|tool| {
+            let result = found.get(tool.id.as_str());
+            let metadata = tool_result_metadata(
+                assistant.meta.timestamp,
+                result.map(|(block, _)| *block),
+                result.map(|(_, at)| *at),
+            );
+            (
+                tool.id.as_str(),
+                GrepResultMetadata {
+                    tool: tool.name.as_str(),
+                    is_error: metadata.is_error,
+                    denied: metadata.denied,
+                    duration_ms: metadata.duration_ms,
+                },
+            )
+        })
+        .collect();
+    (results, join)
 }
 
 fn parse(
@@ -682,7 +752,7 @@ impl<'store> GrepReducer<'store> {
             &Cancellation,
         ) -> Result<(), SnapshotError>,
     {
-        stream.decide(self, false, budget, cancel)?;
+        stream.decide(self, false, source, budget, cancel)?;
         stream.emit(self, false, source, budget, cancel, emit)?;
         stream.feed(self, source, budget, cancel, emit)?;
         while !stream.finished(self.options.context) {
@@ -690,7 +760,7 @@ impl<'store> GrepReducer<'store> {
                 if stream.capture.is_none() {
                     stream.capture = stream.capture(self);
                 }
-                stream.decide(self, true, budget, cancel)?;
+                stream.decide(self, true, source, budget, cancel)?;
                 stream.emit(self, true, source, budget, cancel, emit)?;
                 return Ok(Some(true));
             };
@@ -706,8 +776,7 @@ impl<'store> GrepReducer<'store> {
                 }
             }
             if stream.raw && line.terminated && !self.candidate(bytes) {
-                let names =
-                    stream.render_names || !self.options.errors && self.tool_names.is_some();
+                let names = stream.render_names || self.tool_names.is_some();
                 stream.skip(line, bytes, names, budget, cancel)?;
             } else {
                 let sum = digest(bytes);
@@ -725,7 +794,7 @@ impl<'store> GrepReducer<'store> {
             if line.terminated {
                 stream.commit(line, source, budget, cancel)?;
             }
-            stream.decide(self, false, budget, cancel)?;
+            stream.decide(self, false, source, budget, cancel)?;
             stream.emit(self, false, source, budget, cancel, emit)?;
         }
         Ok(Some(false))
@@ -1121,7 +1190,7 @@ impl<'store> GrepStream<'store> {
                     continue;
                 }
                 self.push_indexed(index, next, budget, cancel)?;
-                self.decide(grep, false, budget, cancel)?;
+                self.decide(grep, false, source, budget, cancel)?;
                 self.emit(grep, false, source, budget, cancel, emit)?;
                 if self.finished(grep.options.context) {
                     return Ok(());
@@ -1282,15 +1351,20 @@ impl<'store> GrepStream<'store> {
         &mut self,
         grep: &mut GrepReducer<'store>,
         eof: bool,
+        source: &mut SourceStream<'store>,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
-        let filtering = !grep.options.errors && grep.tool_names.is_some();
-        let results = HashMap::new();
+        let filtering = grep.tool_names.is_some();
+        let errors = grep.options.errors;
         while self.stopped.is_none() && self.decided < self.parsed {
             let position = self.decided - self.emitted;
+            let skipped = self.queue[position].span.is_some();
+            if errors && !skipped && !self.settle(position, eof, source, budget, cancel)? {
+                break;
+            }
             let slot = &self.queue[position];
-            let lookup = filtering && slot.is_user();
+            let lookup = filtering && !skipped && slot.is_user();
             let ids = slot.results();
             if lookup && !eof && unresolved(&self.names, &ids) {
                 break;
@@ -1301,9 +1375,30 @@ impl<'store> GrepStream<'store> {
                 HashMap::new()
             };
             let searched = match (&slot.projected, &slot.entry) {
+                _ if skipped => None,
                 (Some(projected), _) => Some(Searched::Projected(projected)),
                 (None, Some(entry)) => Some(Searched::Entry(entry)),
                 (None, None) => None,
+            };
+            let results = match &slot.entry {
+                _ if !errors => HashMap::new(),
+                Some(Entry::User(user)) => user
+                    .tool_results()
+                    .map(|block| {
+                        let id = block.tool_use_id.as_str();
+                        let metadata = tool_result_metadata(user.meta.timestamp, Some(block), None);
+                        (
+                            id,
+                            GrepResultMetadata {
+                                tool: names.get(id).copied().unwrap_or_default(),
+                                is_error: metadata.is_error,
+                                denied: metadata.denied,
+                                duration_ms: metadata.duration_ms,
+                            },
+                        )
+                    })
+                    .collect(),
+                _ => joined(&self.queue, position).0,
             };
             let matched = match searched {
                 Some(searched) => {
@@ -1314,6 +1409,7 @@ impl<'store> GrepStream<'store> {
                     None
                 }
             };
+            drop(results);
             drop(names);
             let slot = &mut self.queue[position];
             slot.projected = None;
@@ -1329,13 +1425,31 @@ impl<'store> GrepStream<'store> {
         Ok(())
     }
 
+    fn settle(
+        &mut self,
+        position: usize,
+        eof: bool,
+        source: &mut SourceStream<'store>,
+        budget: &mut ScanBudget<'store>,
+        cancel: &Cancellation,
+    ) -> Result<bool, SnapshotError> {
+        loop {
+            match joined(&self.queue, position).1 {
+                Join::Settled => return Ok(true),
+                Join::Open => return Ok(eof),
+                Join::Unloaded(at) => self.load(at, source, budget, cancel)?,
+            }
+        }
+    }
+
     fn load(
         &mut self,
+        position: usize,
         source: &mut SourceStream<'store>,
         budget: &mut ScanBudget<'store>,
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
-        let (line, sum, bytes) = match self.queue[0].span {
+        let (line, sum, bytes) = match self.queue[position].span {
             Some(line) => {
                 let bytes = source.read_span(&line, budget, cancel)?;
                 (line, digest(&bytes), bytes)
@@ -1345,7 +1459,7 @@ impl<'store> GrepStream<'store> {
                     .index
                     .as_ref()
                     .expect("unparsed slots come from an index or a skipped line");
-                let (line, sum) = reader.row(self.queue[0].index, budget, cancel)?;
+                let (line, sum) = reader.row(self.queue[position].index, budget, cancel)?;
                 let bytes = source.read_span(&line, budget, cancel)?;
                 if digest(&bytes) != sum {
                     return Err(reader.damage());
@@ -1355,7 +1469,7 @@ impl<'store> GrepStream<'store> {
         };
         let entry = match parse(&bytes, budget, cancel)? {
             Some(entry) => entry,
-            None if self.queue[0].span.is_some() => {
+            None if self.queue[position].span.is_some() => {
                 return Err(SnapshotError::new(
                     Status::Changed,
                     "skipped line no longer parses as an event",
@@ -1364,7 +1478,7 @@ impl<'store> GrepStream<'store> {
             None => return Err(self.index.as_ref().expect("indexed slot").damage()),
         };
         let charge = charge_of(&entry);
-        let slot = &mut self.queue[0];
+        let slot = &mut self.queue[position];
         budget.extend_staging(&mut slot.staging, charge, cancel)?;
         slot.line = Some((line, sum));
         slot.charge = charge;
@@ -1389,7 +1503,7 @@ impl<'store> GrepStream<'store> {
         ) -> Result<(), SnapshotError>,
     {
         let context = grep.options.context;
-        let results = HashMap::new();
+        let with_result = grep.options.with_result;
         while let Some(slot) = self.queue.front() {
             let index = slot.index;
             let finalized = match self.stopped {
@@ -1407,7 +1521,10 @@ impl<'store> GrepStream<'store> {
                     .any(|slot| slot.pattern_ids.is_some());
             if windowed {
                 if self.queue[0].entry.is_none() {
-                    self.load(source, budget, cancel)?;
+                    self.load(0, source, budget, cancel)?;
+                }
+                if with_result && !self.settle(0, eof, source, budget, cancel)? {
+                    break;
                 }
                 let slot = &self.queue[0];
                 let entry = slot.entry.as_ref().expect("windowed slots are loaded");
@@ -1421,6 +1538,11 @@ impl<'store> GrepStream<'store> {
                 let (line, digest) = slot.line.expect("loaded slots carry their line");
                 let opens_window = self.last_emitted.is_none_or(|last| last + 1 != index);
                 budget.extend_staging(&mut self.staging, size_of::<Replayed>(), cancel)?;
+                let results = if with_result {
+                    joined(&self.queue, 0).0
+                } else {
+                    HashMap::new()
+                };
                 let names = resolve(&mut self.names, &ids, self.render_names);
                 emit(
                     GrepEvent {

@@ -536,12 +536,8 @@ impl<'store> GrepReducer<'store> {
         Ok(output)
     }
 
-    pub fn streams(&self) -> bool {
-        !self.options.errors && !self.options.with_result
-    }
-
-    pub fn prefilters(&self) -> bool {
-        self.prefilter.is_some()
+    pub fn caches(&self) -> bool {
+        self.prefilter.is_none() && !self.options.errors && !self.options.with_result
     }
 
     fn matches(

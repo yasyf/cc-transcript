@@ -3293,3 +3293,294 @@ fn the_stripe_protocol_shares_no_entry_with_a_legacy_cache() {
     assert_eq!(run.unwrap(), fresh.unwrap());
     assert_eq!((progress.cache_hits, progress.cache_invalidations), (1, 0));
 }
+
+type Outcomes = Vec<(String, String, bool, bool, Option<i64>)>;
+
+#[derive(Debug, PartialEq)]
+struct Joined {
+    emitted: Vec<(usize, Option<Vec<usize>>, Outcomes)>,
+    counts: Vec<usize>,
+}
+
+fn outcomes(event: &GrepEvent<'_>) -> Outcomes {
+    event
+        .entry
+        .tool_uses()
+        .filter_map(|tool| {
+            let result = event.results.get(tool.id.as_str())?;
+            Some((
+                tool.id.clone(),
+                result.tool.to_owned(),
+                result.is_error,
+                result.denied,
+                result.duration_ms,
+            ))
+        })
+        .collect()
+}
+
+fn joined_stream(
+    path: &Path,
+    patterns: &[(&str, Option<usize>)],
+    options: GrepOptions,
+    render_names: bool,
+) -> (Joined, ScanProgress) {
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut budget = ScanBudget::new(&store, limits());
+    let mut grep = reducer(patterns, options, &mut budget);
+    assert!(!grep.caches());
+    let mut emitted = Vec::new();
+    grep.scan_stream(
+        path,
+        render_names,
+        None,
+        &mut budget,
+        &Cancellation::default(),
+        |event, budget, cancel| {
+            let _staging = event.preflight_render(budget, cancel)?;
+            emitted.push((
+                event.index,
+                event.pattern_ids.map(<[usize]>::to_vec),
+                outcomes(&event),
+            ));
+            Ok(())
+        },
+    )
+    .unwrap()
+    .expect("claude source streams");
+    let counts = grep.counts().to_vec();
+    (Joined { emitted, counts }, budget.progress.clone())
+}
+
+fn joined_snapshot(
+    path: &Path,
+    patterns: &[(&str, Option<usize>)],
+    options: GrepOptions,
+) -> Joined {
+    let store = NativeStore::new(&json!({})).unwrap();
+    let mut session = ScanSession::new(&store, limits(), Cancellation::default());
+    let mut grep = reducer(patterns, options, &mut session.budget);
+    let mut emitted = Vec::new();
+    session
+        .visit_snapshot(path, &mut |_, snapshot, budget, cancel| {
+            let result = grep.scan_source(snapshot, budget, cancel)?;
+            result.emit(snapshot, budget, cancel, |event, _, _| {
+                emitted.push((
+                    event.index,
+                    event.pattern_ids.map(<[usize]>::to_vec),
+                    outcomes(&event),
+                ));
+                Ok(())
+            })?;
+            Ok(ScanControl::Continue)
+        })
+        .unwrap();
+    Joined {
+        emitted,
+        counts: grep.counts().to_vec(),
+    }
+}
+
+fn call(uuid: &str, request: &str, at: &str, blocks: Value) -> Value {
+    let mut value = assistant(uuid, "u0", blocks);
+    value.insert("requestId", json!(request));
+    value.insert("timestamp", json!(format!("2026-01-01T00:00:{at}Z")));
+    value
+}
+
+fn answer(uuid: &str, id: &str, at: &str, text: &str, error: bool) -> Value {
+    let mut value = user(
+        uuid,
+        Some("u0"),
+        json!([{"type":"tool_result","tool_use_id":id,"content":text,"is_error":error}]),
+    );
+    value.insert("timestamp", json!(format!("2026-01-01T00:00:{at}Z")));
+    value
+}
+
+fn noise() -> String {
+    line(json!({"type":"mode","mode":"normal","sessionId":"s"}))
+}
+
+fn turns() -> Vec<String> {
+    let mut rejected = answer("r3", "t3", "05", "User rejected the call", true);
+    rejected.insert("toolDenialKind", json!("user-rejected"));
+    vec![
+        line(user("u0", None, json!("go"))),
+        line(call(
+            "a1",
+            "req1",
+            "01",
+            json!([tool("t1", "Bash", json!({"command":"echo needle"}))]),
+        )),
+        noise(),
+        line(call(
+            "a2",
+            "req1",
+            "01.500",
+            json!([tool("t2", "Read", json!({"file_path":"/needle"}))]),
+        )),
+        line(answer("r1", "t1", "02.250", "done", false)),
+        line(answer("r2", "t2", "03", "no needle here", true)),
+        line(call(
+            "a3",
+            "req2",
+            "04",
+            json!([tool("t3", "Bash", json!({"command":"rm needle"}))]),
+        )),
+        line(rejected),
+        line(call(
+            "a4",
+            "req3",
+            "06",
+            json!([tool("t4", "Bash", json!({"command":"needle forever"}))]),
+        )),
+        noise(),
+        line(call(
+            "a5",
+            "req4",
+            "07",
+            json!([{"type":"text","text":"after the needle"}]),
+        )),
+        line(user("u1", Some("a5"), json!("tail"))),
+    ]
+}
+
+fn joined_case(case: usize) -> Option<(&'static str, Option<usize>, GrepOptions)> {
+    let results = GrepOptions {
+        with_result: true,
+        ..options()
+    };
+    let errors = GrepOptions {
+        errors: true,
+        ..options()
+    };
+    Some(match case {
+        0 => ("needle", None, results),
+        1 => ("needle", None, GrepOptions { context: 1, ..results }),
+        2 => ("needle", Some(1), results),
+        3 => ("needle", None, errors),
+        4 => ("needle", None, GrepOptions { with_result: true, ..errors }),
+        5 => (
+            "needle",
+            None,
+            GrepOptions {
+                kinds: vec!["assistant".into()],
+                ..errors
+            },
+        ),
+        6 => (
+            "needle",
+            None,
+            GrepOptions {
+                tool: Some("Read".into()),
+                ..errors
+            },
+        ),
+        7 => (r"\w+", None, GrepOptions { with_result: true, ..errors }),
+        _ => return None,
+    })
+}
+
+#[test]
+fn streamed_results_and_errors_match_the_prepared_snapshot_path() {
+    let source = Source::new(&turns(), true);
+    for case in 0.. {
+        let Some((pattern, cap, options)) = joined_case(case) else {
+            break;
+        };
+        let expected = joined_snapshot(&source.0, &[(pattern, cap)], options);
+        for render_names in [true, false] {
+            let (pattern, cap, options) = joined_case(case).unwrap();
+            let (actual, _) = joined_stream(&source.0, &[(pattern, cap)], options, render_names);
+            assert_eq!(actual, expected, "case {case}, render names {render_names}");
+        }
+    }
+    let (plain, _) = joined_stream(&source.0, &[("needle", None)], joined_case(0).unwrap().2, true);
+    let bash = |id: &str, error, denied, ms| (id.to_owned(), "Bash".to_owned(), error, denied, ms);
+    assert_eq!(
+        plain
+            .emitted
+            .iter()
+            .map(|(_, _, outcomes)| outcomes.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            vec![bash("t1", false, false, Some(1250))],
+            vec![("t2".to_owned(), "Read".to_owned(), true, false, Some(1500))],
+            vec![],
+            vec![bash("t3", true, true, Some(1000))],
+            vec![bash("t4", false, false, None)],
+            vec![],
+        ]
+    );
+    let (errors, _) = joined_stream(&source.0, &[("needle", None)], joined_case(3).unwrap().2, false);
+    assert_eq!(
+        errors
+            .emitted
+            .iter()
+            .map(|(index, _, _)| *index)
+            .collect::<Vec<_>>(),
+        vec![3, 5, 6]
+    );
+}
+
+#[test]
+fn a_quota_stop_on_a_call_reads_on_to_its_result_and_no_further() {
+    let mut lines = turns();
+    lines.extend((0..4000).map(|index| {
+        line(user(&format!("p{index}"), Some("u1"), json!("x".repeat(1000))))
+    }));
+    let source = Source::new(&lines, true);
+    let size = std::fs::metadata(&source.0).unwrap().len() as usize;
+    for (pattern, expected) in [
+        ("rm needle", ("t3", true, true, Some(1000))),
+        ("forever", ("t4", false, false, None)),
+    ] {
+        let (run, progress) = joined_stream(
+            &source.0,
+            &[(pattern, Some(1))],
+            joined_case(0).unwrap().2,
+            true,
+        );
+        let (id, error, denied, ms) = expected;
+        assert_eq!(
+            run.emitted.iter().map(|(_, _, outcomes)| outcomes.clone()).collect::<Vec<_>>(),
+            vec![vec![(id.to_owned(), "Bash".to_owned(), error, denied, ms)]],
+            "{pattern}"
+        );
+        assert!(progress.source_bytes < size / 8, "{pattern}: read {}", progress.source_bytes);
+    }
+}
+
+#[test]
+fn the_join_holds_a_fixed_staging_peak_as_turns_grow() {
+    let peak = |turns: usize, with_result: bool| {
+        let mut lines = vec![line(user("u0", None, json!("go")))];
+        for turn in 0..turns {
+            let id = format!("t{turn:06}");
+            lines.push(line(call(
+                &format!("a{turn:06}"),
+                &format!("req{turn:06}"),
+                "01",
+                json!([tool(&id, "Bash", json!({"command":"echo needle"}))]),
+            )));
+            lines.push(noise());
+            lines.push(line(answer(&format!("r{turn:06}"), &id, "02", &"y".repeat(4000), false)));
+        }
+        let source = Source::new(&lines, true);
+        let (run, progress) = joined_stream(
+            &source.0,
+            &[("needle", None)],
+            GrepOptions {
+                with_result,
+                ..options()
+            },
+            true,
+        );
+        assert_eq!(run.counts, vec![turns]);
+        progress.staging_peak_reserved_bytes
+    };
+    let few = peak(10, true) as i64 - peak(10, false) as i64;
+    let many = peak(1000, true) as i64 - peak(1000, false) as i64;
+    assert!((many - few).abs() <= 16 * 1024, "10 turns {few}, 1000 turns {many}");
+}
