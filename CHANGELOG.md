@@ -295,8 +295,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cc-transcript grep` searches Claude transcripts as it reads them, so a scan
   that runs out of budget can print the matches it reached. `--max-matches` stops
   reading once the requested context and completion lookahead are available,
-  subject to buffered read-ahead. Codex sources, `--errors`, and `--with-result`
-  keep using prepared snapshots.
+  subject to buffered read-ahead. Codex sources keep using prepared snapshots.
+- `cc-transcript grep --with-result` and `--errors` stream Claude transcripts too.
+  Both used to prepare a whole-file snapshot to join each tool call to its
+  result. The snapshot charges about 2.8 accounted bytes per source byte
+  against 512 MiB, so a 349 MB coordinator transcript stopped with
+  `retained_limit: accounted storage admission exhausted` after 193 MB and
+  printed none of its 28 matches. A call now waits in the read queue
+  until each of its tool calls has a result or the next request starts, and a
+  line the prefilter skipped is parsed only when a call still waits on it.
+  On that session a call's result arrived at most 31 lines and 65,287 bytes
+  after the call. Neither flag saves a checkpoint, so every such run reads the
+  file from the start.
 - A streaming `grep` read reports `source_read_limit` only when the source-byte
   cap is exhausted. When the combined source and projection cap prevents the
   read, it reports `cumulative scan work budget exhausted`.
