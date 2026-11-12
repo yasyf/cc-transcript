@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use cc_transcript_core::render::{compact_line, display_path, event_json, transcript_header, Json};
+use cc_transcript_core::filter::event_kind;
+use cc_transcript_core::render::{
+    compact_line, display_path, event_json, transcript_header, truncate, Json,
+};
 use cc_transcript_core::scan::{
     scan_corpus, Budget, ScanBudget, ScanControl, ScanOutcome, ScanPlan, ScanSession,
 };
@@ -22,6 +25,7 @@ use crate::DiscoveryOpts;
 const USAGE: &str = "cc-transcript grep [OPTIONS] PATTERN [PATHS]...";
 const HELP_PATH: &str = "cc-transcript grep";
 const DEFAULT_MAX_MATCHES: usize = 20;
+const PREVIEW_WIDTH: usize = 100;
 
 #[derive(clap::Args, Default)]
 pub struct ScanOptions {
@@ -184,26 +188,46 @@ fn stopped(outcome: &ScanOutcome) -> bool {
 struct Emitter {
     out: Out,
     scan_json: bool,
+    unit: &'static str,
     first: bool,
     exit: Option<i32>,
     limits: WorkLimits,
     timeout_ms: u64,
-    refused: Option<Refused>,
+    whole_bytes: usize,
+    cut: Option<Tally>,
+    left_out: Option<Tally>,
 }
 
 #[derive(Clone, Copy)]
-struct Refused {
-    event: usize,
-    bytes: usize,
-    used: usize,
+struct Tally {
+    first: usize,
+    lines: usize,
+}
+
+impl Tally {
+    fn add(tally: &mut Option<Self>, at: usize) {
+        tally
+            .get_or_insert(Self {
+                first: at,
+                lines: 0,
+            })
+            .lines += 1;
+    }
+
+    fn describe(&self, done: &str, unit: &str) -> String {
+        match self.lines {
+            1 => format!("{done} 1 line at {unit} {}", self.first),
+            n => format!("{done} {n} lines from {unit} {} on", self.first),
+        }
+    }
 }
 
 impl Emitter {
     fn new(
         scan_json: bool,
+        unit: &'static str,
         timeout_ms: u64,
         budget: &mut ScanBudget,
-        _cancel: &Cancellation,
     ) -> Result<Self, CliExit> {
         let mut out = Out::new();
         if scan_json {
@@ -218,41 +242,42 @@ impl Emitter {
         Ok(Self {
             out,
             scan_json,
+            unit,
             first: true,
             exit: None,
             limits: budget.limits,
             timeout_ms,
-            refused: None,
+            whole_bytes: budget.progress.output_bytes,
+            cut: None,
+            left_out: None,
         })
     }
 
     fn emit(
         &mut self,
+        at: usize,
         line: String,
+        cut: impl FnOnce(usize) -> Option<String>,
         budget: &mut ScanBudget,
         cancel: &Cancellation,
     ) -> Result<(), SnapshotError> {
-        budget.charge_output(line.len().saturating_add(2), cancel)?;
-        self.write(line)
-    }
-
-    fn emit_event(
-        &mut self,
-        event: usize,
-        line: String,
-        budget: &mut ScanBudget,
-        cancel: &Cancellation,
-    ) -> Result<(), SnapshotError> {
-        let refused = Refused {
-            event,
-            bytes: line.len().saturating_add(2),
-            used: budget.progress.output_bytes,
-        };
-        self.emit(line, budget, cancel).inspect_err(|error| {
-            if error.status == Status::OutputLimit {
-                self.refused = Some(refused);
+        budget.checkpoint(cancel)?;
+        let charge = line.len().saturating_add(2);
+        self.whole_bytes = self.whole_bytes.saturating_add(charge);
+        if self.left_out.is_none() {
+            let left = budget.remaining().max_output_bytes;
+            if charge <= left {
+                budget.reserve_output(charge)?;
+                return self.write(line);
             }
-        })
+            if let Some(short) = cut(line.len()).filter(|short| short.len() + 2 <= left) {
+                budget.reserve_output(short.len() + 2)?;
+                Tally::add(&mut self.cut, at);
+                return self.write(short);
+            }
+        }
+        Tally::add(&mut self.left_out, at);
+        Ok(())
     }
 
     fn write(&mut self, line: String) -> Result<(), SnapshotError> {
@@ -284,6 +309,22 @@ impl Emitter {
             self.out.line(&format!("],{}", &status[1..]))?;
         }
         self.out.finish()?;
+        let fitted: Vec<_> = [
+            self.cut.map(|cut| cut.describe("shortened", self.unit)),
+            self.left_out
+                .map(|left_out| left_out.describe("left out", self.unit)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !fitted.is_empty() {
+            eline(&format!(
+                "warning: --max-output-bytes {} {}; raise it to {} to print every line whole",
+                self.limits.max_output_bytes,
+                fitted.join(" and "),
+                self.whole_bytes,
+            ));
+        }
         if let Some(reason) = &outcome.reason {
             if let Some(scope) = reason.strip_prefix("result_limit") {
                 eline(&format!("warning: stopped at --max-matches {}; more matches may exist — raise it, or pass --max-matches 0 for no cap",counts.first().copied().unwrap_or(0)));
@@ -291,15 +332,9 @@ impl Emitter {
                     eline(&format!("warning: partial view: {scope}"));
                 }
             } else {
-                let hint = match (outcome.budget, self.refused) {
-                    (Some(Budget::OutputBytes), Some(Refused { event, bytes, used })) => format!(
-                        " at event {event}: its next line is {bytes} bytes and {} remained; raise --max-output-bytes to {} or more",
-                        self.limits.max_output_bytes.saturating_sub(used),
-                        used.saturating_add(bytes),
-                    ),
-                    (Some(budget), _) => format!("; {}", raise(budget, &self.limits, self.timeout_ms)),
-                    (None, _) => String::new(),
-                };
+                let hint = outcome.budget.map_or_else(String::new, |budget| {
+                    format!("; {}", raise(budget, &self.limits, self.timeout_ms))
+                });
                 eline(&format!("warning: scan incomplete: {reason}{hint}"));
                 return Err(CliExit(3));
             }
@@ -396,12 +431,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
             return Err(usage_error(USAGE, HELP_PATH, &error.reason))
         }
         Err(error) => {
-            let emitter = Emitter::new(
-                args.scan_json,
-                timeout_ms,
-                &mut session.budget,
-                &Cancellation::default(),
-            )?;
+            let emitter = Emitter::new(args.scan_json, "event", timeout_ms, &mut session.budget)?;
             return emitter.finish(
                 &failed_outcome(error, &session.budget),
                 &vec![0; args.patterns.len() + 1],
@@ -434,7 +464,7 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
     let checkpoints = checkpoints();
     let mut render = Render {
         args: &args,
-        emitter: Emitter::new(args.scan_json, timeout_ms, &mut session.budget, &cancel)?,
+        emitter: Emitter::new(args.scan_json, "event", timeout_ms, &mut session.budget)?,
         files: 0,
     };
     reducer.survey(plan.sources(), session.budget.limits.deadline_unix_ms);
@@ -525,9 +555,10 @@ impl Render<'_> {
         if event.opens_source {
             self.files += 1;
             if !structured {
-                self.emitter.emit_event(
+                self.emitter.emit(
                     event.index,
                     transcript_header(&path.to_string_lossy()),
+                    |_| None,
                     budget,
                     cancel,
                 )?;
@@ -535,32 +566,27 @@ impl Render<'_> {
         }
         if !structured && args.context > 0 && event.opens_window && !event.opens_source {
             self.emitter
-                .emit_event(event.index, "--".to_owned(), budget, cancel)?;
+                .emit(event.index, "--".to_owned(), |_| None, budget, cancel)?;
         }
         let _render_staging = event.preflight_render(budget, cancel)?;
-        let line = if structured {
+        let range = format!("--range {}:{}", event.index, event.index + 1);
+        if structured {
             let Json::Obj(mut fields) = event_json(event.index, event.entry) else {
                 unreachable!("event_json object")
             };
-            fields.insert(
-                0,
-                (
-                    "path".into(),
-                    Json::Str(path.to_string_lossy().into_owned()),
-                ),
-            );
+            let mut tags = Vec::new();
             if event.pattern_ids.is_none() {
-                fields.push(("context".into(), Json::Bool(true)));
+                tags.push(("context".into(), Json::Bool(true)));
             }
             if args.with_result {
                 let results = result_fields(event.entry, event.results);
                 if !results.is_empty() {
-                    fields.push(("results".into(), Json::Obj(results)));
+                    tags.push(("results".into(), Json::Obj(results)));
                 }
             }
             if args.scan_json {
-                fields.push(("generation".into(), Json::Str(event.generation.to_owned())));
-                fields.push((
+                tags.push(("generation".into(), Json::Str(event.generation.to_owned())));
+                tags.push((
                     "pattern_ids".into(),
                     Json::Arr(
                         event
@@ -570,13 +596,39 @@ impl Render<'_> {
                     ),
                 ));
             }
-            Json::Obj(fields).dumps()
-        } else {
+            let path = path.to_string_lossy().into_owned();
+            fields.insert(0, ("path".into(), Json::Str(path.clone())));
+            fields.extend(tags.iter().cloned());
+            return self.emitter.emit(
+                event.index,
+                Json::Obj(fields).dumps(),
+                |bytes| {
+                    let show = format!("cc-transcript show {path} {range} --json");
+                    let mut cut = vec![
+                        ("path".into(), Json::Str(path)),
+                        ("i".into(), Json::UInt(event.index as u64)),
+                        ("kind".into(), Json::Str(event_kind(event.entry).to_owned())),
+                        (
+                            "cut".into(),
+                            Json::Obj(vec![
+                                ("bytes".into(), Json::UInt(bytes as u64)),
+                                ("show".into(), Json::Str(show)),
+                            ]),
+                        ),
+                    ];
+                    cut.extend(tags);
+                    Some(Json::Obj(cut).dumps())
+                },
+                budget,
+                cancel,
+            );
+        }
+        let render = |width| {
             let mut line = compact_line(
                 event.index,
                 event.entry,
                 event.names,
-                args.width,
+                width,
                 false,
                 args.uuids,
             );
@@ -585,8 +637,27 @@ impl Render<'_> {
             }
             line
         };
-        self.emitter.emit_event(event.index, line, budget, cancel)
+        self.emitter.emit(
+            event.index,
+            render(args.width),
+            |bytes| {
+                Some(cut_line(
+                    render(PREVIEW_WIDTH),
+                    bytes,
+                    &format!(
+                        "cc-transcript show {} {range} --width 0",
+                        display_path(&path.to_string_lossy())
+                    ),
+                ))
+            },
+            budget,
+            cancel,
+        )
     }
+}
+
+fn cut_line(preview: String, bytes: usize, whole: &str) -> String {
+    format!("{preview} [cut from {bytes} bytes; read it whole with {whole}]")
 }
 
 fn run_over_corpus(
@@ -604,19 +675,14 @@ fn run_over_corpus(
             return Err(usage_error(USAGE, HELP_PATH, &error.reason))
         }
         Err(error) => {
-            let emitter = Emitter::new(
-                args.scan_json,
-                timeout_ms,
-                &mut budget,
-                &Cancellation::default(),
-            )?;
+            let emitter = Emitter::new(args.scan_json, "corpus line", timeout_ms, &mut budget)?;
             return emitter.finish(
                 &failed_outcome(error, &budget),
                 &vec![0; args.patterns.len() + 1],
             );
         }
     };
-    let mut emitter = Emitter::new(args.scan_json, timeout_ms, &mut budget, &cancel)?;
+    let mut emitter = Emitter::new(args.scan_json, "corpus line", timeout_ms, &mut budget)?;
     let mut outcome = scan_corpus(
         path,
         &mut budget,
@@ -632,24 +698,35 @@ fn run_over_corpus(
                 } else {
                     line.len().saturating_add(2)
                 };
-                if render_bound > budget.remaining().max_output_bytes {
-                    return Err(SnapshotError::new(
-                        Status::OutputLimit,
-                        "corpus match exceeds remaining output budget",
-                    ));
-                }
                 let _render_staging = budget.reserve_staging(render_bound, cancel)?;
                 budget.charge_projection(
                     line.len().saturating_add(path.as_os_str().len()),
                     0,
                     cancel,
                 )?;
+                let shown = path.to_string_lossy();
                 let rendered = if args.scan_json {
-                    sonic_rs::to_string(&json!({"path":path.to_string_lossy().as_ref(),"line":line_number,"text":line,"pattern_ids":ids})).map_err(|e|SnapshotError::new(Status::OutputLimit,e.to_string()))?
+                    sonic_rs::to_string(&json!({"path":shown.as_ref(),"line":line_number,"text":line,"pattern_ids":&ids})).map_err(|e|SnapshotError::new(Status::OutputLimit,e.to_string()))?
                 } else {
                     line.to_owned()
                 };
-                emitter.emit(rendered, budget, cancel)?;
+                emitter.emit(
+                    line_number,
+                    rendered,
+                    |bytes| {
+                        Some(if args.scan_json {
+                            sonic_rs::to_string(&json!({"path":shown.as_ref(),"line":line_number,"cut":{"bytes":bytes,"show":format!("sed -n {line_number}p {shown}")},"pattern_ids":&ids})).expect("corpus cut record serializes")
+                        } else {
+                            cut_line(
+                                truncate(line, PREVIEW_WIDTH),
+                                bytes,
+                                &format!("sed -n {line_number}p {}", display_path(&shown)),
+                            )
+                        })
+                    },
+                    budget,
+                    cancel,
+                )?;
             }
             Ok(reducer.satisfied())
         },

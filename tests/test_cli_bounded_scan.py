@@ -115,25 +115,68 @@ def test_discovery_is_not_charged_to_output(tmp_path: Path) -> None:
     assert result.stdout == "0 files, 0 matches\n"
 
 
-def test_output_cap_prints_lines_until_the_next_one_does_not_fit(tmp_path: Path) -> None:
+def oversized(path: Path) -> Path:
+    return source(path, ["needle early", "needle " + "x" * 40000, *(f"needle later {index}" for index in range(4))])
+
+
+def test_output_cap_cuts_an_oversized_line_and_prints_every_match_after_it(tmp_path: Path) -> None:
+    path = oversized(tmp_path / "wide.jsonl")
+    result = run_scan(tmp_path, "needle", str(path), "--width", "0", "--max-output-bytes", "20000")
+    assert result.returncode == 0, result.stderr
+    header, early, cut, *later, summary = result.stdout.splitlines()
+    assert summary == "1 files, 6 matches"
+    assert [line.split()[0] for line in (early, cut, *later)] == ["0", "1", "2", "3", "4", "5"]
+    assert all(line.endswith(f"needle later {index}") for index, line in enumerate(later))
+    shown = header.removeprefix("== ")
+    tail = re.search(r" \[cut from (\d+) bytes; read it whole with (.+)\]$", cut)
+    assert tail, cut
+    assert tail.group(2) == f"cc-transcript show {shown} --range 1:2 --width 0"
+    assert len(cut.encode()) < 400 < int(tail.group(1))
+    whole = sum(len(line.encode()) + 2 for line in (header, early, *later)) + int(tail.group(1)) + 2
+    assert result.stderr == (
+        f"warning: --max-output-bytes 20000 shortened 1 line at event 1; raise it to {whole} to print every line whole\n"
+    )
+    assert run_scan(tmp_path, "needle", str(path), "--width", "0", "--max-output-bytes", str(whole)).stderr == ""
+
+
+def test_output_cap_cuts_an_oversized_json_event_to_a_record_that_parses(tmp_path: Path) -> None:
+    path = oversized(tmp_path / "wide.jsonl")
+    result = run_scan(tmp_path, "needle", str(path), "--json", "--max-output-bytes", "20000")
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(record) for record in result.stdout.splitlines()]
+    assert [event["i"] for event in events] == list(range(6))
+    assert events[1] == {
+        "path": str(path),
+        "i": 1,
+        "kind": "user",
+        "cut": {"bytes": events[1]["cut"]["bytes"], "show": f"cc-transcript show {path} --range 1:2 --json"},
+    }
+    assert events[1]["cut"]["bytes"] > 40000
+    assert [event["text"] for event in events[2:]] == [f"needle later {index}" for index in range(4)]
+    assert "shortened 1 line at event 1" in result.stderr
+
+
+def test_output_cap_counts_every_match_once_no_line_fits(tmp_path: Path) -> None:
     path = source(tmp_path / "wide.jsonl", [f"needle {index} " + "x" * 4000 for index in range(40)])
-    result = run_scan(tmp_path, "needle", str(path), "--max-output-bytes", "2000")
-    assert result.returncode == 3, result.stderr
+    result = run_scan(tmp_path, "needle", str(path), "--max-matches", "0", "--max-output-bytes", "2000")
+    assert result.returncode == 0, result.stderr
     *printed, summary = result.stdout.splitlines()
     hits = len(printed) - 1
-    used = sum(len(line.encode()) + 2 for line in printed)
-    assert hits > 0
-    assert summary == f"1 files, {hits + 1} matches so far (incomplete scan)"
+    assert 0 < hits < 40
+    assert sum(len(line.encode()) + 2 for line in printed) <= 2000
+    assert summary == "1 files, 40 matches"
     warning = re.fullmatch(
-        r"warning: scan incomplete: output byte budget exhausted at event (\d+): its next line is (\d+) bytes"
-        r" and (\d+) remained; raise --max-output-bytes to (\d+) or more\n",
+        rf"warning: --max-output-bytes 2000 left out {40 - hits} lines from event {hits} on;"
+        r" raise it to (\d+) to print every line whole\n",
         result.stderr,
     )
     assert warning, result.stderr
-    event, size, remained, needed = map(int, warning.groups())
-    assert event == hits
-    assert remained == 2000 - used < size
-    assert needed == used + size
+    whole = warning.group(1)
+    raised = run_scan(tmp_path, "needle", str(path), "--max-matches", "0", "--max-output-bytes", whole)
+    assert raised.stderr == ""
+    assert len(raised.stdout.splitlines()) == 42
+    short = run_scan(tmp_path, "needle", str(path), "--max-matches", "0", "--max-output-bytes", str(int(whole) - 1))
+    assert "left out 1 line at event 39" in short.stderr
 
 
 def test_project_filter_precedes_discovery_budget(tmp_path: Path) -> None:
@@ -201,14 +244,32 @@ def test_discovery_does_not_follow_directory_symlinks(tmp_path: Path) -> None:
     assert payload["outcome"]["progress"]["source_opens"] == 0
 
 
-def test_corpus_match_checks_output_before_rendering(tmp_path: Path) -> None:
+def test_corpus_match_no_bytes_can_hold_is_counted_not_printed(tmp_path: Path) -> None:
     path = tmp_path / "corpus.txt"
     path.write_text("needle " + "x" * 1024 + "\n")
     result = run_scan(tmp_path, "needle", "--corpus", str(path), "--scan-json", "--max-output-bytes", "4097")
-    assert result.returncode == 3, result.stderr
+    assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["matches"] == []
-    assert "output" in payload["outcome"]["reason"]
+    assert payload["counts"] == [1]
+    assert payload["outcome"]["complete"] is True
+    assert re.fullmatch(
+        r"warning: --max-output-bytes 4097 left out 1 line at corpus line 1;"
+        r" raise it to \d+ to print every line whole\n",
+        result.stderr,
+    ), result.stderr
+
+
+def test_corpus_cuts_an_oversized_window_and_prints_every_match_after_it(tmp_path: Path) -> None:
+    path = tmp_path / "corpus.txt"
+    path.write_text("".join(f"{line}\n" for line in ["early needle", "needle " + "x" * 40000, "later needle 0", "later needle 1"]))
+    result = run_scan(tmp_path, "needle", "--corpus", str(path), "--max-output-bytes", "20000")
+    assert result.returncode == 0, result.stderr
+    early, cut, *later, summary = result.stdout.splitlines()
+    assert (early, later) == ("early needle", ["later needle 0", "later needle 1"])
+    assert cut.endswith(" [cut from 40007 bytes; read it whole with sed -n 2p ~/corpus.txt]")
+    assert summary.startswith("4 matches in ")
+    assert "shortened 1 line at corpus line 2" in result.stderr
 
 
 def test_literal_grep_scans_raw_lines_without_checkpoints(tmp_path: Path) -> None:

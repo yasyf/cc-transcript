@@ -333,9 +333,9 @@ completion status. A zero count establishes absence only when `outcome.complete`
 is true. Reaching the quotas stops opening further sources and reports
 `result_limit`; it does not claim that the remaining history was searched.
 
-Grep applies finite read, event, discovery, source, output and time budgets.
-Use `--max-read-bytes`, `--max-events`, `--max-discovery-entries`, `--max-sources`,
-`--max-output-bytes` and `--timeout-ms` to set them. `--max-read-bytes` caps source
+Grep applies finite read, event, discovery, source and time budgets.
+Use `--max-read-bytes`, `--max-events`, `--max-discovery-entries`, `--max-sources`
+and `--timeout-ms` to set them. `--max-read-bytes` caps source
 and projection reads together; `--max-source-read-bytes` caps source reads alone. `--all` removes the ordinary
 file-selection limit, and `--max-matches 0` removes result quotas; work budgets
 still apply. The defaults cover a whole local transcript tree, so a default
@@ -345,6 +345,28 @@ scan stops at the `--timeout-ms` deadline before any other budget runs out.
 scan incomplete and exits with status 3. The warning names the budget that ran
 out and the flag to raise, and `--scan-json` reports it as `outcome.budget`. A
 completed scan without matches retains status 1.
+
+`--max-output-bytes` caps what grep prints, never what it scans. A line too big
+for the bytes left prints cut to its first 100 characters, followed by its whole
+size and the command that prints it whole. Here a 40 KB deploy log sits between
+two matches under a 2,000-byte cap:
+
+```{python}
+BIG = ROOT.parent / "deploy-log.jsonl"
+BIG.write_text("\n".join(json.dumps(entry) for entry in [
+    user("sess-c3d7", 0, "deploy.sh syncs to api-staging"),
+    user("sess-c3d7", 1, "full deploy log for api-staging: " + "x" * 40000),
+    user("sess-c3d7", 2, "api-staging no longer exists"),
+]) + "\n")
+print(cc("grep", "api-staging", str(BIG), "--width", "0", "--max-output-bytes", "2000"))
+```
+
+Under `--json` or `--scan-json` the cut event is a record that still parses,
+`{"path", "i", "kind", "cut": {"bytes", "show"}}`. The matches after a cut line
+keep printing while they fit. Once not even a cut line fits, the rest are
+counted and not printed. Either way the scan runs to the end, the summary counts
+every match, and a warning names the lines shortened or left out and the cap
+that prints every line whole.
 
 `grep --corpus` uses the same work limits while reading the existing extract.
 Its path and line provenance identify that extract. They cannot recover the

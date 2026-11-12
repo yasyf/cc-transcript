@@ -178,6 +178,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cc-transcript grep --max-output-bytes` caps what grep prints, not what it
+  scans. One matching event too big for the bytes left used to end the whole
+  scan, so every later match went unprinted and uncounted: under `--width 0
+  --max-output-bytes 20000`, a 40 KB event at event 20 left events 30 to 60
+  out and the summary read `2 matches so far (incomplete scan)`. That line now
+  prints cut to its first 100 characters, ending in `[cut from 40049 bytes;
+  read it whole with cc-transcript show <path> --range 20:21 --width 0]`, the
+  matches after it print, and the summary reads `6 matches`. A `--json` or
+  `--scan-json` record too big to fit becomes `{"path", "i", "kind", "cut":
+  {"bytes", "show"}}`, and `--corpus` cuts its lines the same way. Once not even
+  a cut line fits, later matches are counted and not printed. A warning names
+  the lines shortened or left out and the cap that prints every line whole, and
+  the scan exits 0 or 1 like any finished scan, no longer 3.
 - An `events`, `tool_calls` or other record page now ends at the page's output budget and returns a
   cursor. A run of large events used to fail the whole page with `output_limit`, so a client had to
   split the window to read it.
