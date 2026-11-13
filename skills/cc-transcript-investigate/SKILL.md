@@ -35,7 +35,11 @@ Every command that takes `[PATHS]…` discovers transcripts under
 them with `--project <substr>` (project dir name) and `--contains <substr>`
 (file name), and — except `corpus` — searches only the newest 50 unless you
 pass `--limit N` or `--all`. Their trailer says so:
-`searched 3 of 13274 transcripts — use --all`.
+`searched 3 of 13274 transcripts — use --all`. `grep` also takes a directory
+in `PATHS` and searches every transcript under it, so
+`grep PATTERN <session>/subagents` covers all of a session's subagents; a
+named file that is not a transcript, such as `agent-<id>.meta.json`, is
+skipped with a warning.
 
 ### Investigate one session
 

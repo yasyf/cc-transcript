@@ -19,7 +19,7 @@ use regex::{Regex, RegexBuilder};
 use sonic_rs::json;
 
 use crate::output::{click_error, eline, usage_error, CliExit, Out};
-use crate::target::{discover, py_path};
+use crate::target::{discover, py_path, warn_unparseable};
 use crate::DiscoveryOpts;
 
 const USAGE: &str = "cc-transcript grep [OPTIONS] PATTERN [PATHS]...";
@@ -444,8 +444,18 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
             .paths
             .iter()
             .map(|path| py_path(&path.to_string_lossy()))
+            .flat_map(|path| {
+                if path.is_dir() {
+                    discover(&path, None, None)
+                        .into_iter()
+                        .map(|transcript| transcript.path)
+                        .collect()
+                } else {
+                    vec![path]
+                }
+            })
             .collect(),
-        listed: args.paths.is_empty().then(|| {
+        listed: Some(if args.paths.is_empty() {
             discover(
                 &root,
                 args.discovery.project.as_deref(),
@@ -454,6 +464,8 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
             .into_iter()
             .map(|transcript| (transcript.path, transcript.mtime))
             .collect()
+        } else {
+            Vec::new()
         }),
         root,
         project: args.discovery.project.clone(),
@@ -468,31 +480,45 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         files: 0,
     };
     reducer.survey(plan.sources(), session.budget.limits.deadline_unix_ms);
+    let mut unparseable = Vec::new();
     let mut outcome = session.each_source(&plan, |session, path| {
-        if let Some(control) = reducer.scan_stream(
-            path,
-            !structured,
-            reducer.caches().then_some(&checkpoints),
-            &mut session.budget,
-            &cancel,
-            |event, budget, cancel| render.event(path, event, budget, cancel),
-        )? {
-            return Ok(control);
+        let matched: usize = reducer.counts().iter().sum();
+        let scanned = reducer
+            .scan_stream(
+                path,
+                !structured,
+                reducer.caches().then_some(&checkpoints),
+                &mut session.budget,
+                &cancel,
+                |event, budget, cancel| render.event(path, event, budget, cancel),
+            )
+            .and_then(|control| match control {
+                Some(control) => Ok(control),
+                None => session.visit_snapshot(path, &mut |path, snapshot, budget, cancel| {
+                    let result = reducer.scan_source(snapshot, budget, cancel)?;
+                    result.emit(snapshot, budget, cancel, |event, budget, cancel| {
+                        render.event(path, event, budget, cancel)
+                    })?;
+                    Ok(if result.quota_reached {
+                        ScanControl::Stop {
+                            source_complete: result.source_complete,
+                            names_through: None,
+                        }
+                    } else {
+                        ScanControl::Continue
+                    })
+                }),
+            });
+        match scanned {
+            Err(error)
+                if error.status == Status::ParseError
+                    && reducer.counts().iter().sum::<usize>() == matched =>
+            {
+                unparseable.push(display_path(&path.to_string_lossy()));
+                Ok(ScanControl::Continue)
+            }
+            scanned => scanned,
         }
-        session.visit_snapshot(path, &mut |path, snapshot, budget, cancel| {
-            let result = reducer.scan_source(snapshot, budget, cancel)?;
-            result.emit(snapshot, budget, cancel, |event, budget, cancel| {
-                render.event(path, event, budget, cancel)
-            })?;
-            Ok(if result.quota_reached {
-                ScanControl::Stop {
-                    source_complete: result.source_complete,
-                    names_through: None,
-                }
-            } else {
-                ScanControl::Continue
-            })
-        })
     });
     if outcome.complete && !reducer.complete() {
         outcome.complete = false;
@@ -533,7 +559,9 @@ pub fn run(args: GrepArgs) -> Result<(), CliExit> {
         }
         outcome.progress = session.budget.progress.clone();
     }
-    render.emitter.finish(&outcome, counts)
+    let finished = render.emitter.finish(&outcome, counts);
+    warn_unparseable(&unparseable);
+    finished
 }
 
 struct Render<'a> {
