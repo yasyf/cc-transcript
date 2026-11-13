@@ -275,14 +275,18 @@ pub fn stream_transcripts<T: Send>(
             }
         },
     )?;
-    if !missing.is_empty() {
+    warn_unparseable(&missing);
+    Ok(())
+}
+
+pub fn warn_unparseable(skipped: &[String]) {
+    if !skipped.is_empty() {
         eline(&format!(
             "warning: skipped {} unparseable transcript(s): {}",
-            missing.len(),
-            missing.join(", ")
+            skipped.len(),
+            skipped.join(", ")
         ));
     }
-    Ok(())
 }
 
 /// Parse every target and keep its events, in target order (cli.py parse_transcripts).

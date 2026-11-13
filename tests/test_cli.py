@@ -536,6 +536,39 @@ def test_grep_stays_quiet_when_the_cap_is_not_reached(transcript: Path) -> None:
     assert result.stdout.splitlines()[-1] == "1 files, 9 matches"
 
 
+def test_grep_searches_every_transcript_under_a_named_directory(tmp_path: Path) -> None:
+    subagents = tmp_path / "subagents"
+    older = write_transcript(subagents / "agent-a.jsonl", [user_entry(0, "needle")])
+    newer = write_transcript(subagents / "agent-a" / "subagents" / "agent-b.jsonl", [user_entry(0, "needle")])
+    (subagents / "agent-a.meta.json").write_text('{"agentType": "general-purpose", "description": "needle"}')
+    os.utime(older, (1_800_000_000, 1_800_000_000))
+    os.utime(newer, (1_800_000_001, 1_800_000_001))
+    result = run_cli("grep", "needle", str(subagents))
+    lines = result.stdout.splitlines()
+    assert (result.returncode, result.stderr) == (0, "")
+    assert [line for line in lines if line.startswith("== ")] == [f"== {newer}", f"== {older}"]
+    assert lines[-1] == "2 files, 2 matches"
+
+
+def test_grep_skips_a_named_file_that_is_not_a_transcript(transcript: Path, tmp_path: Path) -> None:
+    meta = tmp_path / "agent-a.meta.json"
+    meta.write_text('{"agentType": "general-purpose", "description": "hello"}')
+    other = write_transcript(tmp_path / "u.jsonl", fixture_entries())
+    result = run_cli("grep", "hello|final", str(transcript), str(meta), str(other), "-C", "1")
+    window = [EXPECTED_SHOW[0], EXPECTED_SHOW[1], "--", EXPECTED_SHOW[11], EXPECTED_SHOW[12]]
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [f"== {transcript}", *window, f"== {other}", *window, "2 files, 4 matches"]
+    assert result.stderr == f"warning: skipped 1 unparseable transcript(s): {meta}\n"
+
+
+def test_grep_ends_the_scan_at_a_bad_line_after_a_counted_match(tmp_path: Path) -> None:
+    bad = envelope(1, type="user", cwd="/needle", message={"role": "user", "content": None})
+    path = write_transcript(tmp_path / "t.jsonl", [user_entry(0, "needle"), bad])
+    result = run_cli("grep", "needle", str(path))
+    assert result.returncode == 3
+    assert result.stdout.splitlines()[-1] == "1 files, 1 matches so far (incomplete scan)"
+
+
 def corpus_entries() -> list[dict[str, Any]]:
     return [
         user_entry(0, "prefix needle suffix"),

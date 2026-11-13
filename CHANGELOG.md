@@ -178,6 +178,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cc-transcript grep` searches every transcript under a directory named in
+  `PATHS`, as `--root <dir> --all` does, so `grep PATTERN
+  <session>/subagents` reads all of a session's subagents. It used to end at
+  once with `scan incomplete: invalid_request: source must be a regular file`,
+  exit 3. A named file that does not parse and holds no match, such as the
+  `agent-<id>.meta.json` beside each subagent transcript, is skipped and named
+  in `warning: skipped 1 unparseable transcript(s): <path>`, as `stats` and
+  `tools` do, where it used to end the scan with `parse_error: Key("type")`.
+  A transcript whose bad line comes after one of its matches still ends the
+  scan, since that match already counts.
 - `cc-transcript grep --max-output-bytes` caps what grep prints, not what it
   scans. One matching event too big for the bytes left used to end the whole
   scan, so every later match went unprinted and uncounted: under `--width 0
