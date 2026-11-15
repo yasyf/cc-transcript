@@ -22515,4 +22515,5 @@ mod tests {
     include!("snapshot_load_charge_work_tests.rs");
     include!("snapshot_load_charge_audit_tests.rs");
     include!("snapshot_publication_shared_admission_tests.rs");
+    include!("snapshot_crossroot_cost_profile.rs");
 }
